@@ -185,12 +185,12 @@ export function App() {
   useEffect(() => {
     if (!isAuthenticated || !dashboardQuery.data) return;
     const completed = localStorage.getItem("ft-onboarding-completed");
-    if (!completed) {
-      const hasNoWallets = (dashboardQuery.data.wallets?.length ?? 0) === 0;
-      const hasNoTx = (dashboardQuery.data.transactions?.length ?? 0) === 0;
-      if (hasNoWallets || hasNoTx) {
-        setOnboardingOpen(true);
-      }
+    if (completed) return;
+
+    if (dashboardQuery.data.needsOnboarding) {
+      setOnboardingOpen(true);
+    } else {
+      localStorage.setItem("ft-onboarding-completed", "true");
     }
   }, [isAuthenticated, dashboardQuery.data]);
 

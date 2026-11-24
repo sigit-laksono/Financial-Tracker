@@ -1182,4 +1182,39 @@ describe("Phase 6: schema integrity, audit logs, pagination, observability & 5k 
       await sqlite.close();
     }
   });
+
+  it("sets needsOnboarding true only when unconfigured, not when a new period has 0 transactions", async () => {
+    const { db, sqlite, app } = await setupTestContext();
+    try {
+      const initialDash = await buildDashboardData(db, {
+        period: "2026-11",
+        today: "2026-11-25",
+      });
+      expect(initialDash.needsOnboarding).toBe(true);
+
+      const bni = initialDash.wallets.find((w) => w.key === "bni")!;
+      const txRes = await app.request("/api/transactions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "income",
+          merchant: "Gaji Oktober",
+          amount: 5_000_000,
+          transactionDate: "2026-10-26",
+          category: "Gaji",
+          walletId: bni.id,
+        }),
+      });
+      expect(txRes.status).toBe(201);
+
+      const newCycleDash = await buildDashboardData(db, {
+        period: "2026-11",
+        today: "2026-11-25",
+      });
+      expect(newCycleDash.transactions.length).toBe(0);
+      expect(newCycleDash.needsOnboarding).toBe(false);
+    } finally {
+      await sqlite.close();
+    }
+  });
 });

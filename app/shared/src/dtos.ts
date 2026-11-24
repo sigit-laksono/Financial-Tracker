@@ -359,6 +359,7 @@ export type DashboardDto = {
   cycle: CycleMode;
   selectedPeriod: string;
   isCurrentPeriod: boolean;
+  needsOnboarding: boolean;
   periodStart: string;
   periodEnd: string;
   availablePeriods: string[];

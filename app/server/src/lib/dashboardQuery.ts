@@ -890,10 +890,25 @@ export async function buildDashboardData(
     });
   }
 
+  const hasAnyTransactions = distinctDateRows.length > 0;
+  const hasConfiguredWallet = snap.wallets.some((w) =>
+    w.type === "credit_card" ? w.limitUsed !== 0 : w.openingBalance !== 0 || w.balance !== 0,
+  );
+  const hasConfiguredSalary = snap.settings.netSalary > 0 || snap.settings.grossSalary > 0;
+  const hasConfiguredDebtsOrBudgets =
+    snap.accounts.length > 0 || budgetList.some((b) => b.limitAmount > 0);
+  const needsOnboarding =
+    snap.wallets.length === 0 ||
+    (!hasAnyTransactions &&
+      !hasConfiguredWallet &&
+      !hasConfiguredSalary &&
+      !hasConfiguredDebtsOrBudgets);
+
   return {
     cycle,
     selectedPeriod,
     isCurrentPeriod: selectedPeriod === currentPeriod,
+    needsOnboarding,
     periodStart: bounds.start,
     periodEnd: bounds.end,
     availablePeriods,
