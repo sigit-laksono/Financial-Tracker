@@ -1,0 +1,11 @@
+.git
+node_modules
+app/node_modules
+app/data
+app/client/dist
+debt-management
+money-management
+docs
+*.log
+**/.env
+scripts/*.sql

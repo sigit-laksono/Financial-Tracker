@@ -1,0 +1,33 @@
+# Dependencies & build outputs
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+app/client/dist/
+
+# Environment files (keep .env.example templates)
+.env
+**/.env
+.env.*.local
+**/.env.*.local
+
+# Local databases, SQL dumps, and backups
+app/data/
+*.db
+*.db-wal
+*.db-shm
+*.db.bak*
+*.sqlite
+*.sqlite3
+scripts/*.sql
+*.sql.gz
+*.dump
+*.dump.gz
+
+# Logs & OS artifacts
+*.log
+.DS_Store
+Thumbs.db
+
+# Local AI / graph caches
+graphify-out/

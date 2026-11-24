@@ -1,0 +1,12 @@
+node_modules/
+dist/
+client/dist/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db.bak*
+*.sqlite
+*.sqlite3
+.env
+.env.*.local

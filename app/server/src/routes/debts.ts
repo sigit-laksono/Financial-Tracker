@@ -1,0 +1,264 @@
+import { eq, inArray } from "drizzle-orm";
+import { Hono } from "hono";
+import {
+  closeDebtSchema,
+  createDebtSchema,
+  earlyPayoffSchema,
+  settleSchema,
+  unsettleSchema,
+  updateInstallmentSchema,
+} from "../../../shared/src/schemas";
+import type { AppDb } from "../db";
+import {
+  debtAccounts,
+  installments,
+  settlementAllocations,
+  transactionSplits,
+  transactions,
+} from "../db/schema";
+import { recordAuditLog } from "../lib/auditService";
+import { NotFoundError, ValidationError } from "../lib/errors";
+import {
+  buildDebtsData,
+  createDebtAccountWithSchedule,
+  earlyPayoffDebtAccount,
+  settleObligations,
+  unsettleInstallment,
+} from "../lib/ledger";
+
+export function createDebtRoutes(db: AppDb) {
+  const router = new Hono();
+
+  router.get("/", async (c) => {
+    const data = await buildDebtsData(db);
+    return c.json(data);
+  });
+
+  router.post("/", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = createDebtSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: parsed.error.issues[0]?.message ?? "Data utang tidak valid." }, 400);
+    }
+
+    const result = await createDebtAccountWithSchedule(db, parsed.data);
+    return c.json({ ok: true, ...result }, 201);
+  });
+
+  router.post("/:id/payoff", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0)
+      return c.json({ error: "ID akun utang tidak valid." }, 400);
+
+    const body = await c.req.json().catch(() => null);
+    const parsed = earlyPayoffSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: parsed.error.issues[0]?.message ?? "Data pelunasan dipercepat tidak valid." },
+        400,
+      );
+    }
+
+    const result = await earlyPayoffDebtAccount(db, id, parsed.data);
+    return c.json(result);
+  });
+
+  router.patch("/:id/close", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0)
+      return c.json({ error: "ID akun utang tidak valid." }, 400);
+
+    const body = await c.req.json().catch(() => null);
+    const parsed = closeDebtSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "Status tutup akun tidak valid." }, 400);
+    }
+
+    await db.transaction(async (tx) => {
+      const [account] = await tx
+        .select()
+        .from(debtAccounts)
+        .where(eq(debtAccounts.id, id))
+        .limit(1);
+      if (!account) throw new NotFoundError("Akun utang tidak ditemukan.");
+
+      if (parsed.data.closed) {
+        const accountInstallments = await tx
+          .select()
+          .from(installments)
+          .where(eq(installments.accountId, account.id));
+        const paidAmount = accountInstallments
+          .filter((item) => item.status === "paid")
+          .reduce((sum, item) => sum + (item.actualAmount ?? item.plannedAmount), 0);
+        if (account.initialBalance - paidAmount > 0) {
+          throw new ValidationError("Akun hanya bisa ditutup setelah lunas (sisa Rp0).");
+        }
+        if (!account.closedAt) {
+          await tx
+            .update(debtAccounts)
+            .set({ closedAt: new Date() })
+            .where(eq(debtAccounts.id, account.id));
+        }
+      } else if (account.closedAt) {
+        await tx
+          .update(debtAccounts)
+          .set({ closedAt: null })
+          .where(eq(debtAccounts.id, account.id));
+      }
+    });
+
+    return c.json({ ok: true, closed: parsed.data.closed });
+  });
+
+  router.delete("/:id", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0)
+      return c.json({ error: "ID akun utang tidak valid." }, 400);
+
+    const [existing] = await db.select().from(debtAccounts).where(eq(debtAccounts.id, id)).limit(1);
+    if (!existing) return c.json({ error: "Akun utang tidak ditemukan." }, 404);
+
+    await db.transaction(async (tx) => {
+      // 1. Get installments
+      const accInstallments = await tx
+        .select()
+        .from(installments)
+        .where(eq(installments.accountId, id));
+      const installmentIds = accInstallments.map((i) => i.id);
+      const settlementTxIds = accInstallments
+        .map((i) => i.settlementTransactionId)
+        .filter((tid): tid is number => tid != null);
+
+      // 2. Delete settlement allocations linked to these installments
+      if (installmentIds.length > 0) {
+        await tx
+          .delete(settlementAllocations)
+          .where(inArray(settlementAllocations.installmentId, installmentIds));
+      }
+
+      // 3. Delete settlement transactions and their splits/allocations
+      for (const stxId of settlementTxIds) {
+        await tx
+          .delete(settlementAllocations)
+          .where(eq(settlementAllocations.settlementTransactionId, stxId));
+        await tx.delete(transactionSplits).where(eq(transactionSplits.transactionId, stxId));
+        await tx.delete(transactions).where(eq(transactions.id, stxId));
+      }
+
+      // 4. Delete related disbursement transactions (e.g. loan_disbursement / debt_disbursement)
+      const relatedTxs = await tx
+        .select()
+        .from(transactions)
+        .where(eq(transactions.debtAccountId, id));
+      for (const rtx of relatedTxs) {
+        await tx
+          .delete(settlementAllocations)
+          .where(eq(settlementAllocations.settlementTransactionId, rtx.id));
+        await tx.delete(transactionSplits).where(eq(transactionSplits.transactionId, rtx.id));
+        await tx.delete(transactions).where(eq(transactions.id, rtx.id));
+      }
+
+      // 5. Delete installments
+      await tx.delete(installments).where(eq(installments.accountId, id));
+
+      // 6. Delete debt account
+      await tx.delete(debtAccounts).where(eq(debtAccounts.id, id));
+
+      // 7. Record audit log
+      await recordAuditLog(tx, {
+        entityType: "debt_account",
+        entityId: id,
+        action: "delete_debt_account",
+        before: existing,
+      });
+    });
+
+    return c.json({ ok: true });
+  });
+
+  return router;
+}
+
+export function createInstallmentRoutes(db: AppDb) {
+  const router = new Hono();
+
+  router.post("/settle", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = settleSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: parsed.error.issues[0]?.message ?? "Data pelunasan tidak valid." },
+        400,
+      );
+    }
+
+    const result = await settleObligations(db, parsed.data);
+    return c.json({ ok: true, ...result });
+  });
+
+  router.post("/:id/unsettle", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "ID cicilan tidak valid." }, 400);
+
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = unsettleSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "Payload batal lunas tidak valid." }, 400);
+    }
+
+    await unsettleInstallment(db, {
+      installmentId: id,
+      removeSettlementTx: parsed.data.removeSettlementTx,
+    });
+    return c.json({ ok: true });
+  });
+
+  router.patch("/:id", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "ID cicilan tidak valid." }, 400);
+
+    const body = await c.req.json().catch(() => null);
+    const parsed = updateInstallmentSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: parsed.error.issues[0]?.message ?? "Data update tidak valid." }, 400);
+    }
+
+    const [existing] = await db.select().from(installments).where(eq(installments.id, id)).limit(1);
+    if (!existing) return c.json({ error: "Cicilan tidak ditemukan." }, 404);
+    if (existing.status === "paid") {
+      return c.json({ error: "Cicilan yang sudah lunas tidak dapat diubah nominalnya." }, 400);
+    }
+
+    const updates: Partial<typeof installments.$inferInsert> = {};
+    if (parsed.data.plannedAmount !== undefined) {
+      updates.plannedAmount = parsed.data.plannedAmount;
+      updates.principalAmount = parsed.data.plannedAmount;
+    }
+    if (parsed.data.dueDate !== undefined) {
+      updates.dueDate = parsed.data.dueDate;
+      updates.period = parsed.data.dueDate.slice(0, 7);
+    }
+
+    const [updated] = await db
+      .update(installments)
+      .set(updates)
+      .where(eq(installments.id, id))
+      .returning();
+
+    if (parsed.data.plannedAmount !== undefined && existing.accountId) {
+      const allInsts = await db
+        .select({ plannedAmount: installments.plannedAmount })
+        .from(installments)
+        .where(eq(installments.accountId, existing.accountId));
+      const newInitialBalance = allInsts.reduce((sum, r) => sum + r.plannedAmount, 0);
+      await db
+        .update(debtAccounts)
+        .set({ initialBalance: newInitialBalance })
+        .where(eq(debtAccounts.id, existing.accountId));
+    }
+
+    return c.json({ ok: true, installment: updated });
+  });
+
+  return router;
+}

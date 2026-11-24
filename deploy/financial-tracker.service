@@ -1,0 +1,21 @@
+[Unit]
+Description=Financial Tracker (Bun + Hono + SQLite)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/financial-tracker/app
+Environment=NODE_ENV=production
+Environment=PORT=3001
+Environment=DATABASE_PATH=/var/lib/financial-tracker/financial-tracker.db
+Environment=TRUST_PROXY=true
+EnvironmentFile=/etc/financial-tracker.env
+ExecStart=/usr/local/bin/bun run server/src/index.ts
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

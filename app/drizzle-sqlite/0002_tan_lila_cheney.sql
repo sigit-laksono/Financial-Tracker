@@ -1,0 +1,1 @@
+ALTER TABLE `app_settings` ADD `last_auto_sync_date` text;

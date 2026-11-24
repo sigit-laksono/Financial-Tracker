@@ -1,0 +1,3 @@
+ALTER TABLE `app_settings` ADD `session_version` integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+ALTER TABLE `app_settings` ADD `legacy_settled_before_cycle` text;--> statement-breakpoint
+UPDATE `app_settings` SET `legacy_settled_before_cycle` = '2026-10' WHERE `id` = 1 AND `legacy_settled_before_cycle` IS NULL AND EXISTS (SELECT 1 FROM `transactions` WHERE `source_ref` LIKE 'debt-cc-%' OR `source_ref` LIKE 'mm-legacy-%');

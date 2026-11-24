@@ -1,0 +1,150 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  --background: #edf0ef;
+  --card: #ffffff;
+  --surface: #f5f7f6;
+  --hero: #0f1716;
+  --hero-foreground: #ffffff;
+  --hero-muted: #a8b8b5;
+  --hero-bg: #ffffff;
+  --hero-card-foreground: #0f1716;
+  --hero-card-muted: #566361;
+  --hero-border: #dbe2df;
+  --hero-surface: #f5f7f6;
+  --hero-inner-border: #e2e8e5;
+  --border: #dbe2df;
+  --control-border: #7b8a87;
+  --foreground: #0f1716;
+  --muted-foreground: #566361;
+  --primary: #00797a;
+  --primary-foreground: #ffffff;
+  --highlight: #ff8a00;
+  --highlight-foreground: #1f1100;
+  --highlight-text: #b45309;
+  --soft: #c0ebd7;
+  --soft-foreground: #0a4a44;
+  --destructive: #a42423;
+  --destructive-foreground: #ffffff;
+  --chart-income: #009267;
+  --chart-expense: #e16c10;
+  --elevation-float: 0 10px 28px -10px rgb(15 23 22 / 0.18), 0 2px 6px rgb(15 23 22 / 0.08);
+  --font-sans: "Figtree", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #0c0b0b;
+  --card: #161918;
+  --surface: #121514;
+  --hero: #1b1f1e;
+  --hero-foreground: #ecf2f0;
+  --hero-muted: #9aa8a5;
+  --hero-bg: #121514;
+  --hero-card-foreground: #ecf2f0;
+  --hero-card-muted: #9aa8a5;
+  --hero-border: #262c2b;
+  --hero-surface: #1b2220;
+  --hero-inner-border: #262c2b;
+  --border: #262c2b;
+  --control-border: #5e6c69;
+  --foreground: #ecf2f0;
+  --muted-foreground: #9aa8a5;
+  --primary: #19a3a4;
+  --primary-foreground: #031414;
+  --highlight: #ff9a1f;
+  --highlight-foreground: #1f1100;
+  --highlight-text: #ffaa33;
+  --soft: #123f3a;
+  --soft-foreground: #c0ebd7;
+  --destructive: #f74835;
+  --destructive-foreground: #200604;
+  --chart-income: #24ab7e;
+  --chart-expense: #de7515;
+  --elevation-float: 0 14px 36px -10px rgb(0 0 0 / 0.65), 0 2px 8px rgb(0 0 0 / 0.45);
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: clip;
+  }
+
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.025em;
+  }
+
+  /* Ensure every active control signals interactivity while disabled controls signal lock. */
+  a[href],
+  button:not(:disabled),
+  summary,
+  select:not(:disabled),
+  label[for],
+  [role="button"]:not([aria-disabled="true"]),
+  [role="tab"]:not([aria-disabled="true"]),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  select:disabled,
+  input:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+
+  select {
+    height: 44px;
+    line-height: 1.25;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+}
+
+.tabular-nums {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1;
+}
+
+.safe-bottom-pad {
+  padding-bottom: calc(92px + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 1024px) {
+  .safe-bottom-pad {
+    padding-bottom: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
