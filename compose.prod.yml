@@ -1,0 +1,38 @@
+services:
+  app:
+    image: ghcr.io/sigit-laksono/financial-tracker:${IMAGE_TAG:-latest}
+    container_name: financial-tracker-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-financial_tracker}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET (min 32 chars) in .env}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      APP_VERSION: ${APP_VERSION:-0.1.0}
+    ports:
+      - "${APP_BIND_IP:-127.0.0.1}:${APP_PORT:-3001}:3001"
+
+  db:
+    image: postgres:16-alpine
+    container_name: financial-tracker-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-financial_tracker}
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-financial_tracker}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pg_data:
