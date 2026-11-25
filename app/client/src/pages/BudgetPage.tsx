@@ -341,9 +341,6 @@ export function BudgetPage({
   const { unallocated, needs, wants, savings } = data;
   const unallocatedPercent =
     baselineFund > 0 ? Math.max(0, Math.round((unallocated / baselineFund) * 100)) : 0;
-  const overAllocated = Math.abs(Math.min(0, unallocated));
-  const overAllocatedPercent =
-    baselineFund > 0 ? Math.round((overAllocated / baselineFund) * 100) : 0;
 
   const openIncomeArchiveModal = () => {
     setIncomeArchiveTab("income");
@@ -889,13 +886,6 @@ export function BudgetPage({
   const wantsShareAmt = isCurrentPeriod ? (wants.remaining ?? 0) : wants.allocated;
   const savingsShareAmt = isCurrentPeriod ? (savings.remaining ?? 0) : savings.allocated;
 
-  const bucketFilterTabs: Array<{ id: BucketFilterTab; label: string }> = [
-    { id: "all", label: "Semua" },
-    { id: "needs", label: "Kebutuhan" },
-    { id: "wants", label: "Keinginan" },
-    { id: "savings", label: "Tabungan" },
-  ];
-
   const summaryPillars: Array<{
     id: CategoryBucket;
     label: string;
@@ -904,6 +894,7 @@ export function BudgetPage({
     allocatedPercent: number;
     accentBg: string;
     accentText: string;
+    dotColor: string;
   }> = [
     {
       id: "needs",
@@ -913,6 +904,7 @@ export function BudgetPage({
       allocatedPercent: needs.allocatedPercent,
       accentBg: "bg-sky-500",
       accentText: "text-sky-700 dark:text-sky-300",
+      dotColor: "#38bdf8",
     },
     {
       id: "wants",
@@ -922,6 +914,7 @@ export function BudgetPage({
       allocatedPercent: wants.allocatedPercent,
       accentBg: "bg-amber-500",
       accentText: "text-amber-700 dark:text-amber-300",
+      dotColor: "#fb923c",
     },
     {
       id: "savings",
@@ -931,6 +924,7 @@ export function BudgetPage({
       allocatedPercent: savings.allocatedPercent,
       accentBg: "bg-emerald-500",
       accentText: "text-emerald-700 dark:text-emerald-300",
+      dotColor: "#4ade80",
     },
   ];
 
@@ -1062,86 +1056,6 @@ export function BudgetPage({
               />
             )}
           </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2.5 text-xs pt-1">
-            <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#38bdf8] shrink-0" />
-                <span className="text-[#0284c7] dark:text-[#38bdf8] font-bold">Kebutuhan:</span>
-                <span className="font-mono font-bold text-[var(--hero-card-foreground)] tabular-nums">
-                  {needs.allocatedPercent}%
-                </span>
-              </div>
-              <span className="text-[11px] text-[var(--hero-card-muted)] tabular-nums font-mono">
-                ({formatRupiah(needsShareAmt, isMasked)})
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#fb923c] shrink-0" />
-                <span className="text-[#ea580c] dark:text-[#fb923c] font-bold">Keinginan:</span>
-                <span className="font-mono font-bold text-[var(--hero-card-foreground)] tabular-nums">
-                  {wants.allocatedPercent}%
-                </span>
-              </div>
-              <span className="text-[11px] text-[var(--hero-card-muted)] tabular-nums font-mono">
-                ({formatRupiah(wantsShareAmt, isMasked)})
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#4ade80] shrink-0" />
-                <span className="text-[#16a34a] dark:text-[#4ade80] font-bold">
-                  Tabungan & Utang:
-                </span>
-                <span className="font-mono font-bold text-[var(--hero-card-foreground)] tabular-nums">
-                  {savings.allocatedPercent}%
-                </span>
-              </div>
-              <span className="text-[11px] text-[var(--hero-card-muted)] tabular-nums font-mono">
-                ({formatRupiah(savingsShareAmt, isMasked)})
-              </span>
-            </div>
-
-            {unallocated > 0 ? (
-              <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="w-2.5 h-2.5 rounded-full bg-slate-400 dark:bg-slate-500 shrink-0" />
-                  <span className="text-slate-600 dark:text-slate-300 font-bold">
-                    Belum Dialokasikan:
-                  </span>
-                  <span className="font-mono font-bold text-[var(--hero-card-foreground)] tabular-nums">
-                    {unallocatedPercent}%
-                  </span>
-                </div>
-                <span className="text-[11px] text-[var(--hero-card-muted)] tabular-nums font-mono">
-                  ({formatRupiah(unallocated, isMasked)})
-                </span>
-              </div>
-            ) : unallocated < 0 ? (
-              <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[var(--destructive)] shrink-0" />
-                  <span className="text-[var(--destructive)] font-bold">Kelebihan Alokasi:</span>
-                  <span className="font-mono font-bold text-[var(--destructive)] tabular-nums">
-                    +{overAllocatedPercent}%
-                  </span>
-                </div>
-                <span className="text-[11px] text-[var(--destructive)] tabular-nums font-mono">
-                  ({formatRupiah(overAllocated, isMasked)})
-                </span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 font-medium">
-                <span className="w-2.5 h-2.5 rounded-full bg-[var(--chart-income)] shrink-0" />
-                <span className="text-[var(--chart-income)] font-bold">
-                  Teralokasi 100% (Rp 0 Sisa)
-                </span>
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
@@ -1164,7 +1078,14 @@ export function BudgetPage({
               }`}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className={`text-xs font-extrabold ${pillar.accentText}`}>
+                <span
+                  className={`flex min-w-0 items-center gap-1.5 text-xs font-extrabold ${pillar.accentText}`}
+                >
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: pillar.dotColor }}
+                    aria-hidden="true"
+                  />
                   {pillar.label}
                 </span>
                 <span className="font-mono text-xs font-bold text-[var(--muted-foreground)] tabular-nums">
@@ -1182,47 +1103,36 @@ export function BudgetPage({
                   style={{ width: `${Math.min(100, pctUsed)}%` }}
                 />
               </div>
-              <p className="mt-1.5 text-[11px] text-[var(--muted-foreground)] tabular-nums">
-                Terpakai {formatRupiah(pillar.spent, isMasked)} ({pctUsed}%)
+              <p className="mt-1.5 flex items-baseline justify-between gap-2 text-[11px] text-[var(--muted-foreground)] tabular-nums">
+                <span>
+                  Terpakai {formatRupiah(pillar.spent, isMasked)} ({pctUsed}%)
+                </span>
+                {pillar.allocated > 0 && (
+                  <span
+                    className={`font-bold ${
+                      pillar.allocated - pillar.spent < 0
+                        ? "text-[var(--destructive)]"
+                        : "text-[var(--chart-income)]"
+                    }`}
+                  >
+                    {pillar.allocated - pillar.spent >= 0
+                      ? `Sisa ${formatRupiah(pillar.allocated - pillar.spent, isMasked)}`
+                      : `Lebih ${formatRupiah(pillar.spent - pillar.allocated, isMasked)}`}
+                  </span>
+                )}
               </p>
             </button>
           );
         })}
       </div>
 
-      {/* Tab Filter Pos (Semua | Kebutuhan | Keinginan | Tabungan) */}
-      <div className="flex flex-col gap-2 border-b border-[var(--border)] pb-3 sm:flex-row sm:items-center sm:justify-between">
-        <div
-          role="tablist"
-          aria-label="Filter kelompok anggaran"
-          className="grid grid-cols-4 gap-1 sm:flex sm:flex-wrap sm:items-center sm:gap-2"
-        >
-          {bucketFilterTabs.map((tabItem) => {
-            const isActive = activeBucketTab === tabItem.id;
-            return (
-              <button
-                key={tabItem.id}
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                onClick={() => setActiveBucketTab(tabItem.id)}
-                className={`min-h-[44px] whitespace-nowrap rounded-[12px] px-2 text-center text-xs font-bold transition-all sm:px-4 sm:text-sm ${
-                  isActive
-                    ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-sm"
-                    : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
-                }`}
-              >
-                {tabItem.label}
-              </button>
-            );
-          })}
-        </div>
-
+      {/* Filter kelompok: ketuk kartu Kebutuhan/Keinginan/Tabungan di atas (ketuk lagi untuk semua) */}
+      <div className="flex justify-end border-b border-[var(--border)] pb-3">
         <Button
           variant="secondary"
           disabled={copyPreviousMutation.isPending}
           onClick={() => copyPreviousMutation.mutate()}
-          className="min-h-[44px] text-xs px-3.5 shrink-0"
+          className="min-h-[44px] w-full text-xs px-3.5 sm:w-auto"
         >
           {copyPreviousMutation.isPending ? "Menyalin..." : "Salin dari Siklus Lalu"}
         </Button>
