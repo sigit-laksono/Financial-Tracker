@@ -339,7 +339,7 @@ describe("Auth PIN lock & session middleware", () => {
     try {
       // Unlocked initially before PIN setup
       const initialStatus = await (await app.request("/api/auth/status")).json();
-      expect(initialStatus).toEqual({ pinConfigured: false, authenticated: true });
+      expect(initialStatus).toEqual({ pinConfigured: false, authenticated: true, pinRequired: false });
 
       const setupRes = await app.request("/api/auth/setup", {
         method: "POST",

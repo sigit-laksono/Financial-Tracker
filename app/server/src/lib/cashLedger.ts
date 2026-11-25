@@ -4,6 +4,7 @@ import { categories, transactions, wallets } from "../db/schema";
 import { recordAuditLog } from "./auditService";
 import { jakartaToday } from "./dates";
 import { NotFoundError, ValidationError } from "./errors";
+import { lockLedger } from "./ledgerLock";
 
 export type TxOrDb = AppDb | Parameters<Parameters<AppDb["transaction"]>[0]>[0];
 
@@ -47,6 +48,7 @@ export async function createTransferWithOptionalFee(
     throw new ValidationError("Dompet asal dan tujuan tidak boleh sama.");
   }
   return await db.transaction(async (tx) => {
+    await lockLedger(tx);
     const [srcWallet] = await tx
       .select()
       .from(wallets)
@@ -127,6 +129,7 @@ export async function reconcileWalletBalance(
 ) {
   const txDate = input.date ?? jakartaToday();
   return await db.transaction(async (tx) => {
+    await lockLedger(tx);
     const [wallet] = await tx.select().from(wallets).where(eq(wallets.id, input.walletId)).limit(1);
     if (!wallet) throw new NotFoundError("Dompet tidak ditemukan.");
     if (wallet.type === "credit_card") {

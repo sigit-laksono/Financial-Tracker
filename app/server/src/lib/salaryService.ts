@@ -12,6 +12,7 @@ import { recordAuditLog } from "./auditService";
 import { gajianPeriodForDate, jakartaToday, periodBounds } from "./dates";
 import { closeAccountsIfFullyPaid, filterActiveInstallmentIds } from "./debtEngine";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
+import { lockLedger } from "./ledgerLock";
 import { getSettings } from "./settingsService";
 
 export async function getSalaryPreview(
@@ -181,6 +182,25 @@ export async function receiveSalaryForPeriod(
       : "Pencatatan gaji bulanan";
 
   const createdTx = await db.transaction(async (tx) => {
+    await lockLedger(tx);
+
+    // The preview was computed before the lock. Abort if a payroll installment was settled
+    // by another request in the meantime, otherwise it would be paid twice.
+    const previewInstIds = preview.payrollInstallments.map((i) => i.id);
+    if (previewInstIds.length > 0) {
+      const current = await tx
+        .select({
+          id: installments.id,
+          status: installments.status,
+          settlementTransactionId: installments.settlementTransactionId,
+        })
+        .from(installments)
+        .where(inArray(installments.id, previewInstIds));
+      const changed = current.some((row) => row.settlementTransactionId !== null);
+      if (changed || current.length !== previewInstIds.length) {
+        throw new ConflictError("Data cicilan kantor berubah. Muat ulang lalu coba lagi.");
+      }
+    }
     const [inserted] = await tx
       .insert(transactions)
       .values({

@@ -332,9 +332,10 @@ export function App() {
     );
   }
 
-  if (pinConfigured && !isAuthenticated) {
+  if (!isAuthenticated) {
     return (
       <LockScreen
+        mode={pinConfigured ? "unlock" : "setup"}
         onUnlocked={async () => {
           syncedCyclesRef.current.clear();
           await queryClient.invalidateQueries();

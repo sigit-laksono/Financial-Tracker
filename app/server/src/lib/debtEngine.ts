@@ -14,6 +14,7 @@ import { computeWalletBalance } from "./cashLedger";
 import { getCreditCardLimitStatus } from "./ccLimit";
 import { addMonthsToDate, ccCycleForDate, ccDueDateForCycle, jakartaToday, shiftMonth } from "./dates";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
+import { lockLedger } from "./ledgerLock";
 
 const ACCOUNT_COLORS = [
   "#00797a",
@@ -36,6 +37,12 @@ function slugifyKey(value: string): string {
 }
 
 type DebtEngineDb = Pick<AppDb, "select" | "update" | "insert">;
+
+function monthDiff(fromIsoDate: string, toIsoDate: string): number {
+  const [fy = 0, fm = 0] = fromIsoDate.split("-").map(Number);
+  const [ty = 0, tm = 0] = toIsoDate.split("-").map(Number);
+  return (ty - fy) * 12 + (tm - fm);
+}
 
 function allocateAmountProportionally(plannedAmounts: number[], targetTotal: number): number[] {
   if (plannedAmounts.length === 0) return [];
@@ -242,6 +249,8 @@ export async function settleObligations(
   }
 
   return await db.transaction(async (tx) => {
+    await lockLedger(tx);
+
     const [payWallet] = await tx
       .select()
       .from(wallets)
@@ -266,6 +275,9 @@ export async function settleObligations(
         ? await tx.select().from(installments).where(inArray(installments.id, ids))
         : [];
     const upcomingInstallments = targetInstallments.filter((r) => r.status === "upcoming");
+    if (ids.length > 0 && upcomingInstallments.length === 0 && !input.ccCycleKey) {
+      throw new ConflictError("Cicilan yang dipilih sudah lunas.");
+    }
 
     // Check if installments are receivables or payables
     const accountIds = [...new Set(upcomingInstallments.map((i) => i.accountId))];
@@ -483,6 +495,7 @@ export async function unsettleInstallment(
   input: { installmentId: number; removeSettlementTx?: boolean },
 ) {
   return await db.transaction(async (tx) => {
+    await lockLedger(tx);
     const [row] = await tx
       .select()
       .from(installments)
@@ -522,7 +535,12 @@ export async function unsettleInstallment(
         .where(eq(transactions.id, settlementId))
         .limit(1);
 
-      if (settlementTx) {
+      // Payroll installments are linked to the salary income transaction. Its amount is
+      // the net salary actually received, so it must never be rewritten or deleted here.
+      const isPaymentTx =
+        settlementTx?.type === "settlement" || settlementTx?.type === "debt_collection";
+
+      if (settlementTx && isPaymentTx) {
         const remainingAllocs = await tx
           .select({
             targetType: settlementAllocations.targetType,
@@ -644,6 +662,7 @@ export async function createDebtAccountWithSchedule(
   },
 ) {
   return await db.transaction(async (tx) => {
+    await lockLedger(tx);
     const existing = await tx
       .select({ id: debtAccounts.id, key: debtAccounts.key })
       .from(debtAccounts);
@@ -831,6 +850,7 @@ export async function updateDebtAccountWithSchedule(
   },
 ) {
   return await db.transaction(async (tx) => {
+    await lockLedger(tx);
     const [account] = await tx
       .select()
       .from(debtAccounts)
@@ -946,7 +966,11 @@ export async function updateDebtAccountWithSchedule(
       const effectivePeriod =
         nextKind === "card_installment" && nextCcCutoffDay !== null && !account.sourceTransactionId
           ? ccCycleForDate(effectiveDueDate, nextCcCutoffDay)
-          : effectiveDueDate.slice(0, 7);
+          : account.sourceTransactionId
+            ? // Split Pay rows store their billing cycle in `period`, not the due month.
+              // Keep it, shifting by the same number of months the due date moved.
+              shiftMonth(row.period, monthDiff(row.dueDate, effectiveDueDate))
+            : effectiveDueDate.slice(0, 7);
 
       if (
         patch ||
@@ -1024,6 +1048,7 @@ export async function earlyPayoffDebtAccount(
   },
 ) {
   return await db.transaction(async (tx) => {
+    await lockLedger(tx);
     const [account] = await tx
       .select()
       .from(debtAccounts)
@@ -1183,6 +1208,7 @@ export async function convertTransactionToInstallment(
   },
 ) {
   return await db.transaction(async (tx) => {
+    await lockLedger(tx);
     const [sourceTx] = await tx
       .select()
       .from(transactions)

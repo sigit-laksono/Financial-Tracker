@@ -12,6 +12,7 @@ import {
   invalidateAuthCache,
   isRequestAuthenticated,
   issueSessionCookie,
+  isPinRequired,
   LoginRateLimiter,
   verifyPin,
 } from "../lib/auth";
@@ -64,21 +65,6 @@ export function createAuthRoutes(
 
   router.post("/login", async (c) => {
     const key = `login:${clientRateKey(c)}`;
-    const globalLimit = limiter.checkGlobal();
-    if (!globalLimit.allowed) {
-      return c.json(
-        { error: `Terlalu banyak percobaan. Coba lagi dalam ${globalLimit.retryAfterSeconds} detik.` },
-        429,
-      );
-    }
-    const limit = limiter.check(key);
-    if (!limit.allowed) {
-      return c.json(
-        { error: `Terlalu banyak percobaan. Coba lagi dalam ${limit.retryAfterSeconds} detik.` },
-        429,
-      );
-    }
-
     const body = await c.req.json().catch(() => null);
     const parsed = pinSchema.safeParse(body);
     if (!parsed.success) {
@@ -87,16 +73,33 @@ export function createAuthRoutes(
 
     const settings = await getSettings(db);
     if (!settings.pinHash) {
+      if (isPinRequired()) {
+        return c.json(
+          { error: "PIN belum diatur. Buat PIN terlebih dahulu.", code: "PIN_SETUP_REQUIRED" },
+          409,
+        );
+      }
       return c.json({ ok: true, pinConfigured: false, authenticated: true });
     }
 
-    const valid = await verifyPin(parsed.data.pin, settings.pinHash);
+    const limit = limiter.tryAcquire(key);
+    if (!limit.allowed) {
+      return c.json(
+        { error: `Terlalu banyak percobaan. Coba lagi dalam ${limit.retryAfterSeconds} detik.` },
+        429,
+      );
+    }
+
+    let valid = false;
+    try {
+      valid = await verifyPin(parsed.data.pin, settings.pinHash);
+    } finally {
+      limiter.release(key, valid ? "success" : "failure");
+    }
     if (!valid) {
-      limiter.recordFailure(key);
       return c.json({ error: "PIN atau kata sandi salah." }, 401);
     }
 
-    limiter.reset(key);
     await runDailyLedgerSync(db);
     issueSessionCookie(c, secret, settings.sessionVersion);
     return c.json({ ok: true, pinConfigured: true, authenticated: true });
@@ -142,14 +145,7 @@ export function createAuthRoutes(
     const key = `change-pin:${clientRateKey(c)}`;
     const settings = await getSettings(db);
     if (settings.pinHash) {
-      const globalLimit = limiter.checkGlobal();
-      if (!globalLimit.allowed) {
-        return c.json(
-          { error: `Terlalu banyak percobaan. Coba lagi dalam ${globalLimit.retryAfterSeconds} detik.` },
-          429,
-        );
-      }
-      const limit = limiter.check(key);
+      const limit = limiter.tryAcquire(key);
       if (!limit.allowed) {
         return c.json(
           { error: `Terlalu banyak percobaan. Coba lagi dalam ${limit.retryAfterSeconds} detik.` },
@@ -158,19 +154,26 @@ export function createAuthRoutes(
       }
 
       const current = parsed.data.currentPin?.trim() ?? "";
+      let ok = false;
+      try {
+        ok = current.length > 0 && (await verifyPin(current, settings.pinHash));
+      } finally {
+        // An empty current PIN is a form mistake, not a guess; do not count it as a failure.
+        limiter.release(key, ok ? "success" : current.length === 0 ? "neutral" : "failure");
+      }
       if (!current) {
         return c.json({ error: "Masukkan PIN saat ini untuk konfirmasi." }, 400);
       }
-      const ok = await verifyPin(current, settings.pinHash);
       if (!ok) {
-        limiter.recordFailure(key);
         return c.json({ error: "PIN saat ini tidak sesuai." }, 401);
       }
-      limiter.reset(key);
     }
 
     const nextPin = parsed.data.newPin?.trim() ?? "";
     if (nextPin.length === 0) {
+      if (isPinRequired()) {
+        return c.json({ error: "Kunci PIN wajib aktif di server produksi dan tidak dapat dimatikan." }, 400);
+      }
       await db
         .update(appSettings)
         .set({

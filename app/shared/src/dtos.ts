@@ -17,6 +17,8 @@ import type {
 export type AuthStatus = {
   pinConfigured: boolean;
   authenticated: boolean;
+  /** True when the server refuses to run without a PIN (production default). */
+  pinRequired?: boolean;
 };
 
 export type SettingsDto = {

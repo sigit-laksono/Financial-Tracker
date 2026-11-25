@@ -2,7 +2,12 @@ import { sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { secureHeaders } from "hono/secure-headers";
 import type { AppDb } from "./db";
-import { createAuthMiddleware, getSessionSecret, type LoginRateLimiter } from "./lib/auth";
+import {
+  createAuthMiddleware,
+  createCsrfGuard,
+  getSessionSecret,
+  type LoginRateLimiter,
+} from "./lib/auth";
 import { DomainError } from "./lib/errors";
 import { createAssetRoutes } from "./routes/assets";
 import { createAuthRoutes } from "./routes/auth";
@@ -92,6 +97,7 @@ export function createApp(
     }
   });
 
+  app.use("/api/*", createCsrfGuard());
   app.use("/api/*", createAuthMiddleware(db, secret));
 
   app.route("/api/auth", createAuthRoutes(db, { secret, rateLimiter: options.rateLimiter }));

@@ -26,6 +26,7 @@ import { getCreditCardLimitStatus } from "../lib/ccLimit";
 import { ccCycleForDate, periodBounds } from "../lib/dates";
 import { reopenDebtAccountsIfNeeded } from "../lib/debtEngine";
 import { ConflictError, NotFoundError, ValidationError } from "../lib/errors";
+import { lockLedger } from "../lib/ledgerLock";
 import {
   convertTransactionToInstallment,
   createTransferWithOptionalFee,
@@ -450,6 +451,7 @@ export function createTransactionRoutes(db: AppDb) {
       wallet.type === "credit_card" ? ccCycleForDate(parsed.data.transactionDate, cutoff) : null;
 
     const insertedId = await db.transaction(async (tx) => {
+      await lockLedger(tx);
       if (parsed.data.type === "expense" && wallet.type === "credit_card") {
         const limitStatus = await getCreditCardLimitStatus(tx, wallet.id);
         if (parsed.data.amount > limitStatus.availableLimit) {
@@ -579,6 +581,7 @@ export function createTransactionRoutes(db: AppDb) {
         parsed.data.note !== undefined ? parsed.data.note?.trim() || null : existing.note;
 
       await db.transaction(async (tx) => {
+        await lockLedger(tx);
         const needsNewGroupId =
           !existing.transferGroupId &&
           parsed.data.adminFee !== undefined &&
@@ -810,6 +813,7 @@ export function createTransactionRoutes(db: AppDb) {
         : null;
 
     await db.transaction(async (tx) => {
+      await lockLedger(tx);
       if (nextType === "expense" && wallet.type === "credit_card" && !existing.isConvertedToInstallment && ccCycleKey) {
         const limitStatus = await getCreditCardLimitStatus(tx, wallet.id);
         const oldCycle =
@@ -951,6 +955,7 @@ export function createTransactionRoutes(db: AppDb) {
       return c.json({ error: "ID transaksi tidak valid." }, 400);
 
     await db.transaction(async (tx) => {
+      await lockLedger(tx);
       const [existing] = await tx
         .select()
         .from(transactions)

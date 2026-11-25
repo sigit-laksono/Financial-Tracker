@@ -3,28 +3,67 @@ import { api, ApiError } from "../lib/api";
 import { AlertIcon, LockIcon } from "./Icons";
 import { Button, Card } from "./UI";
 
-export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
+const MIN_PIN_LENGTH = 4;
+
+export function LockScreen({
+  mode = "unlock",
+  onUnlocked,
+}: {
+  /** "setup" is shown when the server requires a PIN but none has been created yet. */
+  mode?: "unlock" | "setup";
+  onUnlocked: () => void;
+}) {
+  const isSetup = mode === "setup";
   const [pin, setPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!pin.trim()) {
-      setError("Masukkan PIN atau kata sandi untuk membuka aplikasi.");
+    const trimmed = pin.trim();
+    if (!trimmed) {
+      setError(
+        isSetup
+          ? "Buat PIN atau kata sandi untuk mengamankan aplikasi."
+          : "Masukkan PIN atau kata sandi untuk membuka aplikasi.",
+      );
       return;
+    }
+    if (isSetup) {
+      if (trimmed.length < MIN_PIN_LENGTH) {
+        setError(`PIN minimal ${MIN_PIN_LENGTH} karakter.`);
+        return;
+      }
+      if (trimmed !== confirmPin.trim()) {
+        setError("Konfirmasi PIN tidak sama.");
+        return;
+      }
     }
     setBusy(true);
     setError("");
     try {
-      await api.login(pin);
+      if (isSetup) {
+        await api.setupPin(trimmed);
+      } else {
+        await api.login(trimmed);
+      }
       onUnlocked();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Gagal memverifikasi PIN.");
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : isSetup
+            ? "Gagal menyimpan PIN."
+            : "Gagal memverifikasi PIN.",
+      );
     } finally {
       setBusy(false);
     }
   };
+
+  const inputClass =
+    "min-h-[44px] w-full rounded-[10px] border border-[var(--control-border)] bg-[var(--card)] px-3.5 text-base text-[var(--foreground)]";
 
   return (
     <main className="flex min-h-[100dvh] items-center justify-center bg-[var(--background)] px-4 py-8">
@@ -36,7 +75,9 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
           <div>
             <h1 className="text-xl font-bold text-[var(--foreground)]">Financial Tracker</h1>
             <p className="text-sm text-[var(--muted-foreground)]">
-              Masukkan PIN pemilik untuk membuka
+              {isSetup
+                ? "Buat PIN pemilik sebelum mulai memakai aplikasi"
+                : "Masukkan PIN pemilik untuk membuka"}
             </p>
           </div>
         </div>
@@ -47,18 +88,38 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
               htmlFor="unlock-pin"
               className="block text-sm font-semibold text-[var(--foreground)]"
             >
-              PIN / Kata Sandi
+              {isSetup ? "PIN / Kata Sandi Baru" : "PIN / Kata Sandi"}
             </label>
             <input
               id="unlock-pin"
               type="password"
-              autoComplete="current-password"
+              autoComplete={isSetup ? "new-password" : "current-password"}
               value={pin}
               onChange={(e) => setPin(e.target.value)}
-              placeholder="Masukkan PIN"
-              className="min-h-[44px] w-full rounded-[10px] border border-[var(--control-border)] bg-[var(--card)] px-3.5 text-base text-[var(--foreground)]"
+              placeholder={isSetup ? `Minimal ${MIN_PIN_LENGTH} karakter` : "Masukkan PIN"}
+              className={inputClass}
             />
           </div>
+
+          {isSetup && (
+            <div className="space-y-1.5">
+              <label
+                htmlFor="unlock-pin-confirm"
+                className="block text-sm font-semibold text-[var(--foreground)]"
+              >
+                Ulangi PIN
+              </label>
+              <input
+                id="unlock-pin-confirm"
+                type="password"
+                autoComplete="new-password"
+                value={confirmPin}
+                onChange={(e) => setConfirmPin(e.target.value)}
+                placeholder="Ketik ulang PIN"
+                className={inputClass}
+              />
+            </div>
+          )}
 
           {error && (
             <div
@@ -71,7 +132,13 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
           )}
 
           <Button type="submit" disabled={busy} className="w-full">
-            {busy ? "Memeriksa..." : "Buka Aplikasi"}
+            {busy
+              ? isSetup
+                ? "Menyimpan..."
+                : "Memeriksa..."
+              : isSetup
+                ? "Simpan PIN & Buka"
+                : "Buka Aplikasi"}
           </Button>
         </form>
       </Card>

@@ -11,6 +11,8 @@ import { categories, goals, transactions, transactionSplits, wallets } from "../
 import { recordAuditLog } from "../lib/auditService";
 import { addDaysToDate, jakartaToday } from "../lib/dates";
 import { computeLedgerSnapshot, computeWalletBalance } from "../lib/ledger";
+import { ValidationError } from "../lib/errors";
+import { lockLedger } from "../lib/ledgerLock";
 
 async function validateGoalWallet(db: AppDb, walletId: number | null | undefined) {
   if (walletId == null) return null;
@@ -277,18 +279,6 @@ export function createGoalRoutes(db: AppDb) {
       return c.json({ error: "Dompet tujuan target tabungan tidak boleh berupa kartu kredit." }, 400);
     }
 
-    if (parsed.data.preventOverdraft) {
-      const curBalance = await computeWalletBalance(db, wallet.id, wallet.openingBalance);
-      if (curBalance < parsed.data.amount) {
-        return c.json(
-          {
-            error: `Saldo dompet ${wallet.name} tidak mencukupi untuk setoran tabungan (Saldo: Rp${curBalance.toLocaleString("id-ID")}, Setoran: Rp${parsed.data.amount.toLocaleString("id-ID")}).`,
-          },
-          400,
-        );
-      }
-    }
-
     const hasTargetWallet = Boolean(targetWallet && targetWallet.id !== wallet.id);
     const txDate = parsed.data.date ?? jakartaToday();
     const amount = parsed.data.amount;
@@ -302,6 +292,17 @@ export function createGoalRoutes(db: AppDb) {
       : [null];
 
     const result = await db.transaction(async (tx) => {
+      await lockLedger(tx);
+
+      if (parsed.data.preventOverdraft) {
+        const curBalance = await computeWalletBalance(tx, wallet.id, wallet.openingBalance);
+        if (curBalance < amount) {
+          throw new ValidationError(
+            `Saldo dompet ${wallet.name} tidak mencukupi untuk setoran tabungan (Saldo: Rp${curBalance.toLocaleString("id-ID")}, Setoran: Rp${amount.toLocaleString("id-ID")}).`,
+          );
+        }
+      }
+
       let transactionId: number | null = null;
 
       if (hasTargetWallet) {

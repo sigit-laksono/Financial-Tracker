@@ -21,6 +21,7 @@ import { recordAuditLog } from "../lib/auditService";
 import { getCreditCardLimitStatus } from "../lib/ccLimit";
 import { ccCycleForDate } from "../lib/dates";
 import { NotFoundError, ValidationError } from "../lib/errors";
+import { lockLedger } from "../lib/ledgerLock";
 import {
   buildDebtsData,
   createDebtAccountWithSchedule,
@@ -252,6 +253,7 @@ export function createInstallmentRoutes(db: AppDb) {
     }
 
     const updated = await db.transaction(async (tx) => {
+      await lockLedger(tx);
       const [existing] = await tx.select().from(installments).where(eq(installments.id, id)).limit(1);
       if (!existing) throw new NotFoundError("Cicilan tidak ditemukan.");
       if (existing.status === "paid") {

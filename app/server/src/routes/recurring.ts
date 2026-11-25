@@ -11,6 +11,7 @@ import { recordAuditLog } from "../lib/auditService";
 import { getCreditCardLimitStatus } from "../lib/ccLimit";
 import { ccCycleForDate, jakartaToday, periodForDate } from "../lib/dates";
 import { ValidationError } from "../lib/errors";
+import { lockLedger } from "../lib/ledgerLock";
 import { getSettings } from "../lib/settingsService";
 
 export function createRecurringRoutes(db: AppDb) {
@@ -250,6 +251,7 @@ export function createRecurringRoutes(db: AppDb) {
         : null;
 
     const result = await db.transaction(async (tx) => {
+      await lockLedger(tx);
       const [existingTx] = await tx
         .select({ id: transactions.id })
         .from(transactions)

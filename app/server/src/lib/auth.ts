@@ -10,6 +10,8 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const RATE_LIMIT_MAX_ATTEMPTS = 5;
 const RATE_LIMIT_GLOBAL_MAX_ATTEMPTS = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_LOCKOUT_MS = 60 * 60_000;
+const RATE_LIMIT_FORGET_MS = 24 * 60 * 60_000;
 const DEV_FALLBACK_SECRET = "dev-local-financial-tracker-secret-key";
 const KNOWN_PLACEHOLDER_SECRETS = new Set([
   DEV_FALLBACK_SECRET,
@@ -18,61 +20,91 @@ const KNOWN_PLACEHOLDER_SECRETS = new Set([
   "replace-with-at-least-32-random-characters",
 ]);
 
+interface RateLimitEntry {
+  /** Failures recorded in the current window. */
+  count: number;
+  /** Attempts that passed the check and are still being verified (bcrypt is async). */
+  inFlight: number;
+  windowEndsAt: number;
+  blockedUntil: number;
+  /** Consecutive lockouts; each one doubles the next lockout duration. */
+  lockouts: number;
+  forgetAt: number;
+}
+
+type RateLimitResult = { allowed: boolean; retryAfterSeconds: number };
+
+function newRateLimitEntry(now: number): RateLimitEntry {
+  return {
+    count: 0,
+    inFlight: 0,
+    windowEndsAt: now + RATE_LIMIT_WINDOW_MS,
+    blockedUntil: 0,
+    lockouts: 0,
+    forgetAt: now + RATE_LIMIT_FORGET_MS,
+  };
+}
+
+function evaluateEntry(entry: RateLimitEntry | null, max: number, now: number): RateLimitResult {
+  if (!entry) return { allowed: true, retryAfterSeconds: 0 };
+  if (now < entry.blockedUntil) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((entry.blockedUntil - now) / 1000)),
+    };
+  }
+  const failures = now >= entry.windowEndsAt ? 0 : entry.count;
+  if (failures + entry.inFlight >= max) {
+    // Too many attempts are already being verified concurrently; ask the client to retry.
+    return { allowed: false, retryAfterSeconds: 1 };
+  }
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
+function bumpFailure(entry: RateLimitEntry, max: number, now: number): void {
+  // Already locked out: late failures from in-flight attempts must not stack extra lockouts.
+  if (now < entry.blockedUntil) return;
+  if (now >= entry.forgetAt) entry.lockouts = 0;
+  if (now >= entry.windowEndsAt) {
+    entry.count = 0;
+    entry.windowEndsAt = now + RATE_LIMIT_WINDOW_MS;
+  }
+  entry.count += 1;
+  entry.forgetAt = now + RATE_LIMIT_FORGET_MS;
+  if (entry.count >= max) {
+    entry.lockouts += 1;
+    const lockMs = Math.min(
+      RATE_LIMIT_WINDOW_MS * 2 ** (entry.lockouts - 1),
+      RATE_LIMIT_MAX_LOCKOUT_MS,
+    );
+    entry.blockedUntil = now + lockMs;
+    entry.count = 0;
+    entry.windowEndsAt = entry.blockedUntil;
+  }
+}
+
+/**
+ * Brute-force guard for PIN checks. Use `tryAcquire` before verifying a PIN and `release`
+ * afterwards: attempts still in flight count against the limit, so parallel requests cannot
+ * all slip past the check while bcrypt runs. Repeated lockouts double in length (capped).
+ */
 export class LoginRateLimiter {
   static readonly MAX_ENTRIES = 1000;
-  private attempts = new Map<string, { count: number; resetAt: number }>();
-  private globalEntry: { count: number; resetAt: number } | null = null;
+  private attempts = new Map<string, RateLimitEntry>();
+  private globalEntry: RateLimitEntry | null = null;
 
   private prune(now: number): void {
     for (const [key, entry] of this.attempts.entries()) {
-      if (now >= entry.resetAt) {
+      if (entry.inFlight === 0 && now >= entry.forgetAt && now >= entry.blockedUntil) {
         this.attempts.delete(key);
       }
     }
   }
 
-  checkGlobal(now = Date.now()): { allowed: boolean; retryAfterSeconds: number } {
-    if (!this.globalEntry || now >= this.globalEntry.resetAt) {
-      this.globalEntry = null;
-      return { allowed: true, retryAfterSeconds: 0 };
-    }
-    if (this.globalEntry.count >= RATE_LIMIT_GLOBAL_MAX_ATTEMPTS) {
-      return {
-        allowed: false,
-        retryAfterSeconds: Math.max(1, Math.ceil((this.globalEntry.resetAt - now) / 1000)),
-      };
-    }
-    return { allowed: true, retryAfterSeconds: 0 };
-  }
-
-  check(key: string, now = Date.now()): { allowed: boolean; retryAfterSeconds: number } {
-    const globalCheck = this.checkGlobal(now);
-    if (!globalCheck.allowed) {
-      return globalCheck;
-    }
-
-    const entry = this.attempts.get(key);
-    if (!entry || now >= entry.resetAt) {
-      if (entry) this.attempts.delete(key);
-      return { allowed: true, retryAfterSeconds: 0 };
-    }
-    if (entry.count >= RATE_LIMIT_MAX_ATTEMPTS) {
-      return {
-        allowed: false,
-        retryAfterSeconds: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)),
-      };
-    }
-    return { allowed: true, retryAfterSeconds: 0 };
-  }
-
-  recordFailure(key: string, now = Date.now()): void {
-    if (!this.globalEntry || now >= this.globalEntry.resetAt) {
-      this.globalEntry = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
-    } else {
-      this.globalEntry.count += 1;
-    }
-
-    if (!this.attempts.has(key) && this.attempts.size >= LoginRateLimiter.MAX_ENTRIES) {
+  private entryFor(key: string, now: number): RateLimitEntry {
+    let entry = this.attempts.get(key);
+    if (entry) return entry;
+    if (this.attempts.size >= LoginRateLimiter.MAX_ENTRIES) {
       this.prune(now);
       while (this.attempts.size >= LoginRateLimiter.MAX_ENTRIES) {
         const oldestKey = this.attempts.keys().next().value;
@@ -80,13 +112,53 @@ export class LoginRateLimiter {
         this.attempts.delete(oldestKey);
       }
     }
+    entry = newRateLimitEntry(now);
+    this.attempts.set(key, entry);
+    return entry;
+  }
 
+  private globalFor(now: number): RateLimitEntry {
+    if (!this.globalEntry) this.globalEntry = newRateLimitEntry(now);
+    return this.globalEntry;
+  }
+
+  checkGlobal(now = Date.now()): RateLimitResult {
+    return evaluateEntry(this.globalEntry, RATE_LIMIT_GLOBAL_MAX_ATTEMPTS, now);
+  }
+
+  check(key: string, now = Date.now()): RateLimitResult {
+    const globalCheck = this.checkGlobal(now);
+    if (!globalCheck.allowed) return globalCheck;
+    return evaluateEntry(this.attempts.get(key) ?? null, RATE_LIMIT_MAX_ATTEMPTS, now);
+  }
+
+  /** Checks the limit and, if allowed, reserves an in-flight attempt. Synchronous on purpose. */
+  tryAcquire(key: string, now = Date.now()): RateLimitResult {
+    const result = this.check(key, now);
+    if (!result.allowed) return result;
+    this.entryFor(key, now).inFlight += 1;
+    this.globalFor(now).inFlight += 1;
+    return result;
+  }
+
+  /**
+   * Ends a reservation from `tryAcquire`. "failure" records a wrong PIN, "success" clears the
+   * key's history, "neutral" (e.g. malformed input) only frees the reservation.
+   */
+  release(key: string, outcome: "success" | "failure" | "neutral", now = Date.now()): void {
     const entry = this.attempts.get(key);
-    if (!entry || now >= entry.resetAt) {
-      this.attempts.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-      return;
+    if (entry && entry.inFlight > 0) entry.inFlight -= 1;
+    if (this.globalEntry && this.globalEntry.inFlight > 0) this.globalEntry.inFlight -= 1;
+    if (outcome === "failure") {
+      this.recordFailure(key, now);
+    } else if (outcome === "success" && entry && entry.inFlight === 0) {
+      this.attempts.delete(key);
     }
-    entry.count += 1;
+  }
+
+  recordFailure(key: string, now = Date.now()): void {
+    bumpFailure(this.globalFor(now), RATE_LIMIT_GLOBAL_MAX_ATTEMPTS, now);
+    bumpFailure(this.entryFor(key, now), RATE_LIMIT_MAX_ATTEMPTS, now);
   }
 
   reset(key: string): void {
@@ -240,19 +312,58 @@ export async function getAuthSettings(
   return { pinHash, sessionVersion };
 }
 
+/**
+ * In production a PIN is mandatory: until one is set, the data API stays locked and only the
+ * PIN setup endpoint is reachable. Set ALLOW_NO_PIN=true to restore the optional-PIN mode
+ * (only safe when the app is not reachable from the internet).
+ */
+export function isPinRequired(): boolean {
+  return process.env.NODE_ENV === "production" && process.env.ALLOW_NO_PIN !== "true";
+}
+
 export async function isRequestAuthenticated(
   c: Context,
   db: AppDb,
   secret = getSessionSecret(),
-): Promise<{ pinConfigured: boolean; authenticated: boolean }> {
+): Promise<{ pinConfigured: boolean; authenticated: boolean; pinRequired: boolean }> {
   const { pinHash, sessionVersion } = await getAuthSettings(db);
+  const pinRequired = isPinRequired();
   if (!pinHash) {
-    return { pinConfigured: false, authenticated: true };
+    return { pinConfigured: false, authenticated: !pinRequired, pinRequired };
   }
   const cookie = getCookie(c, SESSION_COOKIE_NAME);
   return {
     pinConfigured: true,
     authenticated: verifySessionToken(cookie, secret, sessionVersion),
+    pinRequired,
+  };
+}
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const FORM_CONTENT_TYPES = ["application/x-www-form-urlencoded", "multipart/form-data", "text/plain"];
+
+/**
+ * Blocks cross-site state-changing requests. The API only accepts JSON from its own pages, so
+ * a request flagged cross-site by the browser, or one using a content type an HTML form can
+ * send without a CORS preflight, is rejected before it reaches any route.
+ */
+export function createCsrfGuard(): MiddlewareHandler {
+  return async (c, next) => {
+    if (SAFE_METHODS.has(c.req.method)) return next();
+
+    const fetchSite = c.req.header("sec-fetch-site");
+    if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+      return c.json({ error: "Permintaan lintas situs ditolak.", code: "CSRF_REJECTED" }, 403);
+    }
+
+    const contentType = (c.req.header("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+    if (FORM_CONTENT_TYPES.includes(contentType)) {
+      return c.json(
+        { error: "Content-Type harus application/json.", code: "UNSUPPORTED_MEDIA_TYPE" },
+        415,
+      );
+    }
+    return next();
   };
 }
 
@@ -269,6 +380,12 @@ export function createAuthMiddleware(db: AppDb, secret = getSessionSecret()): Mi
     }
     const status = await isRequestAuthenticated(c, db, secret);
     if (!status.authenticated) {
+      if (!status.pinConfigured) {
+        return c.json(
+          { error: "Buat PIN terlebih dahulu untuk membuka aplikasi.", code: "PIN_SETUP_REQUIRED" },
+          401,
+        );
+      }
       return c.json({ error: "Sesi terkunci. Masukkan PIN untuk melanjutkan." }, 401);
     }
     return next();
