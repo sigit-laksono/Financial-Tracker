@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import { debtAccounts, installments, transactions, wallets } from "../db/schema";
 import { LoginRateLimiter } from "../lib/auth";
+import { buildDebtsData } from "../lib/dashboardQuery";
 import { computeLedgerSnapshot } from "../lib/ledger";
 import { receiveSalaryForPeriod } from "../lib/salaryService";
 import { setupTestContext } from "./testHelper";
@@ -282,6 +283,175 @@ describe("Regression: PIN rate limiting under parallel requests", () => {
     limiter.release(key, "success", now);
     failFive();
     expect(limiter.check(key, now).retryAfterSeconds).toBe(60);
+  });
+});
+
+describe("Regression: debt totals are summed per account and match auto-close", () => {
+  async function seedLoan(
+    db: Awaited<ReturnType<typeof setupTestContext>>["db"],
+    opts: { key: string; initialBalance: number; count: number; amount: number; paidCount: number },
+  ) {
+    const [acc] = await db
+      .insert(debtAccounts)
+      .values({
+        key: opts.key,
+        name: opts.key,
+        lender: "Bank",
+        kind: "loan",
+        direction: "payable",
+        initialBalance: opts.initialBalance,
+        paymentMethod: "Transfer",
+        color: "#00797a",
+      })
+      .returning();
+    await db.insert(installments).values(
+      Array.from({ length: opts.count }, (_, i) => {
+        const month = String((i % 12) + 1).padStart(2, "0");
+        const year = 2027 + Math.floor(i / 12);
+        const paid = i < opts.paidCount;
+        return {
+          accountId: acc!.id,
+          period: `${year}-${month}`,
+          dueDate: `${year}-${month}-10`,
+          plannedAmount: opts.amount,
+          status: paid ? ("paid" as const) : ("upcoming" as const),
+          actualAmount: paid ? opts.amount : null,
+          paidAt: paid ? new Date("2026-10-01T00:00:00.000Z") : null,
+        };
+      }),
+    );
+    return acc!;
+  }
+
+  it("an overpaid account does not hide another account's debt", async () => {
+    const { db, cleanup } = await setupTestContext();
+    try {
+      // 10jt loan scheduled as 12 x 1jt (interest folded in), fully paid.
+      const a = await seedLoan(db, { key: "loan-a", initialBalance: 10_000_000, count: 12, amount: 1_000_000, paidCount: 12 });
+      // 5jt loan, nothing paid yet.
+      await seedLoan(db, { key: "loan-b", initialBalance: 5_000_000, count: 5, amount: 1_000_000, paidCount: 0 });
+      await db.update(debtAccounts).set({ closedAt: new Date("2026-10-01T00:00:00.000Z") }).where(eq(debtAccounts.id, a.id));
+
+      const data = await buildDebtsData(db, "2026-10-15");
+      expect(data.totals.remainingDebt).toBe(5_000_000);
+      expect(data.totals.loanRemaining).toBe(5_000_000);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("an open account with payments still due never shows 0 remaining", async () => {
+    const { db, cleanup } = await setupTestContext();
+    try {
+      const a = await seedLoan(db, { key: "loan-a", initialBalance: 10_000_000, count: 12, amount: 1_000_000, paidCount: 10 });
+      const data = await buildDebtsData(db, "2026-10-15");
+      const acc = data.accounts.find((x) => x.id === a.id)!;
+      expect(acc.closedAt).toBeNull();
+      // 10 of 12 equal payments made -> 2/12 of the 10jt principal remains.
+      expect(acc.remainingBalance).toBe(1_666_667);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("a closed account settled at a discount counts as 0 remaining", async () => {
+    const { db, app, cleanup } = await setupTestContext();
+    try {
+      const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+      const a = await seedLoan(db, { key: "loan-a", initialBalance: 3_000_000, count: 3, amount: 1_000_000, paidCount: 0 });
+      const payoff = await app.request(`/api/debts/${a.id}/payoff`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ fromWalletId: bni!.id, paymentDate: "2026-10-15", customAmount: 2_500_000 }),
+      });
+      expect(payoff.status).toBe(200);
+      const data = await buildDebtsData(db, "2026-10-15");
+      expect(data.totals.remainingDebt).toBe(0);
+      expect(data.accounts.find((x) => x.id === a.id)!.remainingBalance).toBe(0);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("Regression: installments cannot be marked paid in a way that breaks the account", () => {
+  it("rejects a custom amount below the installment total", async () => {
+    const { db, app, cleanup } = await setupTestContext();
+    try {
+      const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+      const createRes = await app.request("/api/debts", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: "Pinjaman",
+          lender: "Teman",
+          kind: "loan",
+          initialBalance: 2_000_000,
+          installmentCount: 2,
+          installmentAmount: 1_000_000,
+          firstDueDate: "2026-10-15",
+          paymentMethod: "Transfer",
+        }),
+      });
+      const { accountId } = (await createRes.json()) as { accountId: number };
+      const [inst] = await db.select().from(installments).where(eq(installments.accountId, accountId));
+
+      const res = await app.request("/api/installments/settle", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          installmentIds: [inst!.id],
+          fromWalletId: bni!.id,
+          paymentDate: "2026-10-15",
+          customAmount: 500_000,
+        }),
+      });
+      expect(res.status).toBe(400);
+      const [after] = await db.select().from(installments).where(eq(installments.id, inst!.id));
+      expect(after!.status).toBe("upcoming");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("rejects marking a payroll installment paid without a transaction", async () => {
+    const { db, app, cleanup } = await setupTestContext();
+    try {
+      const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+      const [acc] = await db
+        .insert(debtAccounts)
+        .values({
+          key: "kasbon",
+          name: "Kasbon",
+          lender: "Kantor",
+          kind: "payroll",
+          direction: "payable",
+          initialBalance: 1_000_000,
+          paymentMethod: "Potong Gaji",
+          color: "#00797a",
+        })
+        .returning();
+      const [inst] = await db
+        .insert(installments)
+        .values({ accountId: acc!.id, period: "2026-11", dueDate: "2026-11-25", plannedAmount: 1_000_000, status: "upcoming" })
+        .returning();
+
+      const res = await app.request("/api/installments/settle", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          installmentIds: [inst!.id],
+          fromWalletId: bni!.id,
+          paymentDate: "2026-11-01",
+          recordSettlementTx: false,
+        }),
+      });
+      expect(res.status).toBe(400);
+      const [after] = await db.select().from(installments).where(eq(installments.id, inst!.id));
+      expect(after!.status).toBe("upcoming");
+    } finally {
+      await cleanup();
+    }
   });
 });
 

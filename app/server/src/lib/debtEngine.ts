@@ -12,6 +12,7 @@ import {
 import { recordAuditLog } from "./auditService";
 import { computeWalletBalance } from "./cashLedger";
 import { getCreditCardLimitStatus } from "./ccLimit";
+import { debtTargetObligation, remainingPrincipal } from "./debtTarget";
 import { addMonthsToDate, ccCycleForDate, ccDueDateForCycle, jakartaToday, shiftMonth } from "./dates";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
 import { lockLedger } from "./ledgerLock";
@@ -106,7 +107,7 @@ export async function closeAccountsIfFullyPaid(
       0,
     );
     const totalPlanned = accountRows.reduce((sum, item) => sum + item.plannedAmount, 0);
-    const targetObligation = Math.max(account.initialBalance, totalPlanned);
+    const targetObligation = debtTargetObligation(account.initialBalance, totalPlanned);
     if (paidAmount >= targetObligation) {
       const closedAt = options.resolveClosedAt(paidRows);
       await db
@@ -153,7 +154,7 @@ export async function reopenDebtAccountsIfNeeded(
       .filter((item) => item.status === "paid")
       .reduce((sum, item) => sum + (item.actualAmount ?? item.plannedAmount), 0);
     const totalPlanned = accountRows.reduce((sum, item) => sum + item.plannedAmount, 0);
-    const targetObligation = Math.max(account.initialBalance, totalPlanned);
+    const targetObligation = debtTargetObligation(account.initialBalance, totalPlanned);
     if (targetObligation - paidAmount > 0) {
       await db
         .update(debtAccounts)
@@ -215,7 +216,7 @@ export function filterActiveInstallmentIds(
       .filter((item) => item.accountId === account.id)
       .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id - b.id);
     const totalPlanned = rows.reduce((sum, item) => sum + item.plannedAmount, 0);
-    const targetObligation = Math.max(account.initialBalance, totalPlanned);
+    const targetObligation = debtTargetObligation(account.initialBalance, totalPlanned);
     let runningPaid = 0;
     for (const row of rows) {
       if (runningPaid >= targetObligation) break;
@@ -348,10 +349,30 @@ export async function settleObligations(
     }
 
     const installmentsSum = upcomingInstallments.reduce((sum, r) => sum + r.plannedAmount, 0);
+    const fullAmount = installmentsSum + remainingCcDaily;
+    // Partial payment is fine for a plain card bill, but an installment is either paid in full
+    // or not at all: marking it "paid" with less money would leave the account open forever.
+    // Paying off early at a discount goes through earlyPayoffDebtAccount, which closes it.
+    if (
+      upcomingInstallments.length > 0 &&
+      input.customAmount &&
+      input.customAmount > 0 &&
+      input.customAmount < fullAmount
+    ) {
+      throw new ValidationError(
+        `Nominal pembayaran (Rp${input.customAmount.toLocaleString("id-ID")}) kurang dari total cicilan dan tagihan (Rp${fullAmount.toLocaleString("id-ID")}). Untuk pelunasan dengan potongan, gunakan Pelunasan Dipercepat.`,
+      );
+    }
+    // A payroll installment marked paid without a transaction looks exactly like one the payday
+    // sync auto-paid, so the next salary would deduct it again. Payroll rows are settled by
+    // receiving salary (or with a recorded payment), never silently.
+    if (!recordTx && relatedAccounts.some((a) => a.kind === "payroll")) {
+      throw new ValidationError(
+        "Cicilan potong gaji harus dicatat bersama transaksi pembayaran atau lewat Terima Gaji.",
+      );
+    }
     const totalAmount =
-      input.customAmount && input.customAmount > 0
-        ? input.customAmount
-        : installmentsSum + remainingCcDaily;
+      input.customAmount && input.customAmount > 0 ? input.customAmount : fullAmount;
 
     if (upcomingInstallments.length === 0 && totalAmount <= 0) {
       throw new ValidationError("Tidak ada tagihan atau cicilan yang perlu dilunasi.");
@@ -904,7 +925,6 @@ export async function updateDebtAccountWithSchedule(
       }
     }
 
-    let prevPaidAmount = 0;
     let nextInitialBalance = 0;
     let nextRemainingBalance = 0;
     const finalDueDates: string[] = [];
@@ -917,7 +937,6 @@ export async function updateDebtAccountWithSchedule(
 
       if (row.status === "paid") {
         const paidAmt = row.actualAmount ?? row.plannedAmount;
-        prevPaidAmount += paidAmt;
         nextInitialBalance += paidAmt;
       } else {
         nextInitialBalance += effectivePlanned;
@@ -930,7 +949,8 @@ export async function updateDebtAccountWithSchedule(
       nextRemainingBalance = account.initialBalance;
     }
 
-    const prevRemainingBalance = Math.max(0, account.initialBalance - prevPaidAmount);
+    // Must match how getCreditCardLimitStatus counts this account against the card limit.
+    const prevRemainingBalance = remainingPrincipal(account.initialBalance, existingInsts);
 
     let nextWalletId: number | null = null;
     let nextCcCutoffDay: number | null = null;

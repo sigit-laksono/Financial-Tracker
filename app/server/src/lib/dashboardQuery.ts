@@ -1059,7 +1059,8 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
 
   const initialDebt = payableAccounts.reduce((sum, a) => sum + a.initialBalance, 0);
   const paidDebt = payableAccounts.reduce((sum, a) => sum + a.paidAmount, 0);
-  const remainingDebt = Math.max(0, initialDebt - paidDebt);
+  // Sum per account so an overpaid account cannot offset another account's debt.
+  const remainingDebt = payableAccounts.reduce((sum, a) => sum + a.remainingBalance, 0);
   const loanRemaining = payableAccounts
     .filter((a) => a.kind === "loan" && !a.closed)
     .reduce((sum, a) => sum + a.remainingBalance, 0);
@@ -1072,7 +1073,7 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
 
   const initialReceivable = receivableAccounts.reduce((sum, a) => sum + a.initialBalance, 0);
   const paidReceivable = receivableAccounts.reduce((sum, a) => sum + a.paidAmount, 0);
-  const remainingReceivable = Math.max(0, initialReceivable - paidReceivable);
+  const remainingReceivable = receivableAccounts.reduce((sum, a) => sum + a.remainingBalance, 0);
   const netDebtPosition = remainingReceivable - remainingDebt;
 
   const ccWalletIds = snap.ccWallets.map((w) => w.id);

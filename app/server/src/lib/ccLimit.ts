@@ -8,6 +8,7 @@ import {
   transactions,
   wallets,
 } from "../db/schema";
+import { remainingPrincipal } from "./debtTarget";
 import { ValidationError } from "./errors";
 
 type DbOrTx = Pick<AppDb, "select">;
@@ -129,27 +130,26 @@ export async function getCreditCardLimitStatus(
     );
 
   const accountIds = cardInstAccounts.map((a) => a.id);
-  const paidRows =
+  const instRows =
     accountIds.length > 0
       ? await db
           .select({
             accountId: installments.accountId,
-            paidTotal: sql<number>`COALESCE(SUM(COALESCE(${installments.actualAmount}, ${installments.plannedAmount})), 0)`,
+            status: installments.status,
+            plannedAmount: installments.plannedAmount,
+            actualAmount: installments.actualAmount,
+            principalAmount: installments.principalAmount,
           })
           .from(installments)
-          .where(and(inArray(installments.accountId, accountIds), eq(installments.status, "paid")))
-          .groupBy(installments.accountId)
+          .where(inArray(installments.accountId, accountIds))
       : [];
-
-  const paidByAccount = new Map<number, number>();
-  for (const row of paidRows) {
-    paidByAccount.set(row.accountId, Number(row.paidTotal ?? 0));
-  }
 
   let installmentLimitUsed = 0;
   for (const acc of cardInstAccounts) {
-    const paid = paidByAccount.get(acc.id) ?? 0;
-    installmentLimitUsed += Math.max(0, acc.initialBalance - paid);
+    installmentLimitUsed += remainingPrincipal(
+      acc.initialBalance,
+      instRows.filter((row) => row.accountId === acc.id),
+    );
   }
 
   const limitUsed = dailyLimitUsed + installmentLimitUsed;

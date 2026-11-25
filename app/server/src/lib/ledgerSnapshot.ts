@@ -13,6 +13,7 @@ import {
 import { ensureMonthlyBankFees } from "./ccBilling";
 import { ccCycleForDate, jakartaToday, shiftMonth } from "./dates";
 import { ensurePayrollAutoPaid, filterActiveInstallmentIds } from "./debtEngine";
+import { remainingPrincipal } from "./debtTarget";
 import { getSettings } from "./settingsService";
 
 export async function runDailyLedgerSync(
@@ -222,6 +223,10 @@ export async function computeLedgerSnapshot(db: AppDb, today = jakartaToday()) {
     const paidAmount = rows
       .filter((i) => i.status === "paid")
       .reduce((sum, i) => sum + (i.actualAmount ?? i.plannedAmount), 0);
+    const accountRowsAll = installmentRows.filter((i) => i.accountId === account.id);
+    const closed = account.closedAt != null;
+    // A closed account owes nothing, even if it was settled early at a discount.
+    const remainingBalance = closed ? 0 : remainingPrincipal(account.initialBalance, accountRowsAll);
     return {
       ...account,
       direction: account.direction ?? "payable",
@@ -229,10 +234,10 @@ export async function computeLedgerSnapshot(db: AppDb, today = jakartaToday()) {
       disbursedAt: account.disbursedAt ?? null,
       interestRateBps: account.interestRateBps ?? null,
       paidAmount,
-      remainingBalance: Math.max(0, account.initialBalance - paidAmount),
+      remainingBalance,
       totalInstallments: rows.length,
       paidInstallments: rows.filter((i) => i.status === "paid").length,
-      closed: account.closedAt != null,
+      closed,
     };
   });
 
