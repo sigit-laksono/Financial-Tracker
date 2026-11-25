@@ -1,19 +1,27 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type BudgetCategorySummary } from "../lib/api";
-import { formatDigitsInput, formatRupiah, parsePositiveInt } from "../lib/format";
-import { budgetKeys, dashboardKeys } from "../lib/queryKeys";
-import { usePrivacyMode } from "../lib/usePrivacyMode";
+import type { CategoryBucket } from "../../../shared/src/dtos";
 import {
   AlertIcon,
   BudgetIcon,
-  CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   EditIcon,
   PlusIcon,
   TrashIcon,
 } from "../components/Icons";
 import { Badge, Button, Card, ModalSheet, StateView } from "../components/UI";
-import type { CategoryBucket } from "../../../shared/src/dtos";
+import { api, ApiError, type BudgetCategorySummary } from "../lib/api";
+import {
+  formatDigitsInput,
+  formatMonthTitle,
+  formatPeriodRangeLabel,
+  formatRupiah,
+  parsePositiveInt,
+  shiftMonth,
+} from "../lib/format";
+import { budgetKeys, dashboardKeys } from "../lib/queryKeys";
+import { usePrivacyMode } from "../lib/usePrivacyMode";
 
 const COLOR_PRESETS = [
   "#00797a",
@@ -27,18 +35,22 @@ const COLOR_PRESETS = [
   "#64748b",
 ];
 
-export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
+export function BudgetPage({
+  period,
+  onPeriodChange,
+  onToast,
+}: {
+  period: string;
+  onPeriodChange: (nextPeriod: string) => void;
+  onToast: (msg: string) => void;
+}) {
   const queryClient = useQueryClient();
   const { isMasked } = usePrivacyMode();
-
-  // Inline limit edit state
-  const [editingCatName, setEditingCatName] = useState<string | null>(null);
-  const [editLimitInput, setEditLimitInput] = useState("");
-  const [formError, setFormError] = useState("");
 
   // Bucket top-level limit edit state
   const [editingBucket, setEditingBucket] = useState<CategoryBucket | null>(null);
   const [bucketLimitInput, setBucketLimitInput] = useState("");
+  const [formError, setFormError] = useState("");
 
   // Modal Category Add/Edit state
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
@@ -53,25 +65,23 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
   const [deletingCategory, setDeletingCategory] = useState<BudgetCategorySummary | null>(null);
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: budgetKeys.summary(),
-    queryFn: () => api.getBudgetSummary(),
+    queryKey: budgetKeys.summary(period),
+    queryFn: () => api.getBudgetSummary(period),
   });
 
   const saveBudgetMutation = useMutation({
     mutationFn: async ({ category, limitAmount }: { category: string; limitAmount: number }) => {
       return api.upsertBudget({
         category,
-        period: "default",
+        period,
         limitAmount,
       });
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       await queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
-      setEditingCatName(null);
-      setEditLimitInput("");
-      onToast("Anggaran bulanan berhasil diperbarui");
+      onToast("Anggaran siklus berhasil diperbarui");
     },
     onError: (err) => {
       const msg = err instanceof ApiError ? err.message : "Gagal menyimpan batas anggaran.";
@@ -94,10 +104,11 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
         color: payload.color,
         isMandatory: false,
         budgetLimit: payload.budgetLimit,
+        period,
       });
     },
     onSuccess: async (_, variables) => {
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       await queryClient.invalidateQueries({ queryKey: ["categories"] });
       await queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
@@ -122,12 +133,13 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
         bucket?: CategoryBucket;
         color?: string;
         budgetLimit?: number;
+        period?: string;
       };
     }) => {
       return api.updateCategory(id, payload);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       await queryClient.invalidateQueries({ queryKey: ["categories"] });
       await queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
@@ -147,7 +159,7 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
       return api.deleteCategory(id);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       await queryClient.invalidateQueries({ queryKey: ["categories"] });
       await queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
@@ -167,7 +179,7 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
       <StateView
         kind="loading"
         title="Memuat data budgeting..."
-        description="Menghitung alokasi pendapatan dan realisasi belanja bulanan."
+        description="Menghitung total dana likuid dan alokasi anggaran siklus."
       />
     );
   }
@@ -184,29 +196,14 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
     );
   }
 
-  const { estimatedIncome, unallocated, needs, wants, savings } = data;
+  const isCurrentPeriod = data.isCurrentPeriod ?? true;
+  const baselineFund = data.totalLiquidCash ?? data.estimatedIncome;
+  const { unallocated, needs, wants, savings } = data;
   const unallocatedPercent =
-    estimatedIncome > 0
-      ? Math.max(0, Math.round((unallocated / estimatedIncome) * 100))
-      : 0;
+    baselineFund > 0 ? Math.max(0, Math.round((unallocated / baselineFund) * 100)) : 0;
   const overAllocated = Math.abs(Math.min(0, unallocated));
   const overAllocatedPercent =
-    estimatedIncome > 0 ? Math.round((overAllocated / estimatedIncome) * 100) : 0;
-
-  const handleStartInlineEdit = (cat: BudgetCategorySummary) => {
-    setEditingCatName(cat.categoryName);
-    setEditLimitInput(cat.budgetLimit > 0 ? cat.budgetLimit.toLocaleString("id-ID") : "");
-    setFormError("");
-  };
-
-  const handleSaveInlineEdit = (categoryName: string) => {
-    const limitAmount = parsePositiveInt(editLimitInput);
-    if (limitAmount <= 0) {
-      setFormError("Nominal anggaran harus lebih dari Rp 0.");
-      return;
-    }
-    saveBudgetMutation.mutate({ category: categoryName, limitAmount });
-  };
+    baselineFund > 0 ? Math.round((overAllocated / baselineFund) * 100) : 0;
 
   const openCreateModal = (bucket: CategoryBucket) => {
     setEditingCategory(null);
@@ -246,6 +243,7 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
           bucket: modalBucket,
           color: modalColor,
           budgetLimit: limitAmount,
+          period,
         },
       });
     } else {
@@ -258,40 +256,61 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
     }
   };
 
-  const handleStartBucketEdit = (bucketKey: CategoryBucket, currentAllocated: number) => {
+  const handleStartBucketEdit = (
+    bucketKey: CategoryBucket,
+    allocated: number,
+    remainingEnvelope: number,
+  ) => {
     setEditingBucket(bucketKey);
-    setBucketLimitInput(currentAllocated > 0 ? currentAllocated.toLocaleString("id-ID") : "");
+    const initialVal = isCurrentPeriod
+      ? allocated > 0
+        ? remainingEnvelope
+        : 0
+      : allocated;
+    setBucketLimitInput(initialVal > 0 ? initialVal.toLocaleString("id-ID") : "");
     setFormError("");
   };
 
-  const handleSaveBucketEdit = (bucketKey: CategoryBucket) => {
+  const handleSaveBucketEdit = (bucketKey: CategoryBucket, spent: number) => {
     const parsed = parsePositiveInt(bucketLimitInput);
     if (parsed <= 0) {
       setFormError("Jatah anggaran harus lebih dari Rp 0.");
       return;
     }
+    const targetLimitAmount = isCurrentPeriod ? parsed + spent : parsed;
     saveBudgetMutation.mutate({
       category: `bucket:${bucketKey}`,
-      limitAmount: parsed,
+      limitAmount: targetLimitAmount,
     });
     setEditingBucket(null);
     setBucketLimitInput("");
   };
 
+  const periodRangeLabel =
+    data.periodStart && data.periodEnd
+      ? formatPeriodRangeLabel(data.periodStart, data.periodEnd)
+      : formatMonthTitle(period);
+
   const renderBucketSection = (
     title: string,
     bucketKey: CategoryBucket,
-    allocated: number,
-    allocatedPercent: number,
-    spent: number,
-    categories: BudgetCategorySummary[],
+    bucketData: {
+      allocated: number;
+      remaining?: number;
+      allocatedPercent: number;
+      spent: number;
+      categories: BudgetCategorySummary[];
+    },
     accentColor: string,
   ) => {
+    const { allocated, allocatedPercent, spent, categories } = bucketData;
+    const envelopeRemaining =
+      bucketData.remaining ?? (allocated > 0 ? Math.max(0, allocated - spent) : 0);
     const isEditingThisBucket = editingBucket === bucketKey;
     const percentUsed = allocated > 0 ? Math.round((spent / allocated) * 100) : 0;
-    const remaining = Math.max(0, allocated - spent);
     const isOver = allocated > 0 && spent > allocated;
     const isWarning = allocated > 0 && spent >= allocated * 0.8 && !isOver;
+    const headlineAmount = isCurrentPeriod ? envelopeRemaining : allocated;
 
     return (
       <Card className="space-y-5 p-5 sm:p-6">
@@ -301,7 +320,7 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
             <h2 className="text-lg font-black text-[var(--foreground)]">{title}</h2>
             {allocated > 0 && (
               <Badge tone="neutral" className="text-xs font-bold">
-                Jatah: {allocatedPercent}% dari Pemasukan
+                Porsi: {allocatedPercent}% dari Dana Likuid
               </Badge>
             )}
           </div>
@@ -322,13 +341,17 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
         <div className="rounded-[16px] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5 space-y-4">
           {isEditingThisBucket ? (
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-bold uppercase tracking-wider text-[var(--foreground)]">
-                  Atur Jatah Anggaran {title}
+                  {isCurrentPeriod
+                    ? `Atur Sisa Amplop ${title} (dari Dana Likuid)`
+                    : `Atur Jatah ${title} (${periodRangeLabel})`}
                 </span>
-                <span className="text-xs text-[var(--muted-foreground)]">
-                  Bebas tentukan jatah anggaran sesuai kebutuhan Anda
-                </span>
+                {isCurrentPeriod && spent > 0 && (
+                  <span className="text-xs text-[var(--muted-foreground)]">
+                    Terpakai sebelumnya: <strong>{formatRupiah(spent, isMasked)}</strong>
+                  </span>
+                )}
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative flex-1 min-w-[200px]">
@@ -340,13 +363,13 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
                     inputMode="numeric"
                     value={bucketLimitInput}
                     onChange={(e) => setBucketLimitInput(formatDigitsInput(e.target.value))}
-                    placeholder="Contoh: 3.000.000"
+                    placeholder="Contoh: 2.000.000"
                     className="tabular-nums min-h-[44px] w-full rounded-[10px] border border-[var(--primary)] bg-[var(--card)] pl-9 pr-3 text-sm font-bold text-[var(--foreground)]"
                     autoFocus
                   />
                 </div>
                 <Button
-                  onClick={() => handleSaveBucketEdit(bucketKey)}
+                  onClick={() => handleSaveBucketEdit(bucketKey, spent)}
                   disabled={saveBudgetMutation.isPending}
                   className="min-h-[44px] text-xs px-4"
                 >
@@ -365,7 +388,7 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
                     }}
                     disabled={saveBudgetMutation.isPending}
                     className="min-h-[44px] text-xs px-3 text-[var(--destructive)]"
-                    title="Kosongkan jatah anggaran ini"
+                    title="Kosongkan jatah anggaran siklus ini"
                   >
                     Reset Jatah
                   </Button>
@@ -378,20 +401,36 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
                   Batal
                 </Button>
               </div>
+              {unallocated > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const currentVal = parsePositiveInt(bucketLimitInput);
+                      setBucketLimitInput((currentVal + unallocated).toLocaleString("id-ID"));
+                    }}
+                    className="text-xs font-bold text-[var(--primary)] hover:underline"
+                  >
+                    + Tambahkan seluruh sisa dana belum dialokasikan ({formatRupiah(unallocated, isMasked)})
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <span className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
-                    Jatah Anggaran Kelompok Ini
+                    {isCurrentPeriod
+                      ? "Sisa Amplop Tersedia (Dari Dana Likuid)"
+                      : "Jatah Anggaran Siklus Ini"}
                   </span>
                   <div className="flex items-baseline gap-2.5 mt-0.5">
                     <span className="font-mono text-2xl sm:text-3xl font-black text-[var(--foreground)] tabular-nums">
-                      {allocated > 0 ? formatRupiah(allocated, isMasked) : "Belum Diatur"}
+                      {allocated > 0 ? formatRupiah(headlineAmount, isMasked) : "Belum Diatur"}
                     </span>
                     <span className="text-xs font-semibold text-[var(--muted-foreground)]">
-                      ({allocatedPercent}% dari pendapatan)
+                      ({allocatedPercent}% dari dana likuid)
                     </span>
                   </div>
                 </div>
@@ -413,13 +452,13 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
                       : isOver
                         ? `Defisit ${formatRupiah(spent - allocated, isMasked)}`
                         : isWarning
-                          ? `Mendekati Jatah (${percentUsed}%)`
+                          ? `Mendekati Batas (${percentUsed}%)`
                           : `Terkendali (${percentUsed}% Terpakai)`}
                   </span>
 
                   <Button
                     variant="secondary"
-                    onClick={() => handleStartBucketEdit(bucketKey, allocated)}
+                    onClick={() => handleStartBucketEdit(bucketKey, allocated, envelopeRemaining)}
                     className="min-h-[38px] text-xs px-3 font-semibold"
                   >
                     {allocated > 0 ? "Ubah Jatah" : "Atur Jatah"}
@@ -442,12 +481,10 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
                       style={{ width: `${Math.min(100, percentUsed)}%` }}
                     />
                   </div>
-                  <div className="flex justify-between text-xs font-medium text-[var(--muted-foreground)] font-mono">
-                    <span>Terpakai: {formatRupiah(spent, isMasked)}</span>
+                  <div className="flex flex-wrap justify-between gap-2 text-xs font-medium text-[var(--muted-foreground)] font-mono">
+                    <span>Terpakai siklus ini: {formatRupiah(spent, isMasked)}</span>
                     <span>
-                      {isOver
-                        ? `Melebihi jatah: +${formatRupiah(spent - allocated, isMasked)}`
-                        : `Sisa Jatah: ${formatRupiah(remaining, isMasked)}`}
+                      Total pagu siklus: {formatRupiah(allocated, isMasked)}
                     </span>
                   </div>
                 </div>
@@ -463,7 +500,7 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
               Distribusi Pengeluaran Riil
             </h3>
             <p className="text-[11px] text-[var(--muted-foreground)]">
-              Cukup-cukupkan di dalam kelompok ini. Yang terpenting total pengeluaran tidak melebihi jatah anggaran di atas.
+              Cukup-cukupkan di dalam kelompok ini sesuai jatah custom siklus yang Anda tentukan.
             </p>
           </div>
 
@@ -562,34 +599,66 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
     );
   };
 
+  const needsShareAmt = isCurrentPeriod ? (needs.remaining ?? 0) : needs.allocated;
+  const wantsShareAmt = isCurrentPeriod ? (wants.remaining ?? 0) : wants.allocated;
+  const savingsShareAmt = isCurrentPeriod ? (savings.remaining ?? 0) : savings.allocated;
+
   return (
     <div className="space-y-6">
-      {/* Page Heading */}
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+      {/* Page Heading + Cycle Switcher */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Alokasi Anggaran</h1>
           <p className="text-sm text-[var(--muted-foreground)]">
-            Kelola jatah anggaran kustom per variabel utama untuk mengendalikan pengeluaran bulanan secara terencana.
+            Alokasi custom per siklus dari Total Dana Likuid — ubah kapan saja saat dana bertambah atau kondisi berubah.
           </p>
+        </div>
+
+        <div className="flex items-center justify-between gap-1 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => onPeriodChange(shiftMonth(period, -1))}
+            aria-label="Siklus sebelumnya"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full hover:bg-[var(--surface)]"
+          >
+            <ChevronLeftIcon className="w-5 h-5" />
+          </button>
+          <span className="tabular-nums px-2 text-xs font-semibold text-[var(--foreground)] sm:text-sm">
+            {periodRangeLabel}
+          </span>
+          <button
+            type="button"
+            onClick={() => onPeriodChange(shiftMonth(period, 1))}
+            aria-label="Siklus berikutnya"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full hover:bg-[var(--surface)]"
+          >
+            <ChevronRightIcon className="w-5 h-5" />
+          </button>
         </div>
       </div>
 
-      {/* Zero-Based Budgeting Hero Banner */}
+      {/* Zero-Based Liquid Cash Budgeting Hero Banner */}
       <div className="relative overflow-hidden rounded-[24px] border border-[var(--hero-border)] bg-[var(--hero-bg)] text-[var(--hero-card-foreground)] p-6 sm:p-8 shadow-sm transition-all">
         <div className="relative z-10 flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
             <div className="inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--hero-border)] bg-[var(--hero-surface)] px-2.5 py-1 text-xs font-semibold text-[var(--hero-card-foreground)]">
               <BudgetIcon className="w-3.5 h-3.5 text-[var(--primary)]" />
-              <span>Alokasi Anggaran Kustom</span>
+              <span>Total Dana Likuid Tersedia</span>
+              {!isCurrentPeriod && (
+                <Badge tone="neutral" className="ml-1 text-[10px]">
+                  Siklus {formatMonthTitle(period)}
+                </Badge>
+              )}
             </div>
             <div className="flex items-baseline gap-2">
               <p className="font-mono text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-[var(--hero-card-foreground)] tabular-nums">
-                {formatRupiah(estimatedIncome, isMasked)}
+                {formatRupiah(baselineFund, isMasked)}
               </p>
             </div>
             <p className="text-xs sm:text-sm text-[var(--hero-card-muted)] max-w-md">
-              Estimasi pendapatan bulanan yang siap dialokasikan ke pos Kebutuhan, Keinginan, dan
-              Tabungan hingga sisa Rp 0.
+              {isCurrentPeriod
+                ? "Saldo kas riil dari seluruh dompet likuid saat ini yang siap dibagi ke Kebutuhan, Keinginan, dan Tabungan & Hutang hingga sisa Rp 0."
+                : "Total dana likuid saat ini sebagai acuan alokasi custom pada siklus yang dipilih."}
             </p>
           </div>
 
@@ -611,10 +680,10 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
               </p>
               <span className="text-[11px] text-[var(--hero-card-muted)]">
                 {unallocated === 0
-                  ? "Sempurna! Setiap Rupiah pendapatan memiliki tujuan."
+                  ? "Sempurna! Seluruh dana likuid sudah dialokasikan."
                   : unallocated > 0
-                    ? "Tugaskan ke tabungan atau pos belanja agar genap."
-                    : "Pagu melebihi pemasukan bulanan, kurangi batas."}
+                    ? "Alokasikan ke pos belanja atau tabungan hingga genap Rp 0."
+                    : "Total amplop melebihi dana likuid saat ini, sesuaikan jatah pos."}
               </span>
             </div>
           </div>
@@ -622,27 +691,26 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
 
         {/* Komposisi Anggaran Visual Bar */}
         <div className="mt-6 border-t border-[var(--hero-border)] pt-4 space-y-3">
-          {/* Progress Bar with Tooltips & Segment Gap */}
           <div className="h-4 w-full rounded-full bg-[var(--surface)] overflow-hidden flex border border-[var(--border)] p-0.5 gap-0.5 shadow-inner">
             {needs.allocatedPercent > 0 && (
               <div
                 className="bg-[#38bdf8] rounded-full transition-all duration-500"
                 style={{ width: `${Math.min(100, needs.allocatedPercent)}%` }}
-                title={`Kebutuhan: ${needs.allocatedPercent}% (${formatRupiah(needs.allocated, isMasked)})`}
+                title={`Kebutuhan: ${needs.allocatedPercent}% (${formatRupiah(needsShareAmt, isMasked)})`}
               />
             )}
             {wants.allocatedPercent > 0 && (
               <div
                 className="bg-[#fb923c] rounded-full transition-all duration-500"
                 style={{ width: `${Math.min(100, wants.allocatedPercent)}%` }}
-                title={`Keinginan: ${wants.allocatedPercent}% (${formatRupiah(wants.allocated, isMasked)})`}
+                title={`Keinginan: ${wants.allocatedPercent}% (${formatRupiah(wantsShareAmt, isMasked)})`}
               />
             )}
             {savings.allocatedPercent > 0 && (
               <div
                 className="bg-[#4ade80] rounded-full transition-all duration-500"
                 style={{ width: `${Math.min(100, savings.allocatedPercent)}%` }}
-                title={`Tabungan & Hutang: ${savings.allocatedPercent}% (${formatRupiah(savings.allocated, isMasked)})`}
+                title={`Tabungan & Hutang: ${savings.allocatedPercent}% (${formatRupiah(savingsShareAmt, isMasked)})`}
               />
             )}
             {unallocated > 0 && (
@@ -654,41 +722,33 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
             )}
           </div>
 
-          {/* Legend Items dengan Indikator Warna, Persen & Nominal */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2.5 text-xs pt-1">
-            {/* 1. Kebutuhan */}
             <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
               <div className="flex items-center gap-1.5 min-w-0">
                 <span className="w-2.5 h-2.5 rounded-full bg-[#38bdf8] shrink-0" />
-                <span className="text-[#0284c7] dark:text-[#38bdf8] font-bold">
-                  Kebutuhan:
-                </span>
+                <span className="text-[#0284c7] dark:text-[#38bdf8] font-bold">Kebutuhan:</span>
                 <span className="font-mono font-bold text-[var(--hero-card-foreground)] tabular-nums">
                   {needs.allocatedPercent}%
                 </span>
               </div>
               <span className="text-[11px] text-[var(--hero-card-muted)] tabular-nums font-mono">
-                ({formatRupiah(needs.allocated, isMasked)})
+                ({formatRupiah(needsShareAmt, isMasked)})
               </span>
             </div>
 
-            {/* 2. Keinginan */}
             <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
               <div className="flex items-center gap-1.5 min-w-0">
                 <span className="w-2.5 h-2.5 rounded-full bg-[#fb923c] shrink-0" />
-                <span className="text-[#ea580c] dark:text-[#fb923c] font-bold">
-                  Keinginan:
-                </span>
+                <span className="text-[#ea580c] dark:text-[#fb923c] font-bold">Keinginan:</span>
                 <span className="font-mono font-bold text-[var(--hero-card-foreground)] tabular-nums">
                   {wants.allocatedPercent}%
                 </span>
               </div>
               <span className="text-[11px] text-[var(--hero-card-muted)] tabular-nums font-mono">
-                ({formatRupiah(wants.allocated, isMasked)})
+                ({formatRupiah(wantsShareAmt, isMasked)})
               </span>
             </div>
 
-            {/* 3. Tabungan & Hutang */}
             <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
               <div className="flex items-center gap-1.5 min-w-0">
                 <span className="w-2.5 h-2.5 rounded-full bg-[#4ade80] shrink-0" />
@@ -700,11 +760,10 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
                 </span>
               </div>
               <span className="text-[11px] text-[var(--hero-card-muted)] tabular-nums font-mono">
-                ({formatRupiah(savings.allocated, isMasked)})
+                ({formatRupiah(savingsShareAmt, isMasked)})
               </span>
             </div>
 
-            {/* 4. Belum Dialokasikan / Kelebihan Alokasi */}
             {unallocated > 0 ? (
               <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
                 <div className="flex items-center gap-1.5 min-w-0">
@@ -724,9 +783,7 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
               <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span className="w-2.5 h-2.5 rounded-full bg-[var(--destructive)] shrink-0" />
-                  <span className="text-[var(--destructive)] font-bold">
-                    Kelebihan Alokasi:
-                  </span>
+                  <span className="text-[var(--destructive)] font-bold">Kelebihan Alokasi:</span>
                   <span className="font-mono font-bold text-[var(--destructive)] tabular-nums">
                     +{overAllocatedPercent}%
                   </span>
@@ -759,35 +816,9 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
 
       {/* 3 Main Envelopes */}
       <div className="space-y-6">
-        {renderBucketSection(
-          "Kebutuhan Hidup (Needs)",
-          "needs",
-          needs.allocated,
-          needs.allocatedPercent,
-          needs.spent,
-          needs.categories,
-          "#38bdf8",
-        )}
-
-        {renderBucketSection(
-          "Keinginan & Gaya Hidup (Wants)",
-          "wants",
-          wants.allocated,
-          wants.allocatedPercent,
-          wants.spent,
-          wants.categories,
-          "#fb923c",
-        )}
-
-        {renderBucketSection(
-          "Tabungan & Hutang (Savings & Debt)",
-          "savings",
-          savings.allocated,
-          savings.allocatedPercent,
-          savings.spent,
-          savings.categories,
-          "#4ade80",
-        )}
+        {renderBucketSection("Kebutuhan Hidup (Needs)", "needs", needs, "#38bdf8")}
+        {renderBucketSection("Keinginan & Gaya Hidup (Wants)", "wants", wants, "#fb923c")}
+        {renderBucketSection("Tabungan & Hutang (Savings & Debt)", "savings", savings, "#4ade80")}
       </div>
 
       {/* Modal Tambah / Edit Kategori */}
@@ -850,7 +881,7 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
               htmlFor="cat-limit-input"
               className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
             >
-              Pagu Anggaran Bulanan (Opsional)
+              Pagu Kategori Siklus Ini (Opsional)
             </label>
             <div className="relative">
               <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
@@ -867,12 +898,14 @@ export function BudgetPage({ onToast }: { onToast: (msg: string) => void }) {
               />
             </div>
             <p className="text-[11px] text-neutral-400">
-              Batas belanja yang direncanakan per siklus untuk kategori ini.
+              Batas belanja custom pada siklus {periodRangeLabel} untuk kategori ini.
             </p>
           </div>
 
           <div className="space-y-1.5">
-            <span className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">Warna Penanda</span>
+            <span className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+              Warna Penanda
+            </span>
             <div className="flex flex-wrap items-center gap-2 pt-1">
               {COLOR_PRESETS.map((color) => {
                 const isSelected = modalColor.toLowerCase() === color.toLowerCase();

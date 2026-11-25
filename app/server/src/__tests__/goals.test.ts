@@ -234,4 +234,98 @@ describe("Milestone 10: Goals & Emergency Fund Runway", () => {
     const bniBalance = await computeWalletBalance(db, bni!.id, 0);
     expect(bniBalance).toBe(2_000_000);
   });
+
+  it("uses totalLiquidCash per cycle and keeps unallocated stable during envelope spending and re-budgeting", async () => {
+    const { db, app } = await setupTestContext();
+
+    // 1. Set BCA openingBalance = 5.000.000 (totalLiquidCash = 5.000.000)
+    const [bca] = await db.select().from(wallets).where(eq(wallets.key, "bca"));
+    await db.update(wallets).set({ openingBalance: 5_000_000 }).where(eq(wallets.id, bca!.id));
+
+    // Check active period (2026-11 based on current local date 2026-11-25)
+    const initialSummaryRes = await app.request("/api/budgets/summary");
+    expect(initialSummaryRes.status).toBe(200);
+    const initialSummary = (await initialSummaryRes.json()) as {
+      period: string;
+      totalLiquidCash: number;
+      unallocated: number;
+      needs: { allocated: number };
+    };
+    const activePeriod = initialSummary.period;
+    expect(initialSummary.totalLiquidCash).toBe(5_000_000);
+    expect(initialSummary.unallocated).toBe(5_000_000);
+    expect(initialSummary.needs.allocated).toBe(0);
+
+    // 2. Allocate custom envelopes for activePeriod: 3jt needs, 1jt wants, 1jt savings
+    for (const [category, limitAmount] of [
+      ["bucket:needs", 3_000_000],
+      ["bucket:wants", 1_000_000],
+      ["bucket:savings", 1_000_000],
+    ] as const) {
+      const r = await app.request("/api/budgets", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category, period: activePeriod, limitAmount }),
+      });
+      expect(r.status).toBeLessThan(300);
+    }
+
+    const allocatedSummary = await (
+      await app.request(`/api/budgets/summary?period=${activePeriod}`)
+    ).json();
+    expect(allocatedSummary.unallocated).toBe(0);
+    expect(allocatedSummary.needs.remaining).toBe(3_000_000);
+
+    // Next cycle (2026-12) must remain independent (0 allocated)
+    const nextCycleSummary = await (
+      await app.request("/api/budgets/summary?period=2026-12")
+    ).json();
+    expect(nextCycleSummary.needs.allocated).toBe(0);
+    expect(nextCycleSummary.wants.allocated).toBe(0);
+    expect(nextCycleSummary.savings.allocated).toBe(0);
+
+    // 3. Spend 200.000 in needs -> liquid cash becomes 4.800.000, needs.remaining becomes 2.800.000, unallocated stays 0!
+    const spendRes = await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "expense",
+        merchant: "Belanja Sayur",
+        amount: 200_000,
+        transactionDate: "2026-11-25",
+        category: "Makanan & Belanja Dapur",
+        walletId: bca!.id,
+      }),
+    });
+    expect(spendRes.status).toBe(201);
+
+    const afterSpendSummary = await (
+      await app.request(`/api/budgets/summary?period=${activePeriod}`)
+    ).json();
+    expect(afterSpendSummary.totalLiquidCash).toBe(4_800_000);
+    expect(afterSpendSummary.needs.spent).toBe(200_000);
+    expect(afterSpendSummary.needs.remaining).toBe(2_800_000);
+    expect(afterSpendSummary.unallocated).toBe(0);
+
+    // 4. Extra income +1.500.000 -> totalLiquidCash becomes 6.300.000, unallocated becomes 1.500.000 for re-budgeting
+    const extraIncomeRes = await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "income",
+        merchant: "Bonus Freelance",
+        amount: 1_500_000,
+        transactionDate: "2026-11-25",
+        category: "Usaha & Freelance",
+        walletId: bca!.id,
+      }),
+    });
+    expect(extraIncomeRes.status).toBe(201);
+
+    const afterIncomeSummary = await (
+      await app.request(`/api/budgets/summary?period=${activePeriod}`)
+    ).json();
+    expect(afterIncomeSummary.totalLiquidCash).toBe(6_300_000);
+    expect(afterIncomeSummary.unallocated).toBe(1_500_000);
+  });
 });

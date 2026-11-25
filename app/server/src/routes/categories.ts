@@ -52,12 +52,13 @@ export function createCategoryRoutes(db: AppDb) {
     }
 
     if (parsed.data.budgetLimit && parsed.data.budgetLimit > 0) {
+      const targetPeriod = parsed.data.period ?? "default";
       await db
         .insert(budgets)
         .values({
           category: created.name,
           categoryId: created.id,
-          period: "default",
+          period: targetPeriod,
           limitAmount: parsed.data.budgetLimit,
         })
         .onConflictDoUpdate({
@@ -102,7 +103,7 @@ export function createCategoryRoutes(db: AppDb) {
       }
     }
 
-    const { budgetLimit, ...categoryUpdates } = parsed.data;
+    const { budgetLimit, period: budgetPeriod, ...categoryUpdates } = parsed.data;
 
     const updated = await db.transaction(async (tx) => {
       const [row] = await tx
@@ -147,13 +148,14 @@ export function createCategoryRoutes(db: AppDb) {
       }
 
       if (budgetLimit !== undefined) {
+        const targetPeriod = budgetPeriod ?? "default";
         if (budgetLimit > 0) {
           await tx
             .insert(budgets)
             .values({
               category: effectiveName,
               categoryId: id,
-              period: "default",
+              period: targetPeriod,
               limitAmount: budgetLimit,
             })
             .onConflictDoUpdate({
@@ -167,7 +169,7 @@ export function createCategoryRoutes(db: AppDb) {
         } else {
           await tx
             .delete(budgets)
-            .where(and(eq(budgets.categoryId, id), eq(budgets.period, "default")));
+            .where(and(eq(budgets.categoryId, id), eq(budgets.period, targetPeriod)));
         }
       }
 

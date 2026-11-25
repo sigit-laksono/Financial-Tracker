@@ -282,6 +282,7 @@ export const createCategorySchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/)
     .default("#00797a"),
   budgetLimit: z.number().int().min(0).optional(),
+  period: z.union([z.literal("default"), yearMonthSchema]).optional(),
 });
 
 export const updateCategorySchema = z.object({
@@ -295,6 +296,7 @@ export const updateCategorySchema = z.object({
   isArchived: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
   budgetLimit: z.number().int().min(0).optional(),
+  period: z.union([z.literal("default"), yearMonthSchema]).optional(),
 });
 
 export const upsertBudgetSchema = z.object({

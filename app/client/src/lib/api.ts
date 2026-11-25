@@ -557,6 +557,7 @@ export const api = {
     isMandatory?: boolean;
     color?: string;
     budgetLimit?: number;
+    period?: string;
   }) =>
     request<{ category: CategoryDto }>("/api/categories", {
       method: "POST",
@@ -571,6 +572,7 @@ export const api = {
       color?: string;
       isArchived?: boolean;
       budgetLimit?: number;
+      period?: string;
     },
   ) =>
     request<{ category: CategoryDto }>(`/api/categories/${id}`, {

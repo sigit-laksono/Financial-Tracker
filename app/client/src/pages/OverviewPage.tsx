@@ -191,6 +191,7 @@ export function OverviewPage({
         upcomingCcCyclesSum={metrics.upcomingCcCyclesSum}
         totalIncome={metrics.totalIncome}
         totalExpense={metrics.totalExpense}
+        installmentExpense={metrics.installmentExpense}
         todaySpent={todaySpent}
         pacingLabel={pacingConfig?.label}
         pacingTone={pacingConfig?.tone}

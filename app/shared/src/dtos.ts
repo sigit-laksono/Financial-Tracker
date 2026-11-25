@@ -225,12 +225,19 @@ export type BudgetCategorySummary = {
 
 export type BudgetOverviewDto = {
   period: string;
+  isCurrentPeriod?: boolean;
+  periodStart?: string;
+  periodEnd?: string;
+  availablePeriods?: string[];
   estimatedIncome: number;
+  totalLiquidCash?: number;
+  totalRemainingAllocated?: number;
   totalAllocated: number;
   unallocated: number;
   needs: {
     idealPercent: 50;
     allocated: number;
+    remaining?: number;
     allocatedPercent: number;
     spent: number;
     categories: BudgetCategorySummary[];
@@ -238,6 +245,7 @@ export type BudgetOverviewDto = {
   wants: {
     idealPercent: 30;
     allocated: number;
+    remaining?: number;
     allocatedPercent: number;
     spent: number;
     categories: BudgetCategorySummary[];
@@ -245,6 +253,7 @@ export type BudgetOverviewDto = {
   savings: {
     idealPercent: 20;
     allocated: number;
+    remaining?: number;
     allocatedPercent: number;
     spent: number;
     categories: BudgetCategorySummary[];
@@ -390,6 +399,7 @@ export type DashboardDto = {
     salaryReceivedThisCycle: boolean;
     totalIncome: number;
     totalExpense: number;
+    installmentExpense?: number;
     surplus: number;
     totalCashOut: number;
     totalCcExpense: number;

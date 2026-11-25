@@ -240,9 +240,10 @@ describe("Ledger engine & core flows", () => {
       expect(dashAfterSettle.metrics.ccReservedCash).toBe(0);
       expect(dashAfterSettle.metrics.upcomingCcCyclesSum).toBe(95_000);
       expect(dashAfterSettle.metrics.safeToSpend).toBe(7_279_000);
-      // Settlement must not count as a new category expense; total = fee (1.000) + 2026-11 bank fees (22.500) + unbilled coffee (50.000)
+      // Installment settlement counts into Cicilan & Hutang & totalExpense (only cc_cycle is excluded to prevent double-counting)
       expect(dashAfterSettle.metrics.totalSettlement).toBe(700_000);
-      expect(dashAfterSettle.metrics.totalExpense).toBe(1_000 + 22_500 + 50_000);
+      expect(dashAfterSettle.metrics.installmentExpense).toBe(700_000);
+      expect(dashAfterSettle.metrics.totalExpense).toBe(1_000 + 22_500 + 50_000 + 700_000);
 
       // Closing a settled debt account succeeds; closing an active Split Pay account with balance > 0 fails
       const debtsAfterSettle = (await (await app.request("/api/debts")).json()) as {

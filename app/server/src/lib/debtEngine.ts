@@ -913,8 +913,10 @@ export async function earlyPayoffDebtAccount(
       } else {
         // Paying off remaining debt in full
         const debtCat =
-          allCats.find((c) => c.name.toLowerCase() === "hutang") ??
-          allCats.find((c) => c.name.toLowerCase() === "pinjaman");
+          allCats.find((c) => c.name.trim().toLowerCase() === "cicilan & hutang") ??
+          allCats.find((c) => c.name.trim().toLowerCase() === "hutang") ??
+          allCats.find((c) => c.name.trim().toLowerCase() === "pinjaman") ??
+          allCats.find((c) => c.name.toLowerCase().includes("hutang"));
         const [createdTx] = await tx
           .insert(transactions)
           .values({
@@ -922,7 +924,7 @@ export async function earlyPayoffDebtAccount(
             merchant: input.note?.trim() || `Pelunasan Dipercepat: ${account.name}`,
             amount: payoffAmount,
             transactionDate: input.paymentDate,
-            category: debtCat?.name ?? "Hutang",
+            category: debtCat?.name ?? "Cicilan & Hutang",
             categoryId: debtCat?.id ?? null,
             walletId: payWallet.id,
             debtAccountId: account.id,

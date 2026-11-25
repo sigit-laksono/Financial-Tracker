@@ -6,6 +6,7 @@ import { HelpTooltip } from "./HelpTooltip";
 export function DailyHeroCard({
   totalIncome = 0,
   totalExpense = 0,
+  installmentExpense = 0,
   todaySpent = 0,
   actions,
   // backwards-compatible optional props:
@@ -17,6 +18,7 @@ export function DailyHeroCard({
 }: {
   totalIncome: number;
   totalExpense: number;
+  installmentExpense?: number;
   todaySpent?: number;
   actions?: React.ReactNode;
   dailyAllowance?: number;
@@ -126,7 +128,9 @@ export function DailyHeroCard({
               {formatRupiah(totalExpense, isMasked)}
             </span>
             <span className="text-[11px] text-[var(--hero-card-muted)] block">
-              Realisasi belanja siklus ini
+              {installmentExpense > 0
+                ? `Belanja ${formatRupiah(Math.max(0, totalExpense - installmentExpense), isMasked)} · Cicilan ${formatRupiah(installmentExpense, isMasked)}`
+                : "Realisasi belanja siklus ini"}
             </span>
           </div>
         </div>

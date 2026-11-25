@@ -707,5 +707,69 @@ describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline S
     expect(novCycle.installmentTotal).toBe(0);
     const ccNovInst = debtsCutoffBody.installments.find((i) => i.accountName === "CC Nov")!;
     expect(ccNovInst.period).toBe("2026-12");
+
+    // 9. Uji pembayaran cicilan & pelunasan dipercepat masuk ke Cicilan & Hutang + totalExpense, tanpa double-count belanja harian CC (cc_cycle)
+    const walletsRes9 = await app.request("/api/wallets");
+    const walletsList9 = ((await walletsRes9.json()) as { wallets: Array<{ id: number; key: string }> }).wallets;
+    const bni9 = walletsList9.find((w) => w.key === "bni")!;
+    // Deposit cukup saldo ke BNI
+    await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "income",
+        merchant: "Gaji Uji",
+        amount: 10_000_000,
+        transactionDate: "2026-11-25",
+        category: "Gaji",
+        walletId: bni9.id,
+      }),
+    });
+
+    // Bayar gabungan siklus 2026-12 Jenius Cut21: harian 22.000 (cc_cycle) + cicilan CC Nov 3.582.808 (installment) = 3.604.808
+    const decUnpaidInstIds = debtsCutoffBody.cards
+      .find((c) => c.walletId === jenius21.id)!
+      .cycleSummaries.find((s) => s.cycleKey === "2026-12")!;
+    const settleCombined9 = await app.request("/api/installments/settle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ccWalletId: jenius21.id,
+        ccCycleKey: "2026-12",
+        installmentIds: (decUnpaidInstIds as unknown as { unpaidInstallmentIds: number[] }).unpaidInstallmentIds,
+        fromWalletId: bni9.id,
+        paymentDate: "2026-11-26",
+      }),
+    });
+    expect(settleCombined9.status).toBe(200);
+
+    // Cek dashboard gajian 2026-11 (25 Nov - 24 Des 2026):
+    // Pembayaran gabungan Rp 3.604.808 pada 26 Nov: porsi cc_cycle Rp 22.000 (belanja 22 Nov) TIDAK dihitung ulang;
+    // hanya porsi cicilan Rp 3.582.808 yang masuk ke totalExpense & Cicilan & Hutang.
+    const dashRes9 = await app.request("/api/dashboard?cycle=gajian&period=2026-11");
+    const dashBody9 = (await dashRes9.json()) as {
+      metrics: { totalExpense: number; installmentExpense: number; totalSettlement: number };
+      categoryTotals: Array<{ category: string; total: number }>;
+    };
+    expect(dashBody9.metrics.totalSettlement).toBe(3_604_808);
+    expect(dashBody9.metrics.installmentExpense).toBe(3_582_808);
+    expect(dashBody9.metrics.totalExpense).toBe(3_582_808);
+    expect(
+      dashBody9.categoryTotals.find((c) => c.category === "Cicilan & Hutang")?.total,
+    ).toBe(3_582_808);
+
+    // Cek /api/budgets/summary untuk 2026-11: Cicilan & Hutang harus menampilkan 3.582.808 di bucket savings
+    const budgetSummaryRes9 = await app.request("/api/budgets/summary?period=2026-11");
+    const budgetSummary9 = (await budgetSummaryRes9.json()) as {
+      savings: {
+        spent: number;
+        categories: Array<{ categoryName: string; actualSpent: number }>;
+      };
+    };
+    expect(
+      budgetSummary9.savings.categories.find((c) => c.categoryName === "Cicilan & Hutang")
+        ?.actualSpent,
+    ).toBe(3_582_808);
+    expect(budgetSummary9.savings.spent).toBe(3_582_808);
   });
 });

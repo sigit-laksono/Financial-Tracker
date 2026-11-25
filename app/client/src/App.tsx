@@ -394,11 +394,15 @@ export function App() {
       );
     }
 
-    // 3. Budget (independent)
+    // 3. Budget (cycle-synced)
     if (tab === "budget") {
       return (
         <Suspense fallback={tabSuspenseFallback}>
-          <BudgetPage onToast={showToast} />
+          <BudgetPage
+            period={period}
+            onPeriodChange={handlePeriodChange}
+            onToast={showToast}
+          />
         </Suspense>
       );
     }

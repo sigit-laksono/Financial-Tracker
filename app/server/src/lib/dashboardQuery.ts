@@ -15,6 +15,11 @@ import {
   shiftMonth,
 } from "./dates";
 import { computeLedgerSnapshot } from "./ledgerSnapshot";
+import {
+  computeSettlementExpenseAmount,
+  getCcCycleAllocatedByTxId,
+  resolveDebtExpenseCategoryName,
+} from "./settlementExpense";
 
 function findDatesWithDayInBounds(dayNumber: number, start: string, end: string): string[] {
   const dates: string[] = [];
@@ -248,9 +253,12 @@ export async function buildDashboardData(
     db.select().from(recurringRules).where(eq(recurringRules.isActive, true)),
     db
       .select({
+        id: transactions.id,
         transactionDate: transactions.transactionDate,
         type: transactions.type,
         amount: transactions.amount,
+        ccCycleKey: transactions.ccCycleKey,
+        installmentId: transactions.installmentId,
       })
       .from(transactions)
       .where(
@@ -262,11 +270,17 @@ export async function buildDashboardData(
   ]);
 
   const periodTxIds = periodRows.map((tx) => tx.id);
+  const settlementTxIds = Array.from(
+    new Set([
+      ...periodRows.filter((tx) => tx.type === "settlement").map((tx) => tx.id),
+      ...monthRows.filter((tx) => tx.type === "settlement").map((tx) => tx.id),
+    ]),
+  );
   const transferGroupIds = periodRows
     .map((tx) => tx.transferGroupId)
     .filter((gid): gid is string => Boolean(gid));
 
-  const [splitRows, feeRows] = await Promise.all([
+  const [splitRows, feeRows, ccCycleAllocatedByTxId] = await Promise.all([
     periodTxIds.length > 0
       ? db
           .select()
@@ -285,6 +299,7 @@ export async function buildDashboardData(
             ),
           )
       : [],
+    getCcCycleAllocatedByTxId(db, settlementTxIds),
   ]);
 
   const splitsByTxId = new Map<
@@ -337,6 +352,7 @@ export async function buildDashboardData(
 
   let totalIncome = 0;
   let totalExpense = 0;
+  let totalInstallmentExpense = 0;
   let totalCashOut = 0;
   let totalCcExpense = 0;
   let totalSettlement = 0;
@@ -383,6 +399,17 @@ export async function buildDashboardData(
     } else if (tx.type === "settlement") {
       totalSettlement += tx.amount;
       totalCashOut += tx.amount;
+      const instExpense = computeSettlementExpenseAmount(tx, ccCycleAllocatedByTxId);
+      if (instExpense > 0) {
+        totalInstallmentExpense += instExpense;
+        totalExpense += instExpense;
+        day.expense += instExpense;
+        const resolvedCat = resolveDebtExpenseCategoryName(tx.category, snap.categories);
+        const item = categoryMap.get(resolvedCat) ?? { total: 0, count: 0 };
+        item.total += instExpense;
+        item.count += 1;
+        categoryMap.set(resolvedCat, item);
+      }
     } else if (tx.type === "transfer") {
       totalTransfer += tx.amount;
     }
@@ -792,11 +819,20 @@ export async function buildDashboardData(
   let spentSavings = 0;
 
   for (const tx of periodRows) {
-    if (tx.type === "expense") {
+    if (tx.type === "expense" && !tx.isConvertedToInstallment) {
       const bucket = categoryBucketMap.get(tx.category.toLowerCase()) ?? "needs";
       if (bucket === "needs") spentNeeds += tx.amount;
       else if (bucket === "wants") spentWants += tx.amount;
       else spentSavings += tx.amount;
+    } else if (tx.type === "settlement") {
+      const instExpense = computeSettlementExpenseAmount(tx, ccCycleAllocatedByTxId);
+      if (instExpense > 0) {
+        const resolvedCat = resolveDebtExpenseCategoryName(tx.category, snap.categories);
+        const bucket = categoryBucketMap.get(resolvedCat.toLowerCase()) ?? "savings";
+        if (bucket === "needs") spentNeeds += instExpense;
+        else if (bucket === "wants") spentWants += instExpense;
+        else spentSavings += instExpense;
+      }
     }
   }
 
@@ -872,6 +908,9 @@ export async function buildDashboardData(
     const entry = monthTxMap.get(tx.transactionDate) ?? { expense: 0, income: 0, count: 0 };
     if (tx.type === "expense") entry.expense += tx.amount;
     else if (tx.type === "income") entry.income += tx.amount;
+    else if (tx.type === "settlement") {
+      entry.expense += computeSettlementExpenseAmount(tx, ccCycleAllocatedByTxId);
+    }
     entry.count += 1;
     monthTxMap.set(tx.transactionDate, entry);
   }
@@ -949,6 +988,7 @@ export async function buildDashboardData(
       salaryReceivedThisCycle,
       totalIncome,
       totalExpense,
+      installmentExpense: totalInstallmentExpense,
       surplus: totalIncome - totalExpense,
       totalCashOut,
       totalCcExpense,
