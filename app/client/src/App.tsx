@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CycleMode } from "../../shared/src/types";
+import type { CycleMode, DebtDirection, DebtKind } from "../../shared/src/types";
 import { api, ApiError, type DashboardDto, type TransactionDto, type WalletDto } from "./lib/api";
 import { currentPeriodForCycle } from "./lib/format";
 import { AddDebtModal } from "./components/AddDebtModal";
@@ -88,8 +88,13 @@ export function App() {
   const [editingTx, setEditingTx] = useState<TransactionDto | null>(null);
   const [preselectedInstIds, setPreselectedInstIds] = useState<number[]>([]);
   const [preselectedCcCycle, setPreselectedCcCycle] = useState("");
+  const [preselectedCcWalletId, setPreselectedCcWalletId] = useState<number | undefined>(undefined);
   const [splitPayTarget, setSplitPayTarget] = useState<SplitPayTarget | null>(null);
   const [addDebtOpen, setAddDebtOpen] = useState(false);
+  const [addDebtDefaults, setAddDebtDefaults] = useState<{
+    direction: DebtDirection;
+    kind: DebtKind;
+  }>({ direction: "payable", kind: "loan" });
   const [receiveSalaryOpen, setReceiveSalaryOpen] = useState(false);
   const [reconcileWallet, setReconcileWallet] = useState<WalletDto | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
@@ -217,17 +222,27 @@ export function App() {
   const openPayInstallment = (installmentId: number) => {
     setEditingTx(null);
     setPreselectedCcCycle("");
+    setPreselectedCcWalletId(undefined);
     setPreselectedInstIds([installmentId]);
     setQuickAddMode("settle");
     setQuickAddOpen(true);
   };
 
-  const openPayCcCycle = (cycleKey: string, installmentIds: number[]) => {
+  const openPayCcCycle = (cycleKey: string, installmentIds: number[], ccWalletId?: number) => {
     setEditingTx(null);
     setPreselectedCcCycle(cycleKey);
+    setPreselectedCcWalletId(ccWalletId);
     setPreselectedInstIds(installmentIds);
     setQuickAddMode("settle");
     setQuickAddOpen(true);
+  };
+
+  const openAddDebt = (opts?: { direction?: DebtDirection; kind?: DebtKind }) => {
+    setAddDebtDefaults({
+      direction: opts?.direction ?? "payable",
+      kind: opts?.kind ?? (opts?.direction === "receivable" ? "receivable" : "loan"),
+    });
+    setAddDebtOpen(true);
   };
 
   if (authQuery.isPending) {
@@ -360,7 +375,7 @@ export function App() {
         <Suspense fallback={tabSuspenseFallback}>
           <DebtsPage
             data={debtsQuery.data}
-            onOpenAddDebt={() => setAddDebtOpen(true)}
+            onOpenAddDebt={openAddDebt}
             onPayInstallment={openPayInstallment}
             onPayCcCycle={openPayCcCycle}
             onOpenSplitPay={(target) => setSplitPayTarget(target)}
@@ -989,6 +1004,7 @@ export function App() {
           editingTx={editingTx}
           preselectedInstallmentIds={preselectedInstIds}
           preselectedCcCycleKey={preselectedCcCycle}
+          preselectedCcWalletId={preselectedCcWalletId}
           onSuccessMessage={showToast}
           onRequestSplitPay={(tx) =>
             setSplitPayTarget({
@@ -1011,6 +1027,8 @@ export function App() {
         open={addDebtOpen}
         onClose={() => setAddDebtOpen(false)}
         onSuccess={showToast}
+        initialDirection={addDebtDefaults.direction}
+        initialKind={addDebtDefaults.kind}
       />
 
       {dashboardQuery.data && (

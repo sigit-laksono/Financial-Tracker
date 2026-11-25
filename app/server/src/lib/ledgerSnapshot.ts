@@ -297,6 +297,8 @@ export async function computeLedgerSnapshot(db: AppDb, today = jakartaToday()) {
         ...w,
         balance: Math.max(0, limit - used),
         limitUsed: used,
+        dailyLimitUsed: wUnpaidDaily,
+        installmentLimitUsed: wCardInstallmentRemaining,
         creditLimit: limit,
         currentCycleSpend: curSpend,
       };
@@ -305,6 +307,8 @@ export async function computeLedgerSnapshot(db: AppDb, today = jakartaToday()) {
       ...w,
       balance: nonCcBalances.get(w.id) ?? w.openingBalance,
       limitUsed: 0,
+      dailyLimitUsed: 0,
+      installmentLimitUsed: 0,
       currentCycleSpend: 0,
     };
   });

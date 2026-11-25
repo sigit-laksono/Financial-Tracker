@@ -1,6 +1,8 @@
 import type {
   AssetDto,
   AuthStatus,
+  BackupCountsDto,
+  BackupImportResponseDto,
   BudgetCategorySummary,
   BudgetItemDto,
   BudgetOverviewDto,
@@ -45,6 +47,8 @@ export type {
   AssetDto,
   AssetType,
   AuthStatus,
+  BackupCountsDto,
+  BackupImportResponseDto,
   BudgetCategorySummary,
   BudgetItemDto,
   BudgetOverviewDto,
@@ -433,6 +437,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  updateDebt: (
+    id: number,
+    payload: {
+      name?: string;
+      lender?: string;
+      kind?: DebtKind;
+      paymentMethod?: string;
+      walletId?: number | null;
+      installments?: Array<{
+        id: number;
+        dueDate: string;
+        plannedAmount: number;
+      }>;
+    },
+  ) =>
+    request<{ ok: boolean; accountId: number; initialBalance: number }>(`/api/debts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
   earlyPayoff: (
     id: number,
     payload: {
@@ -634,5 +657,10 @@ export const api = {
     request<{ ok: boolean; message: string }>("/api/settings/reset", {
       method: "POST",
       body: JSON.stringify({ confirmation, mode }),
+    }),
+  importBackup: (snapshot: unknown, confirmation: string) =>
+    request<BackupImportResponseDto>("/api/export/import", {
+      method: "POST",
+      body: JSON.stringify({ snapshot, confirmation }),
     }),
 };

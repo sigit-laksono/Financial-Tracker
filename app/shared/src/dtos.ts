@@ -529,6 +529,9 @@ export type DebtsDto = {
     initialDebt: number;
     paidDebt: number;
     remainingDebt: number;
+    loanRemaining: number;
+    payrollRemaining: number;
+    cardInstallmentRemaining: number;
     initialReceivable: number;
     paidReceivable: number;
     remainingReceivable: number;
@@ -547,6 +550,8 @@ export type DebtsDto = {
     color: string;
     creditLimit: number;
     limitUsed: number;
+    dailyLimitUsed: number;
+    installmentLimitUsed: number;
     balance: number;
     currentCycleSpend: number;
     cutoffDay: number;
@@ -587,4 +592,26 @@ export type DebtsDto = {
     transactionCount: number;
   }>;
   wallets: WalletDto[];
+};
+
+export type BackupCountsDto = {
+  wallets: number;
+  categories: number;
+  accounts: number;
+  installments: number;
+  transactions: number;
+  transactionSplits: number;
+  settlementAllocations: number;
+  budgets: number;
+  goals: number;
+  assets: number;
+  walletRecurringFees: number;
+  recurringRules: number;
+};
+
+export type BackupImportResponseDto = {
+  ok: boolean;
+  message: string;
+  exportedAt: string;
+  counts: BackupCountsDto;
 };

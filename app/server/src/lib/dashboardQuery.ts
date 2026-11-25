@@ -996,6 +996,15 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
   const initialDebt = payableAccounts.reduce((sum, a) => sum + a.initialBalance, 0);
   const paidDebt = payableAccounts.reduce((sum, a) => sum + a.paidAmount, 0);
   const remainingDebt = Math.max(0, initialDebt - paidDebt);
+  const loanRemaining = payableAccounts
+    .filter((a) => a.kind === "loan" && !a.closed)
+    .reduce((sum, a) => sum + a.remainingBalance, 0);
+  const payrollRemaining = payableAccounts
+    .filter((a) => a.kind === "payroll" && !a.closed)
+    .reduce((sum, a) => sum + a.remainingBalance, 0);
+  const cardInstallmentRemaining = payableAccounts
+    .filter((a) => a.kind === "card_installment" && !a.closed)
+    .reduce((sum, a) => sum + a.remainingBalance, 0);
 
   const initialReceivable = receivableAccounts.reduce((sum, a) => sum + a.initialBalance, 0);
   const paidReceivable = receivableAccounts.reduce((sum, a) => sum + a.paidAmount, 0);
@@ -1023,11 +1032,35 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
 
   // Build per-card summaries
   const cards = snap.ccWallets.map((card) => {
+    const cutoffDay = card.cutoffDay ?? snap.settings.cardCutoffDay;
+    const statementDay = card.statementDay ?? snap.settings.statementDay;
+    const paymentDay = card.paymentDay ?? snap.settings.cardPaymentDay;
+    const cardCurrentCycle = ccCycleForDate(today, cutoffDay);
+
     const cardTxs = ccTransactions.filter((t) => t.walletId === card.id);
+    const cardInstallments = snap.activeInstallments
+      .filter((inst) => {
+        const acc = accountById.get(inst.accountId);
+        return (
+          acc &&
+          !acc.closed &&
+          acc.kind === "card_installment" &&
+          (acc.walletId === card.id || (!acc.walletId && snap.ccWallets.length === 1))
+        );
+      })
+      .map((inst) => {
+        const acc = accountById.get(inst.accountId);
+        const effectiveCycle = acc?.sourceTransactionId
+          ? inst.period
+          : ccCycleForDate(inst.dueDate, cutoffDay);
+        return { ...inst, effectiveCycle };
+      });
+
     const cardCycles = new Set<string>([
-      snap.currentCcCycle,
-      shiftMonth(snap.currentCcCycle, -1),
+      cardCurrentCycle,
+      shiftMonth(cardCurrentCycle, -1),
       ...cardTxs.map((t) => t.ccCycleKey).filter((k): k is string => Boolean(k)),
+      ...cardInstallments.map((i) => i.effectiveCycle),
     ]);
 
     const cardCycleSummaries = [...cardCycles]
@@ -1038,16 +1071,7 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
         const dailyTotal = cycleTxs
           .filter((t) => !t.isConvertedToInstallment)
           .reduce((sum, t) => sum + t.amount, 0);
-        const installmentItems = snap.activeInstallments.filter((inst) => {
-          const acc = accountById.get(inst.accountId);
-          return (
-            acc &&
-            !acc.closed &&
-            acc.kind === "card_installment" &&
-            (acc.walletId === card.id || (!acc.walletId && snap.ccWallets.length === 1)) &&
-            inst.period === cycleKey
-          );
-        });
+        const installmentItems = cardInstallments.filter((inst) => inst.effectiveCycle === cycleKey);
         const installmentTotal = installmentItems.reduce((sum, i) => sum + i.plannedAmount, 0);
         const unpaidInstallmentIds = installmentItems
           .filter((i) => i.status === "upcoming")
@@ -1065,16 +1089,14 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
         };
       });
 
-    const cutoffDay = card.cutoffDay ?? snap.settings.cardCutoffDay;
-    const statementDay = card.statementDay ?? snap.settings.statementDay;
-    const paymentDay = card.paymentDay ?? snap.settings.cardPaymentDay;
-
     return {
       walletId: card.id,
       walletName: card.name,
       color: card.color,
       creditLimit: card.creditLimit ?? snap.settings.cardLimit,
       limitUsed: card.limitUsed,
+      dailyLimitUsed: card.dailyLimitUsed,
+      installmentLimitUsed: card.installmentLimitUsed,
       balance: card.balance,
       currentCycleSpend: card.currentCycleSpend,
       cutoffDay,
@@ -1110,6 +1132,9 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
       initialDebt,
       paidDebt,
       remainingDebt,
+      loanRemaining,
+      payrollRemaining,
+      cardInstallmentRemaining,
       initialReceivable,
       paidReceivable,
       remainingReceivable,
@@ -1130,8 +1155,17 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
     })),
     installments: snap.activeInstallments.map((inst) => {
       const acc = accountById.get(inst.accountId);
+      let effectivePeriod = inst.period;
+      if (acc && acc.kind === "card_installment" && !acc.sourceTransactionId) {
+        const linkedCard =
+          (acc.walletId ? ccWalletMap.get(acc.walletId) : undefined) ??
+          (snap.ccWallets.length === 1 ? snap.ccWallets[0] : undefined);
+        const cutoff = linkedCard?.cutoffDay ?? snap.settings.cardCutoffDay;
+        effectivePeriod = ccCycleForDate(inst.dueDate, cutoff);
+      }
       return {
         ...inst,
+        period: effectivePeriod,
         accountName: acc?.name ?? "Utang",
         lender: acc?.lender ?? "",
         accountKind: acc?.kind ?? "loan",

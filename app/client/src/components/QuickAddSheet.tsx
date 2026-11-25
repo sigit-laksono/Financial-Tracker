@@ -47,6 +47,7 @@ export function QuickAddSheet({
   editingTx = null,
   preselectedInstallmentIds = [],
   preselectedCcCycleKey = "",
+  preselectedCcWalletId,
   onSuccessMessage,
   onRequestSplitPay,
 }: {
@@ -59,6 +60,7 @@ export function QuickAddSheet({
   editingTx?: TransactionDto | null;
   preselectedInstallmentIds?: number[];
   preselectedCcCycleKey?: string;
+  preselectedCcWalletId?: number;
   onSuccessMessage: (msg: string) => void;
   onRequestSplitPay?: (tx: TransactionDto) => void;
 }) {
@@ -93,10 +95,28 @@ export function QuickAddSheet({
       ),
     [debts],
   );
-  const unpaidCcCycles = useMemo(
-    () => (debts?.cycleSummaries ?? []).filter((c) => !c.settled && c.totalBill > 0),
-    [debts],
-  );
+  const unpaidCcCycles = useMemo(() => {
+    if (debts?.cards && debts.cards.length > 0) {
+      return debts.cards.flatMap((card) =>
+        card.cycleSummaries
+          .filter((c) => !c.settled && c.totalBill > 0)
+          .map((c) => ({
+            ...c,
+            walletId: card.walletId,
+            walletName: card.walletName,
+            key: `cc:${card.walletId}:${c.cycleKey}`,
+          })),
+      );
+    }
+    return (debts?.cycleSummaries ?? [])
+      .filter((c) => !c.settled && c.totalBill > 0)
+      .map((c) => ({
+        ...c,
+        walletId: undefined as number | undefined,
+        walletName: "Kartu Kredit",
+        key: `cc:0:${c.cycleKey}`,
+      }));
+  }, [debts]);
 
   const [mode, setMode] = useState<QuickAddMode>(initialMode);
   const [merchant, setMerchant] = useState("");
@@ -209,13 +229,19 @@ export function QuickAddSheet({
     }
 
     if (preselectedCcCycleKey) {
-      setSettleTarget(`cc:${preselectedCcCycleKey}`);
+      const matched =
+        unpaidCcCycles.find(
+          (c) =>
+            c.cycleKey === preselectedCcCycleKey &&
+            (preselectedCcWalletId === undefined || c.walletId === preselectedCcWalletId),
+        ) ?? unpaidCcCycles.find((c) => c.cycleKey === preselectedCcCycleKey);
+      setSettleTarget(matched?.key ?? `cc:${preselectedCcWalletId ?? 0}:${preselectedCcCycleKey}`);
     } else if (preselectedInstKey) {
       setSettleTarget(`inst:${preselectedInstKey}`);
     } else if (upcomingInstallments[0]) {
       setSettleTarget(`inst:${upcomingInstallments[0].id}`);
     } else if (unpaidCcCycles[0]) {
-      setSettleTarget(`cc:${unpaidCcCycles[0].cycleKey}`);
+      setSettleTarget(unpaidCcCycles[0].key);
     } else {
       setSettleTarget("");
     }
@@ -224,6 +250,7 @@ export function QuickAddSheet({
     editingTx,
     initialMode,
     preselectedCcCycleKey,
+    preselectedCcWalletId,
     preselectedInstKey,
     cashWallets,
     activeWallets,
@@ -250,14 +277,49 @@ export function QuickAddSheet({
 
   const selectedSettleBillAmount = useMemo(() => {
     if (settleTarget.startsWith("cc:")) {
-      const cycleKey = settleTarget.slice(3);
-      const cycle = unpaidCcCycles.find((c) => c.cycleKey === cycleKey);
+      const cycle = unpaidCcCycles.find((c) => c.key === settleTarget);
       return cycle?.totalBill ?? 0;
     }
     const instId = Number(settleTarget.slice(5));
     const inst = upcomingInstallments.find((i) => i.id === instId);
     return inst?.plannedAmount ?? 0;
   }, [settleTarget, unpaidCcCycles, upcomingInstallments]);
+
+  const selectedExpenseWallet = useMemo(
+    () => activeWallets.find((w) => w.id === walletId) ?? null,
+    [activeWallets, walletId],
+  );
+
+  const selectedCcCard = useMemo(() => {
+    if (!selectedExpenseWallet || selectedExpenseWallet.type !== "credit_card") return null;
+    return debts?.cards?.find((c) => c.walletId === selectedExpenseWallet.id) ?? null;
+  }, [debts, selectedExpenseWallet]);
+
+  const effectiveCcAvailableLimit = useMemo(() => {
+    if (!selectedExpenseWallet || selectedExpenseWallet.type !== "credit_card") return 0;
+    let available = selectedExpenseWallet.balance;
+    if (
+      editingTx &&
+      editingTx.type === "expense" &&
+      editingTx.walletId === selectedExpenseWallet.id &&
+      !editingTx.isConvertedToInstallment
+    ) {
+      const oldCycle = selectedCcCard?.cycleSummaries.find(
+        (c) => c.cycleKey === editingTx.ccCycleKey,
+      );
+      if (!oldCycle?.dailySettled) {
+        available += editingTx.amount;
+      }
+    }
+    return available;
+  }, [selectedExpenseWallet, selectedCcCard, editingTx]);
+
+  const isCcLimitExceeded = Boolean(
+    mode === "expense" &&
+      selectedExpenseWallet?.type === "credit_card" &&
+      parsedTotalAmount > 0 &&
+      parsedTotalAmount > effectiveCcAvailableLimit,
+  );
 
   const selectedSettleWallet = useMemo(() => {
     return cashWallets.find((w) => w.id === walletId) ?? cashWallets[0] ?? null;
@@ -299,6 +361,11 @@ export function QuickAddSheet({
         const amount = parsePositiveInt(amountInput);
         if (amount <= 0) throw new Error("Masukkan nominal lebih dari Rp0.");
         if (!merchant.trim()) throw new Error("Nama merchant atau keterangan wajib diisi.");
+        if (isCcLimitExceeded && selectedExpenseWallet) {
+          throw new Error(
+            `Transaksi melebihi sisa limit ${selectedExpenseWallet.name} (${formatRupiah(effectiveCcAvailableLimit)}). Tambah limit kartu terlebih dahulu jika ada kenaikan limit dari bank.`,
+          );
+        }
 
         let payloadSplits:
           | Array<{ category: string; amount: number; note?: string | null }>
@@ -390,9 +457,12 @@ export function QuickAddSheet({
         );
       }
       if (settleTarget.startsWith("cc:")) {
-        const cycleKey = settleTarget.slice(3);
-        const cycle = unpaidCcCycles.find((c) => c.cycleKey === cycleKey);
+        const parts = settleTarget.split(":");
+        const targetWalletId = Number(parts[1]) || undefined;
+        const cycleKey = parts.slice(2).join(":");
+        const cycle = unpaidCcCycles.find((c) => c.key === settleTarget);
         return api.settleInstallments({
+          ccWalletId: cycle?.walletId ?? targetWalletId,
           ccCycleKey: cycleKey,
           installmentIds: cycle?.unpaidInstallmentIds ?? [],
           fromWalletId: walletId,
@@ -654,8 +724,8 @@ export function QuickAddSheet({
                   {unpaidCcCycles.length > 0 && (
                     <optgroup label="Tagihan Kartu Kredit">
                       {unpaidCcCycles.map((c) => (
-                        <option key={`cc:${c.cycleKey}`} value={`cc:${c.cycleKey}`}>
-                          Tagihan Kartu Kredit Siklus {c.cycleKey} ({formatRupiah(c.totalBill)})
+                        <option key={c.key} value={c.key}>
+                          {c.walletName} · Siklus {c.cycleKey} ({formatRupiah(c.totalBill)})
                         </option>
                       ))}
                     </optgroup>
@@ -984,7 +1054,7 @@ export function QuickAddSheet({
                         {selectableWallets.map((w) => (
                           <option key={w.id} value={w.id}>
                             [{w.provider ? w.provider.toUpperCase() : w.type.toUpperCase()}]{" "}
-                            {w.name} ({formatRupiah(w.balance)})
+                            {w.name} ({w.type === "credit_card" ? `Sisa Limit ${formatRupiah(w.balance)}` : formatRupiah(w.balance)})
                           </option>
                         ))}
                       </select>
@@ -1042,6 +1112,54 @@ export function QuickAddSheet({
                       </div>
                     )}
                   </div>
+
+                  {/* Credit Card Remaining Limit Guard & Live Status */}
+                  {mode === "expense" && selectedExpenseWallet?.type === "credit_card" && (
+                    <div
+                      className={`rounded-[14px] border p-3 text-xs flex items-start gap-2 ${
+                        isCcLimitExceeded
+                          ? "border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+                          : "border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 text-neutral-700 dark:text-neutral-300"
+                      }`}
+                    >
+                      {isCcLimitExceeded && (
+                        <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+                      )}
+                      <div className="flex-1 space-y-0.5">
+                        {isCcLimitExceeded ? (
+                          <>
+                            <p className="font-bold">Melebihi Sisa Limit Kartu Kredit!</p>
+                            <p>
+                              Sisa limit tersedia {selectedExpenseWallet.name} saat ini{" "}
+                              <strong>{formatRupiah(effectiveCcAvailableLimit)}</strong>
+                              {selectedCcCard && selectedCcCard.installmentLimitUsed > 0
+                                ? ` (Rp ${selectedCcCard.installmentLimitUsed.toLocaleString("id-ID")} terkunci cicilan aktif)`
+                                : ""}
+                              . Transaksi tidak dapat disimpan kecuali ada penambahan limit kartu.
+                            </p>
+                          </>
+                        ) : (
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span>
+                              Sisa limit tersedia{" "}
+                              <strong className="font-mono text-neutral-900 dark:text-white">
+                                {formatRupiah(effectiveCcAvailableLimit)}
+                              </strong>{" "}
+                              dari{" "}
+                              {formatCompactRupiah(
+                                selectedExpenseWallet.creditLimit ?? 0,
+                              )}
+                            </span>
+                            {selectedCcCard && selectedCcCard.installmentLimitUsed > 0 && (
+                              <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+                                Terkunci cicilan: {formatCompactRupiah(selectedCcCard.installmentLimitUsed)}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Toggle Pecah Kategori (Split Struk) for expense */}
                   {mode === "expense" && (
@@ -1332,7 +1450,8 @@ export function QuickAddSheet({
                 saveMutation.isPending ||
                 isSavedSuccess ||
                 (mode === "settle" && (!settleTarget || isSettleInsufficient)) ||
-                (mode === "transfer" && isTransferInsufficient)
+                (mode === "transfer" && isTransferInsufficient) ||
+                isCcLimitExceeded
               }
               className="ml-auto min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
             >

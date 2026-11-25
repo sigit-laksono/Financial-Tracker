@@ -11,7 +11,8 @@ import {
 } from "../db/schema";
 import { recordAuditLog } from "./auditService";
 import { computeWalletBalance } from "./cashLedger";
-import { addMonthsToDate, jakartaToday } from "./dates";
+import { getCreditCardLimitStatus } from "./ccLimit";
+import { addMonthsToDate, ccCycleForDate, jakartaToday } from "./dates";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
 
 const ACCOUNT_COLORS = [
@@ -401,6 +402,47 @@ export async function unsettleInstallment(
   });
 }
 
+async function resolveCreditCardWalletInfo(
+  tx: Pick<AppDb, "select">,
+  requestedWalletId: number | null | undefined,
+): Promise<{ walletId: number; cutoffDay: number; ccCount: number }> {
+  const ccWallets = await tx
+    .select({ id: wallets.id, cutoffDay: wallets.cutoffDay })
+    .from(wallets)
+    .where(eq(wallets.type, "credit_card"));
+  const [settingsRow] = await tx
+    .select({ cardCutoffDay: appSettings.cardCutoffDay })
+    .from(appSettings)
+    .where(eq(appSettings.id, 1))
+    .limit(1);
+  const defaultCutoff = settingsRow?.cardCutoffDay ?? 20;
+
+  if (requestedWalletId) {
+    const matched = ccWallets.find((w) => w.id === requestedWalletId);
+    if (!matched) {
+      throw new ValidationError("Dompet kartu kredit yang dipilih tidak ditemukan.");
+    }
+    return {
+      walletId: matched.id,
+      cutoffDay: matched.cutoffDay ?? defaultCutoff,
+      ccCount: ccWallets.length,
+    };
+  }
+  if (ccWallets.length === 0) {
+    throw new ValidationError(
+      "Tambahkan dompet Kartu Kredit terlebih dahulu sebelum mencatat cicilan kartu kredit.",
+    );
+  }
+  if (ccWallets.length > 1) {
+    throw new ValidationError("Pilih kartu kredit yang menanggung cicilan ini.");
+  }
+  return {
+    walletId: ccWallets[0]!.id,
+    cutoffDay: ccWallets[0]!.cutoffDay ?? defaultCutoff,
+    ccCount: ccWallets.length,
+  };
+}
+
 export async function createDebtAccountWithSchedule(
   db: AppDb,
   input: {
@@ -456,6 +498,21 @@ export async function createDebtAccountWithSchedule(
         ? input.customSchedule.reduce((sum, item) => sum + item.plannedAmount, 0)
         : input.initialBalance;
 
+    let resolvedWalletId = input.walletId ?? null;
+    let resolvedCcCutoffDay: number | null = null;
+    if (input.kind === "card_installment") {
+      const resolved = await resolveCreditCardWalletInfo(tx, resolvedWalletId);
+      resolvedWalletId = resolved.walletId;
+      resolvedCcCutoffDay = resolved.cutoffDay;
+
+      const limitStatus = await getCreditCardLimitStatus(tx, resolvedWalletId);
+      if (effectiveInitialBalance > limitStatus.availableLimit) {
+        throw new ValidationError(
+          `Total cicilan melebihi sisa limit ${limitStatus.walletName} (Sisa limit: Rp${limitStatus.availableLimit.toLocaleString("id-ID")}, Total cicilan: Rp${effectiveInitialBalance.toLocaleString("id-ID")}).`,
+        );
+      }
+    }
+
     const [account] = await tx
       .insert(debtAccounts)
       .values({
@@ -464,7 +521,7 @@ export async function createDebtAccountWithSchedule(
         lender: input.lender,
         kind: input.kind,
         direction,
-        walletId: input.walletId ?? null,
+        walletId: resolvedWalletId,
         initialBalance: effectiveInitialBalance,
         paymentDay,
         paymentMethod: input.paymentMethod,
@@ -543,7 +600,10 @@ export async function createDebtAccountWithSchedule(
       input.customSchedule && input.customSchedule.length > 0
         ? input.customSchedule.map((item) => ({
             accountId: account.id,
-            period: item.period,
+            period:
+              resolvedCcCutoffDay !== null
+                ? ccCycleForDate(item.dueDate, resolvedCcCutoffDay)
+                : item.period,
             dueDate: item.dueDate,
             plannedAmount: item.plannedAmount,
             principalAmount: item.principalAmount ?? item.plannedAmount,
@@ -557,7 +617,10 @@ export async function createDebtAccountWithSchedule(
             const interest = input.interestAmount ?? 0;
             return {
               accountId: account.id,
-              period,
+              period:
+                resolvedCcCutoffDay !== null
+                  ? ccCycleForDate(dueDate, resolvedCcCutoffDay)
+                  : period,
               dueDate,
               plannedAmount: planned,
               principalAmount: principal,
@@ -568,6 +631,204 @@ export async function createDebtAccountWithSchedule(
     await tx.insert(installments).values(scheduleRows);
 
     return { accountId: account.id, installmentCount: scheduleRows.length };
+  });
+}
+
+export async function updateDebtAccountWithSchedule(
+  db: AppDb,
+  accountId: number,
+  input: {
+    name?: string;
+    lender?: string;
+    kind?: "loan" | "card_installment" | "payroll" | "receivable";
+    paymentMethod?: string;
+    walletId?: number | null;
+    installments?: Array<{
+      id: number;
+      dueDate: string;
+      plannedAmount: number;
+    }>;
+  },
+) {
+  return await db.transaction(async (tx) => {
+    const [account] = await tx
+      .select()
+      .from(debtAccounts)
+      .where(eq(debtAccounts.id, accountId))
+      .limit(1);
+    if (!account) throw new NotFoundError("Akun utang/piutang tidak ditemukan.");
+
+    const nextKind =
+      account.direction === "receivable"
+        ? "receivable"
+        : input.kind && input.kind !== "receivable"
+          ? input.kind
+          : account.kind;
+
+    if (account.sourceTransactionId && nextKind !== "card_installment") {
+      throw new ValidationError("Cicilan hasil Split Pay kartu kredit tidak dapat diubah jenisnya.");
+    }
+    if (
+      account.sourceTransactionId &&
+      input.walletId !== undefined &&
+      input.walletId !== account.walletId
+    ) {
+      throw new ValidationError("Kartu kredit sumber untuk cicilan Split Pay tidak dapat dipindahkan.");
+    }
+
+    const existingInsts = await tx
+      .select()
+      .from(installments)
+      .where(eq(installments.accountId, accountId));
+    const existingById = new Map(existingInsts.map((row) => [row.id, row]));
+
+    const updatesByInstId = new Map<number, { dueDate: string; plannedAmount: number }>();
+    if (input.installments) {
+      for (const item of input.installments) {
+        const row = existingById.get(item.id);
+        if (!row) {
+          throw new ValidationError("Jadwal cicilan tidak sesuai dengan akun ini.");
+        }
+        if (
+          row.status === "paid" &&
+          (row.dueDate !== item.dueDate || row.plannedAmount !== item.plannedAmount)
+        ) {
+          throw new ValidationError("Cicilan yang sudah lunas tidak dapat diubah tanggal atau nominalnya.");
+        }
+        if (row.status === "upcoming") {
+          updatesByInstId.set(item.id, {
+            dueDate: item.dueDate,
+            plannedAmount: item.plannedAmount,
+          });
+        }
+      }
+    }
+
+    let prevPaidAmount = 0;
+    let nextInitialBalance = 0;
+    let nextRemainingBalance = 0;
+    const finalDueDates: string[] = [];
+
+    for (const row of existingInsts) {
+      const edited = updatesByInstId.get(row.id);
+      const effectiveDueDate = edited?.dueDate ?? row.dueDate;
+      const effectivePlanned = edited?.plannedAmount ?? row.plannedAmount;
+      finalDueDates.push(effectiveDueDate);
+
+      if (row.status === "paid") {
+        const paidAmt = row.actualAmount ?? row.plannedAmount;
+        prevPaidAmount += paidAmt;
+        nextInitialBalance += paidAmt;
+      } else {
+        nextInitialBalance += effectivePlanned;
+        nextRemainingBalance += effectivePlanned;
+      }
+    }
+
+    if (existingInsts.length === 0) {
+      nextInitialBalance = account.initialBalance;
+      nextRemainingBalance = account.initialBalance;
+    }
+
+    const prevRemainingBalance = Math.max(0, account.initialBalance - prevPaidAmount);
+
+    let nextWalletId: number | null = null;
+    let nextCcCutoffDay: number | null = null;
+    if (nextKind === "card_installment") {
+      const requestedWalletId =
+        input.walletId !== undefined ? input.walletId : account.walletId;
+      const resolved = await resolveCreditCardWalletInfo(tx, requestedWalletId);
+      nextWalletId = resolved.walletId;
+      nextCcCutoffDay = resolved.cutoffDay;
+
+      if (!account.closedAt) {
+        const limitStatus = await getCreditCardLimitStatus(tx, nextWalletId);
+        const alreadyCountedOnTargetCard =
+          account.kind === "card_installment" &&
+          (account.walletId === nextWalletId ||
+            (resolved.ccCount <= 1 && account.walletId === null));
+        const effectiveAvailable =
+          limitStatus.availableLimit + (alreadyCountedOnTargetCard ? prevRemainingBalance : 0);
+
+        if (nextRemainingBalance > effectiveAvailable) {
+          throw new ValidationError(
+            `Sisa cicilan melebihi sisa limit ${limitStatus.walletName} (Sisa limit tersedia: Rp${effectiveAvailable.toLocaleString("id-ID")}, Total sisa cicilan: Rp${nextRemainingBalance.toLocaleString("id-ID")}).`,
+          );
+        }
+      }
+    }
+
+    for (const row of existingInsts) {
+      if (row.status !== "upcoming") continue;
+      const patch = updatesByInstId.get(row.id);
+      const effectiveDueDate = patch?.dueDate ?? row.dueDate;
+      const effectivePlanned = patch?.plannedAmount ?? row.plannedAmount;
+      const effectivePeriod =
+        nextKind === "card_installment" && nextCcCutoffDay !== null && !account.sourceTransactionId
+          ? ccCycleForDate(effectiveDueDate, nextCcCutoffDay)
+          : effectiveDueDate.slice(0, 7);
+
+      if (
+        patch ||
+        effectivePeriod !== row.period
+      ) {
+        await tx
+          .update(installments)
+          .set({
+            dueDate: effectiveDueDate,
+            period: effectivePeriod,
+            plannedAmount: effectivePlanned,
+            principalAmount: effectivePlanned,
+          })
+          .where(eq(installments.id, row.id));
+      }
+    }
+
+    finalDueDates.sort((a, b) => a.localeCompare(b));
+    const nextPaymentDay = finalDueDates[0]
+      ? Number(finalDueDates[0].split("-")[2] ?? account.paymentDay ?? 1)
+      : account.paymentDay;
+
+    const nextName = input.name?.trim() || account.name;
+    const nextLender = input.lender?.trim() || account.lender;
+    const nextPaymentMethod = input.paymentMethod?.trim() || account.paymentMethod;
+
+    await tx
+      .update(debtAccounts)
+      .set({
+        name: nextName,
+        lender: nextLender,
+        kind: nextKind,
+        walletId: nextWalletId,
+        paymentMethod: nextPaymentMethod,
+        initialBalance: nextInitialBalance,
+        paymentDay: nextPaymentDay,
+      })
+      .where(eq(debtAccounts.id, accountId));
+
+    await recordAuditLog(tx, {
+      entityType: "debt_account",
+      entityId: accountId,
+      action: "update_debt_account",
+      before: {
+        name: account.name,
+        lender: account.lender,
+        kind: account.kind,
+        walletId: account.walletId,
+        initialBalance: account.initialBalance,
+        paymentMethod: account.paymentMethod,
+      },
+      after: {
+        name: nextName,
+        lender: nextLender,
+        kind: nextKind,
+        walletId: nextWalletId,
+        initialBalance: nextInitialBalance,
+        paymentMethod: nextPaymentMethod,
+      },
+    });
+
+    return { ok: true, accountId, initialBalance: nextInitialBalance };
   });
 }
 

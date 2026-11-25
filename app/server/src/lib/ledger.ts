@@ -18,6 +18,7 @@ export {
   filterActiveInstallmentIds,
   settleObligations,
   unsettleInstallment,
+  updateDebtAccountWithSchedule,
 } from "./debtEngine";
 export { computeLedgerSnapshot, runDailyLedgerSync } from "./ledgerSnapshot";
 export { getSalaryPreview, receiveSalaryForPeriod } from "./salaryService";

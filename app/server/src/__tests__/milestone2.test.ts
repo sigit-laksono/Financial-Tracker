@@ -462,4 +462,250 @@ describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline S
     const tunaiWallet = snap.wallets.find((w) => w.id === tunai!.id);
     expect(tunaiWallet?.balance).toBe(50_000); // 300.000 - 250.000
   });
+
+  it("cicilan kartu kredit memotong sisa limit dan memblokir transaksi harian yang melebihi sisa limit", async () => {
+    const { app } = await setupTestContext();
+
+    // 1. Buat kartu kredit baru dengan limit Rp 15.000.000
+    const createCcRes = await app.request("/api/wallets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "CC Limit 15Jt",
+        type: "credit_card",
+        creditLimit: 15_000_000,
+        cutoffDay: 20,
+        statementDay: 21,
+        paymentDay: 10,
+      }),
+    });
+    expect(createCcRes.status).toBe(201);
+    const { wallet: cc15 } = (await createCcRes.json()) as { wallet: { id: number } };
+
+    // 2. Tambah cicilan kartu kredit sebesar Rp 6.000.000 (6 x Rp 1.000.000) terikat ke kartu ini
+    const createInstallmentRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Cicilan Laptop CC",
+        lender: "CC Limit 15Jt",
+        kind: "card_installment",
+        direction: "payable",
+        walletId: cc15.id,
+        initialBalance: 6_000_000,
+        installmentCount: 6,
+        installmentAmount: 1_000_000,
+        firstDueDate: "2026-11-10",
+        paymentMethod: "Tagihan kartu",
+      }),
+    });
+    expect(createInstallmentRes.status).toBe(201);
+
+    // 3. Verifikasi sisa limit sekarang Rp 9.000.000 (6 jt terkunci cicilan)
+    let debtsRes = await app.request("/api/debts");
+    let debtsBody = (await debtsRes.json()) as {
+      cards: Array<{
+        walletId: number;
+        creditLimit: number;
+        limitUsed: number;
+        dailyLimitUsed: number;
+        installmentLimitUsed: number;
+        balance: number;
+      }>;
+      totals: { cardInstallmentRemaining: number };
+    };
+    let card15 = debtsBody.cards.find((c) => c.walletId === cc15.id)!;
+    expect(card15.creditLimit).toBe(15_000_000);
+    expect(card15.installmentLimitUsed).toBe(6_000_000);
+    expect(card15.dailyLimitUsed).toBe(0);
+    expect(card15.limitUsed).toBe(6_000_000);
+    expect(card15.balance).toBe(9_000_000);
+    expect(debtsBody.totals.cardInstallmentRemaining).toBe(6_000_000);
+
+    // 4. Transaksi harian Rp 9.500.000 harus ditolak (melebihi sisa limit Rp 9.000.000)
+    const overLimitDailyRes = await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "expense",
+        merchant: "Belanja Melebihi Sisa Limit",
+        amount: 9_500_000,
+        transactionDate: "2026-10-25",
+        category: "Belanja Pribadi & Hobi",
+        walletId: cc15.id,
+      }),
+    });
+    expect(overLimitDailyRes.status).toBe(400);
+    const overLimitJson = (await overLimitDailyRes.json()) as { error: string };
+    expect(overLimitJson.error).toContain("melebihi sisa limit");
+
+    // 5. Transaksi harian Rp 5.000.000 berhasil dan menyisakan limit Rp 4.000.000
+    const okDailyRes = await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "expense",
+        merchant: "Belanja Normal",
+        amount: 5_000_000,
+        transactionDate: "2026-10-25",
+        category: "Belanja Pribadi & Hobi",
+        walletId: cc15.id,
+      }),
+    });
+    expect(okDailyRes.status).toBe(201);
+    const { id: okDailyTxId } = (await okDailyRes.json()) as { id: number };
+
+    // 5b. Edit transaksi Rp 5jt -> Rp 9.5jt harus ditolak (tersedia sebelum edit = 9jt),
+    // sedangkan edit ke Rp 6jt harus berhasil (tersedia 9jt -> sisa 3jt), lalu kembalikan ke Rp 5jt
+    const overLimitPatchRes = await app.request(`/api/transactions/${okDailyTxId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount: 9_500_000 }),
+    });
+    expect(overLimitPatchRes.status).toBe(400);
+
+    const okPatchRes = await app.request(`/api/transactions/${okDailyTxId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount: 5_000_000 }),
+    });
+    expect(okPatchRes.status).toBe(200);
+
+    debtsRes = await app.request("/api/debts");
+    debtsBody = (await debtsRes.json()) as typeof debtsBody;
+    card15 = debtsBody.cards.find((c) => c.walletId === cc15.id)!;
+    expect(card15.installmentLimitUsed).toBe(6_000_000);
+    expect(card15.dailyLimitUsed).toBe(5_000_000);
+    expect(card15.limitUsed).toBe(11_000_000);
+    expect(card15.balance).toBe(4_000_000);
+
+    // 6. Tambah cicilan CC baru Rp 4.500.000 juga harus ditolak karena sisa limit Rp 4.000.000
+    const overLimitInstRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Cicilan Overlimit",
+        lender: "CC Limit 15Jt",
+        kind: "card_installment",
+        direction: "payable",
+        walletId: cc15.id,
+        initialBalance: 4_500_000,
+        installmentCount: 3,
+        installmentAmount: 1_500_000,
+        firstDueDate: "2026-11-10",
+        paymentMethod: "Tagihan kartu",
+      }),
+    });
+    expect(overLimitInstRes.status).toBe(400);
+
+    // 7. Uji PATCH /api/debts/:id: edit cicilan CC (geser tanggal jatuh tempo + custom nominal)
+    const debtAcc = (
+      (await (await app.request("/api/debts")).json()) as {
+        accounts: Array<{ id: number; name: string }>;
+        installments: Array<{ id: number; accountId: number; dueDate: string; plannedAmount: number }>;
+      }
+    );
+    const laptopAcc = debtAcc.accounts.find((a) => a.name === "Cicilan Laptop CC")!;
+    const laptopInsts = debtAcc.installments.filter((i) => i.accountId === laptopAcc.id);
+
+    // Ubah jatuh tempo & nominal bulan pertama dari 1.000.000 -> 1.500.000 (total naik 500rb, masih muat di sisa limit 4jt)
+    const patchOkRes = await app.request(`/api/debts/${laptopAcc.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Cicilan Laptop CC Revisi",
+        installments: laptopInsts.map((inst, idx) => ({
+          id: inst.id,
+          dueDate: idx === 0 ? "2026-11-15" : inst.dueDate,
+          plannedAmount: idx === 0 ? 1_500_000 : inst.plannedAmount,
+        })),
+      }),
+    });
+    expect(patchOkRes.status).toBe(200);
+
+    // Ubah nominal bulan pertama jadi 6.000.000 (naik 4,5jt melebihi sisa limit 3,5jt) -> harus ditolak 400
+    const patchOverRes = await app.request(`/api/debts/${laptopAcc.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        installments: laptopInsts.map((inst, idx) => ({
+          id: inst.id,
+          dueDate: inst.dueDate,
+          plannedAmount: idx === 0 ? 6_000_000 : inst.plannedAmount,
+        })),
+      }),
+    });
+    expect(patchOverRes.status).toBe(400);
+
+    // 8. Uji cut-off CC: kartu dengan cut-off tgl 21, cicilan tanggal 26 Nov 2026 harus masuk siklus Desember 2026 (sama seperti transaksi 22 Nov)
+    const createJeniusRes = await app.request("/api/wallets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Jenius Cut21",
+        type: "credit_card",
+        creditLimit: 15_000_000,
+        cutoffDay: 21,
+        statementDay: 21,
+        paymentDay: 7,
+      }),
+    });
+    expect(createJeniusRes.status).toBe(201);
+    const { wallet: jenius21 } = (await createJeniusRes.json()) as { wallet: { id: number } };
+
+    const ccNovInstRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "CC Nov",
+        lender: "Jenius Cut21",
+        kind: "card_installment",
+        direction: "payable",
+        walletId: jenius21.id,
+        initialBalance: 3_582_808,
+        installmentCount: 1,
+        installmentAmount: 3_582_808,
+        firstDueDate: "2026-11-26",
+        paymentMethod: "Tagihan kartu",
+      }),
+    });
+    expect(ccNovInstRes.status).toBe(201);
+
+    const ccNovTxRes = await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "expense",
+        merchant: "Warung Agus",
+        amount: 22_000,
+        transactionDate: "2026-11-22",
+        category: "Makanan & Belanja Dapur",
+        walletId: jenius21.id,
+      }),
+    });
+    expect(ccNovTxRes.status).toBe(201);
+
+    const debtsCutoffRes = await app.request("/api/debts");
+    const debtsCutoffBody = (await debtsCutoffRes.json()) as {
+      cards: Array<{
+        walletId: number;
+        cycleSummaries: Array<{
+          cycleKey: string;
+          dailyTotal: number;
+          installmentTotal: number;
+          totalBill: number;
+        }>;
+      }>;
+      installments: Array<{ accountName: string; period: string; dueDate: string }>;
+    };
+    const jeniusCardSummary = debtsCutoffBody.cards.find((c) => c.walletId === jenius21.id)!;
+    const decCycle = jeniusCardSummary.cycleSummaries.find((s) => s.cycleKey === "2026-12")!;
+    const novCycle = jeniusCardSummary.cycleSummaries.find((s) => s.cycleKey === "2026-11")!;
+    expect(decCycle.dailyTotal).toBe(22_000);
+    expect(decCycle.installmentTotal).toBe(3_582_808);
+    expect(decCycle.totalBill).toBe(3_604_808);
+    expect(novCycle.installmentTotal).toBe(0);
+    const ccNovInst = debtsCutoffBody.installments.find((i) => i.accountName === "CC Nov")!;
+    expect(ccNovInst.period).toBe("2026-12");
+  });
 });

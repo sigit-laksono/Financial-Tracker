@@ -184,6 +184,14 @@ export function DownloadIcon({ className }: { className?: string }) {
   );
 }
 
+export function UploadIcon({ className }: { className?: string }) {
+  return (
+    <Svg className={className}>
+      <path d="M12 15V4m0 0-4 4m4-4 4 4M4 19h16" />
+    </Svg>
+  );
+}
+
 export function SidebarToggleIcon({ className }: { className?: string }) {
   return (
     <Svg className={className}>

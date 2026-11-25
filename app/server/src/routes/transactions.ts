@@ -20,8 +20,9 @@ import {
   wallets,
 } from "../db/schema";
 import { recordAuditLog } from "../lib/auditService";
+import { getCreditCardLimitStatus } from "../lib/ccLimit";
 import { ccCycleForDate, periodBounds } from "../lib/dates";
-import { ConflictError, NotFoundError } from "../lib/errors";
+import { ConflictError, NotFoundError, ValidationError } from "../lib/errors";
 import {
   convertTransactionToInstallment,
   createTransferWithOptionalFee,
@@ -439,6 +440,15 @@ export function createTransactionRoutes(db: AppDb) {
       wallet.type === "credit_card" ? ccCycleForDate(parsed.data.transactionDate, cutoff) : null;
 
     const insertedId = await db.transaction(async (tx) => {
+      if (parsed.data.type === "expense" && wallet.type === "credit_card") {
+        const limitStatus = await getCreditCardLimitStatus(tx, wallet.id);
+        if (parsed.data.amount > limitStatus.availableLimit) {
+          throw new ValidationError(
+            `Transaksi melebihi sisa limit ${limitStatus.walletName} (Sisa limit: Rp${limitStatus.availableLimit.toLocaleString("id-ID")}, Terpakai: Rp${limitStatus.limitUsed.toLocaleString("id-ID")} dari Rp${limitStatus.creditLimit.toLocaleString("id-ID")}).`,
+          );
+        }
+      }
+
       const [inserted] = await tx
         .insert(transactions)
         .values({
@@ -746,6 +756,25 @@ export function createTransactionRoutes(db: AppDb) {
         : null;
 
     await db.transaction(async (tx) => {
+      if (nextType === "expense" && wallet.type === "credit_card" && !existing.isConvertedToInstallment) {
+        const limitStatus = await getCreditCardLimitStatus(tx, wallet.id);
+        let effectiveAvailable = limitStatus.availableLimit;
+        if (
+          existing.type === "expense" &&
+          existing.walletId === wallet.id &&
+          !existing.isConvertedToInstallment &&
+          existing.ccCycleKey
+        ) {
+          const oldCycleUnpaid = limitStatus.unpaidByCycle.get(existing.ccCycleKey) ?? 0;
+          effectiveAvailable += Math.min(existing.amount, oldCycleUnpaid);
+        }
+        if (nextAmount > effectiveAvailable) {
+          throw new ValidationError(
+            `Transaksi melebihi sisa limit ${limitStatus.walletName} (Sisa limit tersedia: Rp${effectiveAvailable.toLocaleString("id-ID")}, Limit kartu: Rp${limitStatus.creditLimit.toLocaleString("id-ID")}).`,
+          );
+        }
+      }
+
       await tx
         .update(transactions)
         .set({

@@ -1,9 +1,16 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DebtDirection, DebtKind } from "../../../shared/src/types";
-import { addMonthsToDate, isValidIsoDate } from "../../../shared/src/dates";
+import { addMonthsToDate, ccCycleForDate, isValidIsoDate } from "../../../shared/src/dates";
 import { api, ApiError } from "../lib/api";
-import { formatDigitsInput, formatRupiah, formatShortDate, jakartaToday, parsePositiveInt } from "../lib/format";
+import {
+  formatDigitsInput,
+  formatMonthTitle,
+  formatRupiah,
+  formatShortDate,
+  jakartaToday,
+  parsePositiveInt,
+} from "../lib/format";
 import { AlertIcon } from "./Icons";
 import { Button, ModalSheet } from "./UI";
 
@@ -20,20 +27,25 @@ export function AddDebtModal({
   open,
   onClose,
   onSuccess,
+  initialDirection = "payable",
+  initialKind = "loan",
 }: {
   open: boolean;
   onClose: () => void;
   onSuccess: (msg: string) => void;
+  initialDirection?: DebtDirection;
+  initialKind?: DebtKind;
 }) {
   const queryClient = useQueryClient();
-  const [direction, setDirection] = useState<DebtDirection>("payable");
+  const [direction, setDirection] = useState<DebtDirection>(initialDirection);
   const [name, setName] = useState("");
   const [lender, setLender] = useState("");
-  const [kind, setKind] = useState<DebtKind>("loan");
+  const [kind, setKind] = useState<DebtKind>(initialKind);
   const [count, setCount] = useState("6");
   const [amountInput, setAmountInput] = useState("");
   const [firstDueDate, setFirstDueDate] = useState(jakartaToday);
   const [paymentMethod, setPaymentMethod] = useState("Transfer");
+  const [ccWalletId, setCcWalletId] = useState<number | null>(null);
 
   // Disbursement toggle & wallet selection
   const [recordDisbursement, setRecordDisbursement] = useState(false);
@@ -59,20 +71,35 @@ export function AddDebtModal({
   const liquidWallets = (walletsData?.wallets ?? []).filter(
     (w) => w.isActive && w.type !== "credit_card",
   );
+  const creditCardWallets = (walletsData?.wallets ?? []).filter(
+    (w) => w.isActive && w.type === "credit_card",
+  );
+  const selectedCcWallet =
+    creditCardWallets.find((w) => w.id === ccWalletId) ?? creditCardWallets[0] ?? null;
 
   const installmentCount = Math.max(1, Math.min(120, parseInt(count, 10) || 1));
   const standardAmount = parsePositiveInt(amountInput);
 
   useEffect(() => {
     if (!open) return;
-    setDirection("payable");
+    const resolvedDir = initialDirection;
+    const resolvedKind = resolvedDir === "receivable" ? "receivable" : initialKind === "receivable" ? "loan" : initialKind;
+    setDirection(resolvedDir);
     setName("");
-    setLender("");
-    setKind("loan");
-    setCount("6");
+    setKind(resolvedKind);
+    setCount(resolvedDir === "receivable" ? "1" : "6");
     setAmountInput("");
     setFirstDueDate(jakartaToday());
-    setPaymentMethod("Transfer");
+    setPaymentMethod(
+      resolvedKind === "card_installment"
+        ? "Tagihan kartu"
+        : resolvedKind === "payroll"
+          ? "Potong gaji"
+          : "Transfer",
+    );
+    const defaultCc = creditCardWallets[0] ?? null;
+    setCcWalletId(defaultCc?.id ?? null);
+    setLender(resolvedKind === "card_installment" && defaultCc ? defaultCc.name : "");
     setRecordDisbursement(false);
     setDisburseWalletId(liquidWallets[0]?.id ?? null);
     setSplitPrincipalInterest(false);
@@ -81,7 +108,7 @@ export function AddDebtModal({
     setScheduleRows([]);
     setShowScheduleDetails(false);
     setError("");
-  }, [open, liquidWallets[0]?.id]);
+  }, [open, initialDirection, initialKind, liquidWallets[0]?.id, creditCardWallets[0]?.id]);
 
   // Sync / generate schedule when count, amountInput, or firstDueDate changes
   useEffect(() => {
@@ -143,6 +170,12 @@ export function AddDebtModal({
       ? scheduleRows.reduce((sum, r) => sum + r.amount, 0)
       : Number(count || 0) * parsePositiveInt(amountInput);
 
+  const isCardInstallment = direction === "payable" && kind === "card_installment";
+  const isCardLimitExceeded = Boolean(
+    isCardInstallment && selectedCcWallet && totalCalculated > selectedCcWallet.balance,
+  );
+  const missingCcWallet = isCardInstallment && creditCardWallets.length === 0;
+
   // Sync default lender & kind when direction switches
   const handleDirectionChange = (newDir: DebtDirection) => {
     setDirection(newDir);
@@ -158,6 +191,26 @@ export function AddDebtModal({
       setLender("");
       setName("");
       setCount("6");
+      setPaymentMethod("Transfer");
+    }
+  };
+
+  const handleKindChange = (nextKind: DebtKind) => {
+    setKind(nextKind);
+    setError("");
+    if (nextKind === "card_installment") {
+      setRecordDisbursement(false);
+      if (paymentMethod === "Transfer" || paymentMethod === "Potong gaji") {
+        setPaymentMethod("Tagihan kartu");
+      }
+      if (!lender.trim() && selectedCcWallet) {
+        setLender(selectedCcWallet.name);
+      }
+    } else if (nextKind === "payroll") {
+      if (paymentMethod === "Transfer" || paymentMethod === "Tagihan kartu") {
+        setPaymentMethod("Potong gaji");
+      }
+    } else if (paymentMethod === "Tagihan kartu" || paymentMethod === "Potong gaji") {
       setPaymentMethod("Transfer");
     }
   };
@@ -178,7 +231,23 @@ export function AddDebtModal({
       }
       if (installmentAmount <= 0) throw new Error("Nominal cicilan harus lebih dari Rp0.");
 
-      if (recordDisbursement && !disburseWalletId) {
+      if (isCardInstallment) {
+        if (!selectedCcWallet) {
+          throw new Error(
+            "Tambahkan dompet Kartu Kredit terlebih dahulu sebelum mencatat cicilan kartu kredit.",
+          );
+        }
+        const checkTotal = hasModifiedSchedule
+          ? scheduleRows.reduce((sum, r) => sum + (r.amount > 0 ? r.amount : installmentAmount), 0)
+          : installmentCount * installmentAmount;
+        if (checkTotal > selectedCcWallet.balance) {
+          throw new Error(
+            `Total cicilan (${formatRupiah(checkTotal)}) melebihi sisa limit ${selectedCcWallet.name} (${formatRupiah(selectedCcWallet.balance)}).`,
+          );
+        }
+      }
+
+      if (!isCardInstallment && recordDisbursement && !disburseWalletId) {
         throw new Error("Pilih dompet untuk mutasi pencairan / pemotongan dana.");
       }
 
@@ -214,8 +283,9 @@ export function AddDebtModal({
         interestAmount,
         firstDueDate,
         paymentMethod: paymentMethod.trim() || "Transfer",
-        disburseWalletId: recordDisbursement ? disburseWalletId : null,
-        recordDisbursement,
+        walletId: isCardInstallment ? selectedCcWallet?.id ?? null : null,
+        disburseWalletId: !isCardInstallment && recordDisbursement ? disburseWalletId : null,
+        recordDisbursement: !isCardInstallment && recordDisbursement,
         customSchedule,
       });
     },
@@ -335,7 +405,7 @@ export function AddDebtModal({
               <select
                 id="debt-kind"
                 value={kind}
-                onChange={(e) => setKind(e.target.value as DebtKind)}
+                onChange={(e) => handleKindChange(e.target.value as DebtKind)}
                 className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
               >
                 <option value="loan">Pinjaman Tunai</option>
@@ -345,6 +415,85 @@ export function AddDebtModal({
             )}
           </div>
         </div>
+
+        {/* Credit Card Target Selector for card_installment */}
+        {isCardInstallment && (
+          <div className="space-y-2.5 rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 p-3.5">
+            <label
+              htmlFor="debt-cc-wallet"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+            >
+              Kartu Kredit Penanggung Cicilan
+            </label>
+            {missingCcWallet ? (
+              <div className="flex items-start gap-2 rounded-[12px] border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs text-rose-800 dark:text-rose-200">
+                <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+                <div>
+                  <p className="font-bold">Belum Ada Dompet Kartu Kredit</p>
+                  <p className="mt-0.5">
+                    Tambahkan dompet bertipe <strong>Kartu Kredit</strong> di menu Dompet terlebih
+                    dahulu agar cicilan dapat memotong limit kartu secara otomatis.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <>
+                <select
+                  id="debt-cc-wallet"
+                  value={selectedCcWallet?.id ?? ""}
+                  onChange={(e) => {
+                    const nextId = Number(e.target.value);
+                    const prevName = selectedCcWallet?.name;
+                    const nextCard = creditCardWallets.find((w) => w.id === nextId);
+                    setCcWalletId(nextId);
+                    if (nextCard && (!lender.trim() || lender === prevName)) {
+                      setLender(nextCard.name);
+                    }
+                  }}
+                  className="w-full rounded-[14px] bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                >
+                  {creditCardWallets.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name} — Sisa Limit: {formatRupiah(w.balance)} (dari{" "}
+                      {formatRupiah(w.creditLimit ?? 0)})
+                    </option>
+                  ))}
+                </select>
+                {selectedCcWallet && (
+                  <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                    <div className="rounded-[10px] bg-white dark:bg-neutral-900 px-3 py-2 border border-neutral-200 dark:border-neutral-700">
+                      <span className="text-neutral-400 block">Sisa Limit Saat Ini</span>
+                      <strong className="font-mono text-xs text-neutral-900 dark:text-white">
+                        {formatRupiah(selectedCcWallet.balance)}
+                      </strong>
+                    </div>
+                    <div className="rounded-[10px] bg-white dark:bg-neutral-900 px-3 py-2 border border-neutral-200 dark:border-neutral-700">
+                      <span className="text-neutral-400 block">Sisa Limit Setelah Cicilan</span>
+                      <strong
+                        className={`font-mono text-xs ${
+                          isCardLimitExceeded
+                            ? "text-rose-600 dark:text-rose-400"
+                            : "text-emerald-600 dark:text-emerald-400"
+                        }`}
+                      >
+                        {formatRupiah(Math.max(0, selectedCcWallet.balance - totalCalculated))}
+                      </strong>
+                    </div>
+                  </div>
+                )}
+                {isCardLimitExceeded && selectedCcWallet && (
+                  <div className="flex items-start gap-2 rounded-[12px] border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-2.5 text-xs text-rose-800 dark:text-rose-200">
+                    <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+                    <span>
+                      Total cicilan ({formatRupiah(totalCalculated)}) melebihi sisa limit{" "}
+                      {selectedCcWallet.name} ({formatRupiah(selectedCcWallet.balance)}).
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* Installment count & amount */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -496,6 +645,18 @@ export function AddDebtModal({
                         </span>
                         <span className="block text-[10px] text-neutral-400">
                           Jatuh tempo: {formatShortDate(row.dueDate)}
+                          {isCardInstallment && selectedCcWallet && (
+                            <>
+                              {" "}
+                              ·{" "}
+                              <strong className="text-[var(--primary)]">
+                                Siklus{" "}
+                                {formatMonthTitle(
+                                  ccCycleForDate(row.dueDate, selectedCcWallet.cutoffDay ?? 20),
+                                )}
+                              </strong>
+                            </>
+                          )}
                         </span>
                       </div>
                     </div>
@@ -579,49 +740,51 @@ export function AddDebtModal({
           </div>
         )}
 
-        {/* Disbursement Flow Section */}
-        <div className="space-y-2 rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 p-3.5">
-          <label className="flex items-center gap-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={recordDisbursement}
-              onChange={(e) => setRecordDisbursement(e.target.checked)}
-              className="rounded h-4 w-4 accent-[var(--primary)]"
-            />
-            <span>
-              {direction === "receivable"
-                ? "Potong Saldo Dompet Sekarang (Saya kirim uangnya hari ini)"
-                : "Catat Pencairan Dana ke Dompet Sekarang (Dana pinjaman sudah cair)"}
-            </span>
-          </label>
+        {/* Disbursement Flow Section (not applicable for CC installment since it locks card limit) */}
+        {!isCardInstallment && (
+          <div className="space-y-2 rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 p-3.5">
+            <label className="flex items-center gap-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={recordDisbursement}
+                onChange={(e) => setRecordDisbursement(e.target.checked)}
+                className="rounded h-4 w-4 accent-[var(--primary)]"
+              />
+              <span>
+                {direction === "receivable"
+                  ? "Potong Saldo Dompet Sekarang (Saya kirim uangnya hari ini)"
+                  : "Catat Pencairan Dana ke Dompet Sekarang (Dana pinjaman sudah cair)"}
+              </span>
+            </label>
 
-          {recordDisbursement && (
-            <div className="space-y-2 pt-1">
-              <label htmlFor="disburse-wallet" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                {direction === "receivable"
-                  ? "Pilih Dompet Sumber Dana (Saldo akan berkurang):"
-                  : "Pilih Dompet Penerima Dana (Saldo akan bertambah):"}
-              </label>
-              <select
-                id="disburse-wallet"
-                value={disburseWalletId ?? ""}
-                onChange={(e) => setDisburseWalletId(Number(e.target.value))}
-                className="w-full rounded-[14px] bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-              >
-                {liquidWallets.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name} ({formatRupiah(w.balance)})
-                  </option>
-                ))}
-              </select>
-              <p className="text-[11px] text-neutral-400">
-                {direction === "receivable"
-                  ? "Transaksi ini akan menurunkan saldo dompet tanpa dihitung sebagai pengeluaran belanja (tidak memotong budget)."
-                  : "Transaksi ini akan menambah saldo dompet tanpa dihitung sebagai income gaji."}
-              </p>
-            </div>
-          )}
-        </div>
+            {recordDisbursement && (
+              <div className="space-y-2 pt-1">
+                <label htmlFor="disburse-wallet" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+                  {direction === "receivable"
+                    ? "Pilih Dompet Sumber Dana (Saldo akan berkurang):"
+                    : "Pilih Dompet Penerima Dana (Saldo akan bertambah):"}
+                </label>
+                <select
+                  id="disburse-wallet"
+                  value={disburseWalletId ?? ""}
+                  onChange={(e) => setDisburseWalletId(Number(e.target.value))}
+                  className="w-full rounded-[14px] bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                >
+                  {liquidWallets.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name} ({formatRupiah(w.balance)})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-neutral-400">
+                  {direction === "receivable"
+                    ? "Transaksi ini akan menurunkan saldo dompet tanpa dihitung sebagai pengeluaran belanja (tidak memotong budget)."
+                    : "Transaksi ini akan menambah saldo dompet tanpa dihitung sebagai income gaji."}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {error && (
           <div
@@ -643,7 +806,7 @@ export function AddDebtModal({
           </button>
           <button
             type="submit"
-            disabled={mutation.isPending}
+            disabled={mutation.isPending || missingCcWallet || isCardLimitExceeded}
             className="min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
           >
             {mutation.isPending

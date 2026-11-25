@@ -1,13 +1,16 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { DebtDirection } from "../../../shared/src/types";
+import { ccCycleForDate } from "../../../shared/src/dates";
+import type { DebtDirection, DebtKind } from "../../../shared/src/types";
 import { BankBadge } from "../components/BankBadge";
+import { EditDebtModal } from "../components/EditDebtModal";
 import { HelpTooltip } from "../components/HelpTooltip";
 import {
   AlertIcon,
   CardDebtIcon,
   CheckIcon,
   ClockIcon,
+  EditIcon,
   LightbulbIcon,
   PlusIcon,
   SplitPayIcon,
@@ -27,6 +30,15 @@ import {
 } from "../lib/format";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
 
+type DebtPageTab = "summary" | "loan" | "cards" | "payroll" | "receivable";
+
+const KIND_BADGE_LABEL: Record<DebtKind, string> = {
+  loan: "Pinjaman Tunai",
+  card_installment: "Cicilan CC",
+  payroll: "Potong Gaji",
+  receivable: "Piutang",
+};
+
 export function DebtsPage({
   data,
   onOpenAddDebt,
@@ -36,7 +48,7 @@ export function DebtsPage({
   onToast,
 }: {
   data: DebtsDto;
-  onOpenAddDebt: () => void;
+  onOpenAddDebt: (opts?: { direction?: DebtDirection; kind?: DebtKind }) => void;
   onPayInstallment: (installmentId: number) => void;
   onPayCcCycle: (cycleKey: string, installmentIds: number[], ccWalletId?: number) => void;
   onOpenSplitPay: (target: SplitPayTarget) => void;
@@ -45,7 +57,7 @@ export function DebtsPage({
   const queryClient = useQueryClient();
   const { isMasked } = usePrivacyMode();
 
-  const [activeTab, setActiveTab] = useState<"payable" | "receivable" | "cards" | "all">("payable");
+  const [activeTab, setActiveTab] = useState<DebtPageTab>("summary");
   const [showClosed, setShowClosed] = useState(false);
 
   // Multi-CC selection
@@ -63,7 +75,13 @@ export function DebtsPage({
   }, [data.wallets, activeCard]);
 
   const [selectedCycle, setSelectedCycle] = useState<string>(() => {
-    return activeCard?.cycleSummaries[0]?.cycleKey ?? data.currentCcCycle;
+    if (!activeCard) return data.currentCcCycle;
+    const cardCurrent = ccCycleForDate(jakartaToday(), activeCard.cutoffDay);
+    return (
+      activeCard.cycleSummaries.find((c) => c.cycleKey === cardCurrent)?.cycleKey ??
+      activeCard.cycleSummaries[0]?.cycleKey ??
+      data.currentCcCycle
+    );
   });
 
   // Early Payoff Modal State
@@ -94,6 +112,7 @@ export function DebtsPage({
   }, [liquidWallets, payoffWalletId]);
 
   const [deletingAccount, setDeletingAccount] = useState<DebtAccountDto | null>(null);
+  const [editingAccount, setEditingAccount] = useState<DebtAccountDto | null>(null);
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.deleteDebt(id),
@@ -207,24 +226,74 @@ export function DebtsPage({
     );
   }, [data.ccTransactions, activeCard, activeCycle]);
 
-  // Tab filtering for accounts
-  const filteredAccounts = useMemo(() => {
-    let list = data.accounts;
-    if (activeTab === "payable") list = list.filter((a) => a.direction !== "receivable");
-    else if (activeTab === "receivable") list = list.filter((a) => a.direction === "receivable");
-    return list;
+  // Group accounts cleanly by debt type
+  const activeLoanAccounts = useMemo(
+    () => data.accounts.filter((a) => !a.closed && a.direction !== "receivable" && a.kind === "loan"),
+    [data.accounts],
+  );
+  const activePayrollAccounts = useMemo(
+    () => data.accounts.filter((a) => !a.closed && a.direction !== "receivable" && a.kind === "payroll"),
+    [data.accounts],
+  );
+  const activeCardInstallments = useMemo(
+    () =>
+      data.accounts.filter(
+        (a) => !a.closed && a.direction !== "receivable" && a.kind === "card_installment",
+      ),
+    [data.accounts],
+  );
+  const activeCardSpecificInstallments = useMemo(() => {
+    if (!activeCard) return activeCardInstallments;
+    return activeCardInstallments.filter(
+      (a) => a.walletId === activeCard.walletId || (cards.length === 1 && !a.walletId),
+    );
+  }, [activeCardInstallments, activeCard, cards.length]);
+  const activeReceivableAccounts = useMemo(
+    () => data.accounts.filter((a) => !a.closed && a.direction === "receivable"),
+    [data.accounts],
+  );
+
+  const closedAccounts = useMemo(() => {
+    return data.accounts.filter((a) => {
+      if (!a.closed) return false;
+      if (activeTab === "loan") return a.direction !== "receivable" && a.kind === "loan";
+      if (activeTab === "cards") return a.direction !== "receivable" && a.kind === "card_installment";
+      if (activeTab === "payroll") return a.direction !== "receivable" && a.kind === "payroll";
+      if (activeTab === "receivable") return a.direction === "receivable";
+      return true;
+    });
   }, [data.accounts, activeTab]);
 
-  const activeAccounts = filteredAccounts.filter((a) => !a.closed);
-  const closedAccounts = filteredAccounts.filter((a) => a.closed);
-
-  const totalKewajiban = (data.totals.remainingDebt ?? 0) + (data.totals.ccLimitUsed ?? 0);
+  // Totals (prevent double-counting card_installment between remainingDebt and ccLimitUsed)
+  const loanRemaining =
+    data.totals.loanRemaining ??
+    activeLoanAccounts.reduce((sum, a) => sum + a.remainingBalance, 0);
+  const payrollRemaining =
+    data.totals.payrollRemaining ??
+    activePayrollAccounts.reduce((sum, a) => sum + a.remainingBalance, 0);
+  const cardInstallmentRemaining =
+    data.totals.cardInstallmentRemaining ??
+    activeCardInstallments.reduce((sum, a) => sum + a.remainingBalance, 0);
+  const nonCcRemainingDebt = loanRemaining + payrollRemaining;
+  const unlinkedCardInstallment = cards.length === 0 ? cardInstallmentRemaining : 0;
+  const totalKewajiban =
+    nonCcRemainingDebt + (data.totals.ccLimitUsed ?? 0) + unlinkedCardInstallment;
   const hasDebt = totalKewajiban > 0;
 
   const activeCardLimit = activeCard?.creditLimit ?? data.totals.ccLimit;
   const activeCardUsed = activeCard?.limitUsed ?? data.totals.ccLimitUsed;
+  const activeCardInstallmentUsed = activeCard?.installmentLimitUsed ?? 0;
+  const activeCardDailyUsed =
+    activeCard?.dailyLimitUsed ?? Math.max(0, activeCardUsed - activeCardInstallmentUsed);
   const activeCardAvailable = activeCard?.balance ?? data.totals.ccLimitAvailable;
+
   const ccPercent = activeCardLimit ? Math.round((activeCardUsed / activeCardLimit) * 100) : 0;
+  const ccInstallmentPct = activeCardLimit
+    ? Math.min(100, (activeCardInstallmentUsed / activeCardLimit) * 100)
+    : 0;
+  const ccDailyPct = activeCardLimit
+    ? Math.min(Math.max(0, 100 - ccInstallmentPct), (activeCardDailyUsed / activeCardLimit) * 100)
+    : 0;
 
   // Monthly Debt Burden (planned upcoming installments this month)
   const monthlyDebtBurden = useMemo(() => {
@@ -260,7 +329,21 @@ export function DebtsPage({
     const map = new Map<string, typeof data.installments>();
     for (const item of data.installments) {
       if (item.accountClosed) continue;
-      if (activeTab === "payable" && item.direction === "receivable") continue;
+      if (activeTab === "loan" && (item.direction === "receivable" || item.accountKind !== "loan")) {
+        continue;
+      }
+      if (
+        activeTab === "cards" &&
+        (item.direction === "receivable" || item.accountKind !== "card_installment")
+      ) {
+        continue;
+      }
+      if (
+        activeTab === "payroll" &&
+        (item.direction === "receivable" || item.accountKind !== "payroll")
+      ) {
+        continue;
+      }
       if (activeTab === "receivable" && item.direction !== "receivable") continue;
       const list = map.get(item.period) ?? [];
       list.push(item);
@@ -269,13 +352,125 @@ export function DebtsPage({
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [data.installments, activeTab]);
 
-  // Counts for tabs
-  const payableCount = data.accounts.filter(
-    (a) => !a.closed && a.direction !== "receivable",
-  ).length;
-  const receivableCount = data.accounts.filter(
-    (a) => !a.closed && a.direction === "receivable",
-  ).length;
+  const renderAccountCards = (accounts: DebtAccountDto[]) => (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      {accounts.map((acc) => {
+        const pct = acc.initialBalance ? Math.round((acc.paidAmount / acc.initialBalance) * 100) : 0;
+        const isReceivable = acc.direction === "receivable";
+        const hasInterest = acc.interestRateBps != null && acc.interestRateBps > 0;
+        const kindLabel = KIND_BADGE_LABEL[acc.kind] ?? "Utang";
+
+        return (
+          <Card key={acc.id} className="space-y-4 p-5 rounded-[20px]">
+            <div className="flex items-start justify-between gap-2">
+              <div className="space-y-0.5 min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-base font-bold text-[var(--foreground)] truncate">{acc.name}</h3>
+                  <Badge tone={isReceivable ? "soft" : acc.kind === "card_installment" ? "highlight" : "neutral"}>
+                    {kindLabel}
+                  </Badge>
+                </div>
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  {acc.lender} · {acc.paymentMethod}
+                  {hasInterest && ` · Bunga ${(acc.interestRateBps! / 100).toFixed(1)}% p.a.`}
+                </p>
+              </div>
+
+              <Badge tone={acc.kind === "payroll" ? "neutral" : "primary"}>
+                {acc.totalInstallments > 0
+                  ? `Bulan ${acc.paidInstallments} dari ${acc.totalInstallments} bln`
+                  : "Tenor Bebas"}
+              </Badge>
+            </div>
+
+            <ProgressBar
+              value={pct}
+              tone={isReceivable ? "soft" : "primary"}
+              label={`Progress pembayaran ${acc.name}`}
+            />
+
+            <div className="flex items-center justify-between text-sm pt-1">
+              <span className="text-xs text-[var(--muted-foreground)]">
+                {isReceivable
+                  ? "Sisa piutang tertagih"
+                  : acc.kind === "card_installment"
+                    ? "Sisa pokok mengunci limit CC"
+                    : "Sisa pokok kewajiban"}
+              </span>
+              <strong className="tabular-nums font-mono text-base font-extrabold text-[var(--foreground)]">
+                {formatRupiah(acc.remainingBalance, isMasked)}
+              </strong>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 border-t border-[var(--border)]">
+              {acc.remainingBalance > 0 && acc.kind !== "payroll" && (
+                <Button
+                  variant="secondary"
+                  onClick={() => openPayoffModal(acc)}
+                  className="flex-1 text-xs min-h-[40px] font-bold"
+                >
+                  Lunasi Sekaligus
+                </Button>
+              )}
+
+              {acc.kind === "payroll" && acc.remainingBalance > 0 && (
+                <div className="flex-1 rounded-[10px] bg-[var(--surface)] px-3 py-2 text-[11px] font-semibold text-[var(--muted-foreground)]">
+                  Otomatis dipotong dari gaji setiap bulan
+                </div>
+              )}
+
+              {acc.remainingBalance === 0 && (
+                <Button
+                  variant="secondary"
+                  onClick={() => closeMutation.mutate({ id: acc.id, closed: true })}
+                  className="flex-1 text-xs min-h-[40px]"
+                >
+                  Tutup Akun (Sudah Lunas)
+                </Button>
+              )}
+
+              <Button
+                variant="secondary"
+                onClick={() => setEditingAccount(acc)}
+                className="text-xs min-h-[40px] px-3 gap-1.5 shrink-0 font-semibold"
+                title={
+                  acc.kind === "card_installment" && !acc.walletId
+                    ? "Edit & Tautkan ke Kartu Kredit"
+                    : "Edit Utang & Jadwal Cicilan"
+                }
+                aria-label={`Edit ${acc.name}`}
+              >
+                <EditIcon className="w-3.5 h-3.5" />
+                <span>{acc.kind === "card_installment" && !acc.walletId ? "Tautkan / Edit" : "Edit"}</span>
+              </Button>
+
+              <Button
+                variant="ghost"
+                onClick={() => setDeletingAccount(acc)}
+                className="text-xs min-h-[40px] text-[var(--destructive)] hover:bg-[var(--destructive)]/10 px-2.5 shrink-0"
+                title="Hapus Akun"
+              >
+                <TrashIcon className="w-4 h-4" />
+              </Button>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+
+  const tabs: Array<{ id: DebtPageTab; label: string }> = [
+    { id: "summary", label: "Ringkasan" },
+    { id: "loan", label: `Pinjaman Tunai (${activeLoanAccounts.length})` },
+    { id: "cards", label: `Kartu Kredit (${cards.length})` },
+    { id: "payroll", label: `Hutang Kantor (${activePayrollAccounts.length})` },
+    { id: "receivable", label: `Piutang Teman (${activeReceivableAccounts.length})` },
+  ];
+
+  const showLoanSection = activeTab === "summary" || activeTab === "loan";
+  const showCardsSection = activeTab === "summary" || activeTab === "cards";
+  const showPayrollSection = activeTab === "summary" || activeTab === "payroll";
+  const showReceivableSection = activeTab === "summary" || activeTab === "receivable";
 
   return (
     <div className="space-y-6">
@@ -284,10 +479,10 @@ export function DebtsPage({
         <div>
           <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Hutang, Piutang & CC</h1>
           <p className="text-sm text-[var(--muted-foreground)]">
-            Manajemen kewajiban utang, piutang talangan, kartu kredit, dan proteksi jadwal arus kas.
+            Manajemen pinjaman tunai, kartu kredit & cicilan limit, potongan gaji kantor, dan piutang teman.
           </p>
         </div>
-        <Button onClick={onOpenAddDebt} className="gap-2">
+        <Button onClick={() => onOpenAddDebt()} className="gap-2">
           <PlusIcon className="w-4 h-4" />
           <span>Tambah Utang / Piutang</span>
         </Button>
@@ -308,7 +503,7 @@ export function DebtsPage({
             </div>
             <p className="text-xs sm:text-sm text-[var(--hero-card-muted)] max-w-md">
               {hasDebt
-                ? "Total sisa pokok pinjaman dan pemakaian kartu kredit aktif saat ini."
+                ? "Gabungan sisa pinjaman tunai, potongan gaji kantor, dan total pemakaian limit kartu kredit (harian + cicilan)."
                 : "Semua pinjaman dan kewajiban kartu kredit sudah lunas."}
             </p>
           </div>
@@ -325,44 +520,45 @@ export function DebtsPage({
               </div>
               <p className="text-xs text-[var(--hero-card-muted)] leading-relaxed">
                 {hasDebt
-                  ? "Fokus selesaikan utang terdekat dan jaga arus kas tetap aman."
+                  ? "Pantau sisa limit CC sebelum transaksi harian dan prioritaskan angsuran terdekat."
                   : "Kondisi arus kas sehat, tidak ada tagihan utang tertunggak."}
               </p>
             </div>
           </div>
         </div>
 
-        {/* 4 Pillar Grid Metric Cards inside/below Hero */}
-        <div className="mt-6 grid grid-cols-2 gap-3 border-t border-[var(--hero-border)] pt-5 sm:grid-cols-4">
-          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)]">
+        {/* 4 Pillar Grid Metric Cards inside Hero */}
+        <div className="mt-6 grid grid-cols-2 gap-3 border-t border-[var(--hero-border)] pt-5 md:grid-cols-4">
+          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)] min-w-0">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--hero-card-muted)]">
-              1. Sisa Utang Saya
+              1. Tunai & Kantor
             </span>
-            <p className="font-mono text-lg font-bold text-[var(--hero-card-foreground)] tabular-nums mt-1">
-              {formatRupiah(data.totals.remainingDebt, isMasked)}
+            <p className="font-mono text-base sm:text-lg font-bold text-[var(--hero-card-foreground)] tabular-nums mt-1 truncate">
+              {formatRupiah(nonCcRemainingDebt, isMasked)}
             </p>
             <p className="text-[11px] text-[var(--hero-card-muted)] tabular-nums">
-              Terbayar {formatCompactRupiah(data.totals.paidDebt, isMasked)}
+              Tunai {formatCompactRupiah(loanRemaining, isMasked)} · Kantor{" "}
+              {formatCompactRupiah(payrollRemaining, isMasked)}
             </p>
           </div>
 
-          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)]">
+          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)] min-w-0">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--hero-card-muted)]">
-              2. Sisa Piutang Teman
+              2. Limit CC Terpakai
             </span>
-            <p className="font-mono text-lg font-bold text-[var(--chart-income)] tabular-nums mt-1">
-              {formatRupiah(data.totals.remainingReceivable, isMasked)}
+            <p className="font-mono text-base sm:text-lg font-bold text-[var(--destructive)] tabular-nums mt-1 truncate">
+              {formatRupiah(data.totals.ccLimitUsed, isMasked)}
             </p>
             <p className="text-[11px] text-[var(--hero-card-muted)] tabular-nums">
-              Tertagih {formatCompactRupiah(data.totals.paidReceivable, isMasked)}
+              Sisa {formatCompactRupiah(data.totals.ccLimitAvailable, isMasked)}
             </p>
           </div>
 
-          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)]">
+          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)] min-w-0">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--hero-card-muted)]">
               3. Beban Bulan Ini
             </span>
-            <p className="font-mono text-lg font-bold text-[var(--highlight-text)] tabular-nums mt-1">
+            <p className="font-mono text-base sm:text-lg font-bold text-[var(--highlight-text)] tabular-nums mt-1 truncate">
               {formatRupiah(monthlyDebtBurden, isMasked)}
             </p>
             <p className="text-[11px] text-[var(--hero-card-muted)] tabular-nums">
@@ -370,71 +566,112 @@ export function DebtsPage({
             </p>
           </div>
 
-          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)]">
+          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)] min-w-0">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--hero-card-muted)]">
-              4. Limit CC Terpakai
+              4. Sisa Piutang Teman
             </span>
-            <p className="font-mono text-lg font-bold text-[var(--destructive)] tabular-nums mt-1">
-              {formatRupiah(data.totals.ccLimitUsed, isMasked)}
+            <p className="font-mono text-base sm:text-lg font-bold text-[var(--chart-income)] tabular-nums mt-1 truncate">
+              {formatRupiah(data.totals.remainingReceivable, isMasked)}
             </p>
             <p className="text-[11px] text-[var(--hero-card-muted)] tabular-nums">
-              Sisa {formatCompactRupiah(data.totals.ccLimitAvailable, isMasked)}
+              Tertagih {formatCompactRupiah(data.totals.paidReceivable, isMasked)}
             </p>
           </div>
         </div>
       </div>
 
-      {/* Navigation Filter Tabs */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] pb-3 text-sm">
-        <button
-          type="button"
-          onClick={() => setActiveTab("payable")}
-          className={`min-h-[42px] rounded-[12px] px-4 font-bold transition-all ${
-            activeTab === "payable"
-              ? "bg-[var(--hero)] text-white shadow-sm"
-              : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
-          }`}
-        >
-          Utang Saya ({payableCount})
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("receivable")}
-          className={`min-h-[42px] rounded-[12px] px-4 font-bold transition-all ${
-            activeTab === "receivable"
-              ? "bg-[var(--hero)] text-white shadow-sm"
-              : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
-          }`}
-        >
-          Piutang Teman ({receivableCount})
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("cards")}
-          className={`min-h-[42px] rounded-[12px] px-4 font-bold transition-all ${
-            activeTab === "cards"
-              ? "bg-[var(--hero)] text-white shadow-sm"
-              : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
-          }`}
-        >
-          Kartu Kredit ({cards.length})
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("all")}
-          className={`min-h-[42px] rounded-[12px] px-4 font-bold transition-all ${
-            activeTab === "all"
-              ? "bg-[var(--hero)] text-white shadow-sm"
-              : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
-          }`}
-        >
-          Semua Portofolio
-        </button>
+      {/* 5 Navigation Filter Tabs */}
+      <div
+        role="tablist"
+        aria-label="Kategori hutang, kartu kredit, dan piutang"
+        className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] pb-3 text-sm"
+      >
+        {tabs.map((tabItem) => {
+          const isActive = activeTab === tabItem.id;
+          return (
+            <button
+              key={tabItem.id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => setActiveTab(tabItem.id)}
+              className={`min-h-[42px] rounded-[12px] px-4 font-bold transition-all ${
+                isActive
+                  ? "bg-[var(--hero)] text-white shadow-sm"
+                  : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              {tabItem.label}
+            </button>
+          );
+        })}
       </div>
 
-      {/* TAB 1: KARTU KREDIT (Shown when activeTab === 'cards' or activeTab === 'all') */}
-      {(activeTab === "cards" || activeTab === "all") && (
-        <div className="space-y-4">
+      {/* GROUP 1: PINJAMAN TUNAI */}
+      {showLoanSection && (
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-extrabold text-[var(--foreground)]">
+                Pinjaman Tunai ({activeLoanAccounts.length})
+              </h2>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                KTA, pinjaman bank, atau pinjaman tunai dengan jadwal angsuran mandiri.
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => onOpenAddDebt({ direction: "payable", kind: "loan" })}
+              className="min-h-[36px] px-3 text-xs gap-1.5"
+            >
+              <PlusIcon className="w-3.5 h-3.5" />
+              <span>Tambah Pinjaman Tunai</span>
+            </Button>
+          </div>
+
+          {activeLoanAccounts.length === 0 ? (
+            activeTab === "loan" ? (
+              <StateView
+                kind="empty"
+                icon={<CardDebtIcon className="w-6 h-6" />}
+                title="Tidak Ada Pinjaman Tunai Aktif"
+                description="Semua pinjaman tunai sudah lunas atau belum ada yang dicatat."
+                actionLabel="Catat Pinjaman Tunai"
+                onAction={() => onOpenAddDebt({ direction: "payable", kind: "loan" })}
+              />
+            ) : (
+              <Card className="p-4 text-xs text-[var(--muted-foreground)]">
+                Tidak ada pinjaman tunai aktif saat ini.
+              </Card>
+            )
+          ) : (
+            renderAccountCards(activeLoanAccounts)
+          )}
+        </section>
+      )}
+
+      {/* GROUP 2: KARTU KREDIT (Transaksi Harian + Cicilan Kartu Kredit) */}
+      {showCardsSection && (
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-extrabold text-[var(--foreground)]">
+                Kartu Kredit & Cicilan Limit ({cards.length})
+              </h2>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                Transaksi harian dan cicilan kartu kredit berbagi satu batas limit kartu yang sama.
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => onOpenAddDebt({ direction: "payable", kind: "card_installment" })}
+              className="min-h-[36px] px-3 text-xs gap-1.5"
+            >
+              <PlusIcon className="w-3.5 h-3.5" />
+              <span>Tambah Cicilan CC</span>
+            </Button>
+          </div>
+
           {cards.length === 0 ? (
             <Card className="p-8 text-center space-y-3">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[var(--surface)] text-[var(--muted-foreground)]">
@@ -444,8 +681,8 @@ export function DebtsPage({
                 Belum Ada Kartu Kredit
               </h3>
               <p className="text-xs text-[var(--muted-foreground)] max-w-md mx-auto">
-                Tambahkan dompet bertipe Kartu Kredit di menu Dompet untuk melacak limit, siklus
-                cetak tagihan, dan jatuh tempo bebas bunga.
+                Tambahkan dompet bertipe Kartu Kredit di menu Dompet untuk melacak limit, cicilan
+                yang mengunci limit, siklus cetak tagihan, dan transaksi harian.
               </p>
             </Card>
           ) : (
@@ -462,7 +699,12 @@ export function DebtsPage({
                       type="button"
                       onClick={() => {
                         setSelectedCardId(c.walletId);
-                        setSelectedCycle(c.cycleSummaries[0]?.cycleKey ?? data.currentCcCycle);
+                        const cardCurrent = ccCycleForDate(jakartaToday(), c.cutoffDay);
+                        setSelectedCycle(
+                          c.cycleSummaries.find((s) => s.cycleKey === cardCurrent)?.cycleKey ??
+                            c.cycleSummaries[0]?.cycleKey ??
+                            data.currentCcCycle,
+                        );
                       }}
                       className={`min-h-[36px] rounded-[10px] px-3.5 text-xs font-bold transition-colors ${
                         activeCard?.walletId === c.walletId
@@ -485,9 +727,9 @@ export function DebtsPage({
                         provider={activeCardWallet?.provider ?? "other"}
                         name={activeCard?.walletName}
                       />
-                      <h2 className="text-lg font-extrabold text-[var(--foreground)]">
+                      <h3 className="text-lg font-extrabold text-[var(--foreground)]">
                         {activeCard?.walletName ?? "Kartu Kredit"}
-                      </h2>
+                      </h3>
                     </div>
                     <div className="flex items-baseline gap-2 pt-2">
                       <span className="font-mono text-2xl sm:text-3xl font-black text-[var(--foreground)] tabular-nums">
@@ -504,22 +746,77 @@ export function DebtsPage({
                     tone={ccPercent >= 80 ? "highlight" : ccPercent >= 50 ? "neutral" : "soft"}
                     className="text-xs font-bold"
                   >
-                    {ccPercent}% Terpakai · Sisa{" "}
-                    {formatCompactRupiah(activeCardAvailable, isMasked)}
+                    {ccPercent}% Terpakai · Sisa Limit{" "}
+                    {formatRupiah(activeCardAvailable, isMasked)}
                   </Badge>
                 </div>
 
-                {/* Limit Progress Bar */}
-                <div className="mt-4">
-                  <ProgressBar
-                    value={ccPercent}
-                    tone={ccPercent >= 80 ? "highlight" : "primary"}
-                    label={`Pemakaian limit ${activeCard?.walletName ?? "CC"}`}
-                  />
+                {/* Stacked 2-Segment Limit Progress Bar (Cicilan CC + Harian) */}
+                <div className="mt-4 space-y-2">
+                  <div
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.min(100, ccPercent)}
+                    aria-label={`Pemakaian limit ${activeCard?.walletName ?? "CC"}`}
+                    className="flex h-3 w-full overflow-hidden rounded-full bg-[var(--border)]/60"
+                  >
+                    {ccInstallmentPct > 0 && (
+                      <div
+                        style={{ width: `${ccInstallmentPct}%` }}
+                        className="h-full bg-amber-500 transition-all duration-300"
+                        title={`Terkunci Cicilan: ${formatRupiah(activeCardInstallmentUsed, isMasked)}`}
+                      />
+                    )}
+                    {ccDailyPct > 0 && (
+                      <div
+                        style={{ width: `${ccDailyPct}%` }}
+                        className={`h-full transition-all duration-300 ${
+                          ccPercent >= 80 ? "bg-[var(--destructive)]" : "bg-[var(--primary)]"
+                        }`}
+                        title={`Belanja Harian: ${formatRupiah(activeCardDailyUsed, isMasked)}`}
+                      />
+                    )}
+                  </div>
+
+                  {/* Breakdown Legend */}
+                  <div className="grid grid-cols-1 gap-2 pt-1 text-xs sm:grid-cols-3">
+                    <div className="flex items-center justify-between rounded-[10px] border border-[var(--border)] bg-[var(--card)] px-3 py-2">
+                      <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]">
+                        <span className="h-2.5 w-2.5 rounded-full bg-amber-500 shrink-0" />
+                        Terkunci Cicilan
+                      </span>
+                      <strong className="font-mono tabular-nums text-[var(--foreground)]">
+                        {formatRupiah(activeCardInstallmentUsed, isMasked)}
+                      </strong>
+                    </div>
+                    <div className="flex items-center justify-between rounded-[10px] border border-[var(--border)] bg-[var(--card)] px-3 py-2">
+                      <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]">
+                        <span
+                          className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                            ccPercent >= 80 ? "bg-[var(--destructive)]" : "bg-[var(--primary)]"
+                          }`}
+                        />
+                        Belanja Harian
+                      </span>
+                      <strong className="font-mono tabular-nums text-[var(--foreground)]">
+                        {formatRupiah(activeCardDailyUsed, isMasked)}
+                      </strong>
+                    </div>
+                    <div className="flex items-center justify-between rounded-[10px] border border-[var(--border)] bg-[var(--card)] px-3 py-2">
+                      <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]">
+                        <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 shrink-0" />
+                        Sisa Limit Harian
+                      </span>
+                      <strong className="font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                        {formatRupiah(activeCardAvailable, isMasked)}
+                      </strong>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Card Dates & Cashflow Protection Status */}
-                <div className="mt-5 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-4 sm:grid-cols-3">
+                <div className="mt-4 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-4 sm:grid-cols-3">
                   <div className="rounded-[10px] bg-[var(--surface)] p-2.5">
                     <span className="text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wide">
                       Tutup Buku (Cut-off)
@@ -632,14 +929,14 @@ export function DebtsPage({
                 </div>
               )}
 
-              {/* CC Transactions in Cycle */}
+              {/* Sub-section A: CC Daily Transactions in Cycle */}
               <div className="space-y-2 pt-2">
                 <h3 className="text-sm font-bold text-[var(--foreground)]">
-                  Transaksi {activeCard?.walletName ?? "CC"} ({cycleTransactions.length})
+                  Transaksi Harian {activeCard?.walletName ?? "CC"} ({cycleTransactions.length})
                 </h3>
                 {cycleTransactions.length === 0 ? (
                   <p className="text-xs text-[var(--muted-foreground)] py-2">
-                    Belum ada transaksi kartu kredit yang dicatat pada siklus ini.
+                    Belum ada transaksi harian kartu kredit yang dicatat pada siklus ini.
                   </p>
                 ) : (
                   <div className="divide-y divide-[var(--border)] rounded-[12px] border border-[var(--border)] overflow-hidden">
@@ -689,285 +986,278 @@ export function DebtsPage({
                   </div>
                 )}
               </div>
+
+              {/* Sub-section B: Cicilan Kartu Kredit Aktif on this card */}
+              <div className="space-y-3 border-t border-[var(--border)] pt-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-[var(--foreground)]">
+                      Cicilan Kartu Kredit Aktif ({activeCardSpecificInstallments.length})
+                    </h3>
+                    <p className="text-xs text-[var(--muted-foreground)]">
+                      Sisa pokok cicilan di bawah ini langsung memotong limit {activeCard?.walletName ?? "kartu"} hingga lunas.
+                    </p>
+                  </div>
+                </div>
+
+                {activeCardSpecificInstallments.length === 0 ? (
+                  <p className="text-xs text-[var(--muted-foreground)] py-1">
+                    Belum ada cicilan kartu kredit aktif pada kartu ini.
+                  </p>
+                ) : (
+                  renderAccountCards(activeCardSpecificInstallments)
+                )}
+              </div>
             </Card>
           )}
-        </div>
+
+          {/* Fallback if there are unlinked card_installment accounts when cards.length === 0 */}
+          {cards.length === 0 && activeCardInstallments.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="text-sm font-bold text-[var(--foreground)]">
+                Cicilan Kartu Kredit Belum Tertaut ({activeCardInstallments.length})
+              </h3>
+              {renderAccountCards(activeCardInstallments)}
+            </div>
+          )}
+        </section>
       )}
 
-      {/* TAB 2 & 3: UTANG SAYA & PIUTANG TEMAN (Shown when activeTab !== 'cards') */}
-      {activeTab !== "cards" && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-extrabold text-[var(--foreground)]">
-              {activeTab === "receivable"
-                ? `Daftar Piutang Aktif (${activeAccounts.length})`
-                : activeTab === "payable"
-                  ? `Daftar Utang & Pinjaman Aktif (${activeAccounts.length})`
-                  : `Akun Utang & Piutang Aktif (${activeAccounts.length})`}
-            </h2>
+      {/* GROUP 3: HUTANG KANTOR / POTONGAN GAJI */}
+      {showPayrollSection && (
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-extrabold text-[var(--foreground)]">
+                Hutang Kantor / Potongan Gaji ({activePayrollAccounts.length})
+              </h2>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                Kasbon atau pinjaman koperasi kantor yang otomatis dipotong dari gaji setiap bulan.
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => onOpenAddDebt({ direction: "payable", kind: "payroll" })}
+              className="min-h-[36px] px-3 text-xs gap-1.5"
+            >
+              <PlusIcon className="w-3.5 h-3.5" />
+              <span>Tambah Hutang Kantor</span>
+            </Button>
           </div>
 
-          {activeAccounts.length === 0 ? (
-            <StateView
-              kind="empty"
-              icon={<CardDebtIcon className="w-6 h-6" />}
-              title={
-                activeTab === "receivable"
-                  ? "Tidak Ada Piutang Aktif"
-                  : "Tidak Ada Utang / Cicilan Aktif"
-              }
-              description={
-                activeTab === "receivable"
-                  ? "Semua pinjaman atau talangan teman sudah lunas, atau Anda belum pernah mencatat piutang."
-                  : "Bagus sekali! Semua pinjaman dan cicilan manual Anda sudah lunas tanpa tunggakan."
-              }
-              actionLabel={
-                activeTab === "receivable"
-                  ? "Catat Piutang / Talangan"
-                  : "Catat Utang / Kartu Kredit"
-              }
-              onAction={onOpenAddDebt}
-            />
+          {activePayrollAccounts.length === 0 ? (
+            activeTab === "payroll" ? (
+              <StateView
+                kind="empty"
+                icon={<CardDebtIcon className="w-6 h-6" />}
+                title="Tidak Ada Hutang Kantor Aktif"
+                description="Belum ada potongan gaji atau pinjaman kantor aktif saat ini."
+                actionLabel="Catat Hutang Kantor"
+                onAction={() => onOpenAddDebt({ direction: "payable", kind: "payroll" })}
+              />
+            ) : (
+              <Card className="p-4 text-xs text-[var(--muted-foreground)]">
+                Tidak ada potongan gaji / hutang kantor aktif saat ini.
+              </Card>
+            )
           ) : (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              {activeAccounts.map((acc) => {
-                const pct = acc.initialBalance
-                  ? Math.round((acc.paidAmount / acc.initialBalance) * 100)
-                  : 0;
-                const isReceivable = acc.direction === "receivable";
-                const hasInterest = acc.interestRateBps != null && acc.interestRateBps > 0;
+            renderAccountCards(activePayrollAccounts)
+          )}
+        </section>
+      )}
 
-                return (
-                  <Card key={acc.id} className="space-y-4 p-5 rounded-[20px]">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="space-y-0.5 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className="text-base font-bold text-[var(--foreground)] truncate">
-                            {acc.name}
-                          </h3>
-                          <Badge tone={isReceivable ? "soft" : "neutral"}>
-                            {isReceivable ? "Piutang" : "Utang"}
-                          </Badge>
-                        </div>
-                        <p className="text-xs text-[var(--muted-foreground)]">
-                          {acc.lender} · {acc.paymentMethod}
-                          {hasInterest &&
-                            ` · Bunga ${(acc.interestRateBps! / 100).toFixed(1)}% p.a.`}
-                        </p>
+      {/* GROUP 4: PIUTANG TEMAN */}
+      {showReceivableSection && (
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-extrabold text-[var(--foreground)]">
+                Piutang Teman & Talangan ({activeReceivableAccounts.length})
+              </h2>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                Dana yang Anda pinjamkan atau talangkan ke pihak lain dan menunggu pengembalian.
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => onOpenAddDebt({ direction: "receivable", kind: "receivable" })}
+              className="min-h-[36px] px-3 text-xs gap-1.5"
+            >
+              <PlusIcon className="w-3.5 h-3.5" />
+              <span>Catat Piutang Teman</span>
+            </Button>
+          </div>
+
+          {activeReceivableAccounts.length === 0 ? (
+            activeTab === "receivable" ? (
+              <StateView
+                kind="empty"
+                icon={<CardDebtIcon className="w-6 h-6" />}
+                title="Tidak Ada Piutang Aktif"
+                description="Semua pinjaman atau talangan teman sudah lunas, atau Anda belum pernah mencatat piutang."
+                actionLabel="Catat Piutang / Talangan"
+                onAction={() => onOpenAddDebt({ direction: "receivable", kind: "receivable" })}
+              />
+            ) : (
+              <Card className="p-4 text-xs text-[var(--muted-foreground)]">
+                Tidak ada piutang teman aktif saat ini.
+              </Card>
+            )
+          ) : (
+            renderAccountCards(activeReceivableAccounts)
+          )}
+        </section>
+      )}
+
+      {/* Collapsible Closed Accounts */}
+      {closedAccounts.length > 0 && (
+        <div className="pt-2">
+          <button
+            type="button"
+            aria-expanded={showClosed}
+            onClick={() => setShowClosed((v) => !v)}
+            className="min-h-[40px] text-xs font-semibold text-[var(--primary)] hover:underline flex items-center gap-1.5"
+          >
+            <span>
+              {showClosed ? "Sembunyikan" : "Tampilkan"} Riwayat Akun Ditutup (
+              {closedAccounts.length})
+            </span>
+            <span>{showClosed ? "▲" : "▼"}</span>
+          </button>
+
+          {showClosed && (
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+              {closedAccounts.map((acc) => (
+                <Card key={acc.id} className="space-y-2 opacity-80 p-4 rounded-[16px]">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold text-[var(--foreground)]">{acc.name}</h3>
+                        <Badge tone="neutral">{KIND_BADGE_LABEL[acc.kind] ?? "Utang"}</Badge>
                       </div>
-
-                      <Badge tone={acc.kind === "payroll" ? "neutral" : "primary"}>
-                        {acc.totalInstallments > 0
-                          ? `Bulan ${acc.paidInstallments} dari ${acc.totalInstallments} bln`
-                          : "Tenor Bebas"}
-                      </Badge>
+                      <p className="text-xs text-[var(--muted-foreground)]">
+                        Total lunas {formatRupiah(acc.initialBalance, isMasked)}
+                      </p>
                     </div>
-
-                    <ProgressBar
-                      value={pct}
-                      tone={isReceivable ? "soft" : "primary"}
-                      label={`Progress pembayaran ${acc.name}`}
-                    />
-
-                    <div className="flex items-center justify-between text-sm pt-1">
-                      <span className="text-xs text-[var(--muted-foreground)]">
-                        {isReceivable ? "Sisa piutang tertagih" : "Sisa pokok kewajiban"}
-                      </span>
-                      <strong className="tabular-nums font-mono text-base font-extrabold text-[var(--foreground)]">
-                        {formatRupiah(acc.remainingBalance, isMasked)}
-                      </strong>
-                    </div>
-
-                    <div className="flex items-center gap-2 pt-2 border-t border-[var(--border)]">
-                      {acc.remainingBalance > 0 && acc.kind !== "payroll" && (
-                        <Button
-                          variant="secondary"
-                          onClick={() => openPayoffModal(acc)}
-                          className="flex-1 text-xs min-h-[40px] font-bold"
-                        >
-                          Lunasi Sekaligus
-                        </Button>
-                      )}
-
-                      {acc.remainingBalance === 0 && (
-                        <Button
-                          variant="secondary"
-                          onClick={() => closeMutation.mutate({ id: acc.id, closed: true })}
-                          className="flex-1 text-xs min-h-[40px]"
-                        >
-                          Tutup Akun (Sudah Lunas)
-                        </Button>
-                      )}
-
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        variant="ghost"
+                        onClick={() => closeMutation.mutate({ id: acc.id, closed: false })}
+                        className="text-xs"
+                      >
+                        Buka Lagi
+                      </Button>
                       <Button
                         variant="ghost"
                         onClick={() => setDeletingAccount(acc)}
-                        className="text-xs min-h-[40px] text-[var(--destructive)] hover:bg-[var(--destructive)]/10 px-2.5 shrink-0"
+                        className="text-xs text-[var(--destructive)] hover:bg-[var(--destructive)]/10 px-2"
                         title="Hapus Akun"
                       >
                         <TrashIcon className="w-4 h-4" />
                       </Button>
                     </div>
-                  </Card>
-                );
-              })}
+                  </div>
+                </Card>
+              ))}
             </div>
-          )}
-
-          {/* Collapsible Closed Accounts */}
-          {closedAccounts.length > 0 && (
-            <div className="pt-2">
-              <button
-                type="button"
-                aria-expanded={showClosed}
-                onClick={() => setShowClosed((v) => !v)}
-                className="min-h-[40px] text-xs font-semibold text-[var(--primary)] hover:underline flex items-center gap-1.5"
-              >
-                <span>
-                  {showClosed ? "Sembunyikan" : "Tampilkan"} Riwayat Akun Ditutup (
-                  {closedAccounts.length})
-                </span>
-                <span>{showClosed ? "▲" : "▼"}</span>
-              </button>
-
-              {showClosed && (
-                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-                  {closedAccounts.map((acc) => (
-                    <Card key={acc.id} className="space-y-2 opacity-80 p-4 rounded-[16px]">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-sm font-bold text-[var(--foreground)]">
-                              {acc.name}
-                            </h3>
-                            <Badge tone="neutral">
-                              {acc.direction === "receivable" ? "Piutang" : "Utang"}
-                            </Badge>
-                          </div>
-                          <p className="text-xs text-[var(--muted-foreground)]">
-                            Total lunas {formatRupiah(acc.initialBalance, isMasked)}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <Button
-                            variant="ghost"
-                            onClick={() => closeMutation.mutate({ id: acc.id, closed: false })}
-                            className="text-xs"
-                          >
-                            Buka Lagi
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            onClick={() => setDeletingAccount(acc)}
-                            className="text-xs text-[var(--destructive)] hover:bg-[var(--destructive)]/10 px-2"
-                            title="Hapus Akun"
-                          >
-                            <TrashIcon className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    </Card>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Monthly Installment Schedule Accordion */}
-          {groupedSchedule.length > 0 && (
-            <details className="group rounded-[18px] border border-[var(--border)] bg-[var(--card)] overflow-hidden shadow-xs mt-6">
-              <summary className="flex cursor-pointer items-center justify-between p-4 font-bold text-base hover:bg-[var(--surface)] transition-colors select-none">
-                <span className="flex items-center gap-2">
-                  <ClockIcon className="w-4 h-4 text-[var(--primary)]" />
-                  Jadwal Angsuran Bulanan ({groupedSchedule.length} Bulan)
-                  <HelpTooltip
-                    title="Jadwal Angsuran Bulanan"
-                    content="Rincian jadwal cicilan kewajiban atau piutang yang jatuh tempo pada bulan-bulan mendatang."
-                  />
-                </span>
-                <span className="text-xs font-semibold text-[var(--primary)] group-open:hidden">
-                  Buka Jadwal ▼
-                </span>
-                <span className="text-xs font-semibold text-[var(--muted-foreground)] hidden group-open:inline">
-                  Tutup ▲
-                </span>
-              </summary>
-              <div className="p-4 pt-1 space-y-3 border-t border-[var(--border)]">
-                {groupedSchedule.map(([period, rows]) => {
-                  const totalMonth = rows.reduce((sum, r) => sum + r.plannedAmount, 0);
-                  return (
-                    <Card key={period} className="p-0 overflow-hidden rounded-[14px]">
-                      <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
-                        <strong className="text-sm font-bold text-[var(--foreground)]">
-                          {formatMonthTitle(period)}
-                        </strong>
-                        <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
-                          {formatRupiah(totalMonth, isMasked)}
-                        </span>
-                      </div>
-                      <div className="divide-y divide-[var(--border)]">
-                        {rows.map((item) => {
-                          const isReceivable = item.direction === "receivable";
-                          return (
-                            <div
-                              key={item.id}
-                              className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 hover:bg-[var(--surface)] transition-colors"
-                            >
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className="text-sm font-bold text-[var(--foreground)]">
-                                    {item.accountName}
-                                  </span>
-                                  <Badge tone={isReceivable ? "soft" : "neutral"}>
-                                    {isReceivable ? "Tagih Piutang" : "Bayar Utang"}
-                                  </Badge>
-                                  {item.accountKind === "payroll" ? (
-                                    <Badge tone="neutral">Auto Potong Gaji</Badge>
-                                  ) : item.status === "paid" ? (
-                                    <Badge tone="soft">Lunas</Badge>
-                                  ) : (
-                                    <Badge tone="highlight">Belum Lunas</Badge>
-                                  )}
-                                </div>
-                                <p className="text-xs text-[var(--muted-foreground)]">
-                                  Jatuh tempo {formatShortDate(item.dueDate)} · {item.lender}
-                                </p>
-                              </div>
-
-                              <div className="flex items-center gap-2.5">
-                                <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
-                                  {formatRupiah(item.actualAmount ?? item.plannedAmount, isMasked)}
-                                </span>
-                                {item.accountKind !== "payroll" && item.status === "upcoming" && (
-                                  <Button
-                                    onClick={() => onPayInstallment(item.id)}
-                                    className="min-h-[36px] px-3 text-xs"
-                                  >
-                                    {isReceivable ? "Terima" : "Bayar"}
-                                  </Button>
-                                )}
-                                {item.accountKind !== "payroll" && item.status === "paid" && (
-                                  <Button
-                                    variant="secondary"
-                                    disabled={unsettleMutation.isPending}
-                                    onClick={() => unsettleMutation.mutate(item.id)}
-                                    className="min-h-[36px] px-3 text-xs"
-                                  >
-                                    Batal Lunas
-                                  </Button>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </Card>
-                  );
-                })}
-              </div>
-            </details>
           )}
         </div>
+      )}
+
+      {/* Monthly Installment Schedule Accordion */}
+      {groupedSchedule.length > 0 && (
+        <details className="group rounded-[18px] border border-[var(--border)] bg-[var(--card)] overflow-hidden shadow-xs mt-6">
+          <summary className="flex cursor-pointer items-center justify-between p-4 font-bold text-base hover:bg-[var(--surface)] transition-colors select-none">
+            <span className="flex items-center gap-2">
+              <ClockIcon className="w-4 h-4 text-[var(--primary)]" />
+              Jadwal Angsuran Bulanan ({groupedSchedule.length} Bulan)
+              <HelpTooltip
+                title="Jadwal Angsuran Bulanan"
+                content="Rincian jadwal cicilan kewajiban atau piutang yang jatuh tempo pada bulan-bulan mendatang."
+              />
+            </span>
+            <span className="text-xs font-semibold text-[var(--primary)] group-open:hidden">
+              Buka Jadwal ▼
+            </span>
+            <span className="text-xs font-semibold text-[var(--muted-foreground)] hidden group-open:inline">
+              Tutup ▲
+            </span>
+          </summary>
+          <div className="p-4 pt-1 space-y-3 border-t border-[var(--border)]">
+            {groupedSchedule.map(([period, rows]) => {
+              const totalMonth = rows.reduce((sum, r) => sum + r.plannedAmount, 0);
+              return (
+                <Card key={period} className="p-0 overflow-hidden rounded-[14px]">
+                  <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
+                    <strong className="text-sm font-bold text-[var(--foreground)]">
+                      {formatMonthTitle(period)}
+                    </strong>
+                    <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
+                      {formatRupiah(totalMonth, isMasked)}
+                    </span>
+                  </div>
+                  <div className="divide-y divide-[var(--border)]">
+                    {rows.map((item) => {
+                      const isReceivable = item.direction === "receivable";
+                      return (
+                        <div
+                          key={item.id}
+                          className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 hover:bg-[var(--surface)] transition-colors"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-bold text-[var(--foreground)]">
+                                {item.accountName}
+                              </span>
+                              <Badge tone={isReceivable ? "soft" : "neutral"}>
+                                {KIND_BADGE_LABEL[item.accountKind] ??
+                                  (isReceivable ? "Tagih Piutang" : "Bayar Utang")}
+                              </Badge>
+                              {item.accountKind === "payroll" ? (
+                                <Badge tone="neutral">Auto Potong Gaji</Badge>
+                              ) : item.status === "paid" ? (
+                                <Badge tone="soft">Lunas</Badge>
+                              ) : (
+                                <Badge tone="highlight">Belum Lunas</Badge>
+                              )}
+                            </div>
+                            <p className="text-xs text-[var(--muted-foreground)]">
+                              Jatuh tempo {formatShortDate(item.dueDate)} · {item.lender}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-2.5">
+                            <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
+                              {formatRupiah(item.actualAmount ?? item.plannedAmount, isMasked)}
+                            </span>
+                            {item.accountKind !== "payroll" && item.status === "upcoming" && (
+                              <Button
+                                onClick={() => onPayInstallment(item.id)}
+                                className="min-h-[36px] px-3 text-xs"
+                              >
+                                {isReceivable ? "Terima" : "Bayar"}
+                              </Button>
+                            )}
+                            {item.accountKind !== "payroll" && item.status === "paid" && (
+                              <Button
+                                variant="secondary"
+                                disabled={unsettleMutation.isPending}
+                                onClick={() => unsettleMutation.mutate(item.id)}
+                                className="min-h-[36px] px-3 text-xs"
+                              >
+                                Batal Lunas
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </details>
       )}
 
       {/* Early Payoff Modal (Pelunasan Dipercepat & Potong Saldo Dompet) */}
@@ -998,7 +1288,10 @@ export function DebtsPage({
 
             {/* Wallet Selector with Real Balance Display */}
             <div className="space-y-1.5">
-              <label htmlFor="payoff-wallet" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+              <label
+                htmlFor="payoff-wallet"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              >
                 {payoffTarget.direction === "receivable"
                   ? "Pilih Dompet Penerima Dana (Saldo bertambah):"
                   : "Pilih Dompet Sumber Pembayaran (Saldo berkurang):"}
@@ -1042,7 +1335,10 @@ export function DebtsPage({
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <label htmlFor="payoff-amount" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+                <label
+                  htmlFor="payoff-amount"
+                  className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+                >
                   Nominal Pelunasan (Rp)
                 </label>
                 <div className="relative">
@@ -1060,7 +1356,10 @@ export function DebtsPage({
               </div>
 
               <div className="space-y-1.5">
-                <label htmlFor="payoff-date" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+                <label
+                  htmlFor="payoff-date"
+                  className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+                >
                   Tanggal Pelunasan
                 </label>
                 <input
@@ -1105,6 +1404,15 @@ export function DebtsPage({
           </div>
         </ModalSheet>
       )}
+
+      {/* Edit Debt Account & Installment Schedule Modal */}
+      <EditDebtModal
+        account={editingAccount}
+        installments={data.installments}
+        wallets={data.wallets}
+        onClose={() => setEditingAccount(null)}
+        onSuccess={onToast}
+      />
 
       {/* Delete Debt Account Confirmation Modal */}
       {deletingAccount && (

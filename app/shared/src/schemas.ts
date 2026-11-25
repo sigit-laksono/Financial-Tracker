@@ -8,6 +8,9 @@ import {
   CYCLE_MODES,
   DEBT_DIRECTIONS,
   DEBT_KINDS,
+  INSTALLMENT_STATUSES,
+  TRANSACTION_SOURCES,
+  TRANSACTION_TYPES,
   WALLET_PROVIDERS,
   WALLET_ROLES,
   WALLET_TYPES,
@@ -147,6 +150,21 @@ export const createDebtSchema = z.object({
 
 export const closeDebtSchema = z.object({
   closed: z.boolean(),
+});
+
+export const updateDebtInstallmentItemSchema = z.object({
+  id: z.number().int().positive(),
+  dueDate: isoDateSchema,
+  plannedAmount: z.number().int().positive("Nominal cicilan harus lebih dari Rp 0."),
+});
+
+export const updateDebtSchema = z.object({
+  name: z.string().trim().min(1, "Nama utang/piutang wajib diisi.").max(120).optional(),
+  lender: z.string().trim().min(1, "Pemberi pinjaman/peminjam wajib diisi.").max(120).optional(),
+  kind: z.enum(DEBT_KINDS).optional(),
+  paymentMethod: z.string().trim().min(1).max(60).optional(),
+  walletId: z.number().int().positive().nullable().optional(),
+  installments: z.array(updateDebtInstallmentItemSchema).optional(),
 });
 
 export const earlyPayoffSchema = z.object({
@@ -355,4 +373,232 @@ export const updateAssetSchema = z.object({
 export const dashboardQuerySchema = z.object({
   cycle: z.enum(CYCLE_MODES).optional(),
   period: yearMonthSchema.optional(),
+});
+
+const backupTimestampSchema = z
+  .union([z.string().min(1), z.number().finite(), z.date()])
+  .transform((val, ctx) => {
+    const d = val instanceof Date ? val : new Date(val);
+    if (Number.isNaN(d.getTime())) {
+      ctx.addIssue({ code: "custom", message: "Format timestamp cadangan tidak valid." });
+      return z.NEVER;
+    }
+    return d;
+  });
+
+const nullableBackupTimestampSchema = backupTimestampSchema.nullable().optional();
+
+export const backupWalletRowSchema = z.object({
+  id: z.number().int().positive(),
+  key: z.string().min(1),
+  name: z.string().min(1),
+  type: z.enum(WALLET_TYPES),
+  accountGroup: z.enum(ACCOUNT_GROUPS).default("bank"),
+  provider: z.enum(WALLET_PROVIDERS).default("other"),
+  role: z.enum(WALLET_ROLES).default("spending"),
+  openingBalance: z.number().int().default(0),
+  creditLimit: z.number().int().nullable().optional(),
+  cutoffDay: z.number().int().nullable().optional(),
+  statementDay: z.number().int().nullable().optional(),
+  paymentDay: z.number().int().nullable().optional(),
+  color: z.string().min(1),
+  accountNumber: z.string().nullable().optional(),
+  sortOrder: z.number().int().default(0),
+  isActive: z.boolean().default(true),
+  createdAt: backupTimestampSchema.optional(),
+});
+
+export const backupCategoryRowSchema = z.object({
+  id: z.number().int().positive(),
+  name: z.string().min(1),
+  type: z.enum(CATEGORY_TYPES),
+  bucket: z.enum(["needs", "wants", "savings"]).default("needs"),
+  isMandatory: z.boolean().default(false),
+  color: z.string().min(1).default("#00797a"),
+  sortOrder: z.number().int().default(0),
+  isArchived: z.boolean().default(false),
+});
+
+export const backupDebtAccountRowSchema = z.object({
+  id: z.number().int().positive(),
+  key: z.string().min(1),
+  name: z.string().min(1),
+  lender: z.string().min(1),
+  kind: z.enum(DEBT_KINDS),
+  direction: z.enum(DEBT_DIRECTIONS).default("payable"),
+  walletId: z.number().int().positive().nullable().optional(),
+  initialBalance: z.number().int(),
+  paymentDay: z.number().int().nullable().optional(),
+  paymentMethod: z.string().min(1),
+  color: z.string().min(1),
+  disburseWalletId: z.number().int().positive().nullable().optional(),
+  disbursedAt: nullableBackupTimestampSchema,
+  interestRateBps: z.number().int().nullable().optional(),
+  sourceTransactionId: z.number().int().positive().nullable().optional(),
+  closedAt: nullableBackupTimestampSchema,
+  createdAt: backupTimestampSchema.optional(),
+});
+
+export const backupInstallmentRowSchema = z.object({
+  id: z.number().int().positive(),
+  accountId: z.number().int().positive(),
+  period: z.string().min(1).max(20),
+  dueDate: isoDateSchema,
+  plannedAmount: z.number().int(),
+  principalAmount: z.number().int().nullable().optional(),
+  interestAmount: z.number().int().nullable().optional(),
+  actualAmount: z.number().int().nullable().optional(),
+  status: z.enum(INSTALLMENT_STATUSES).default("upcoming"),
+  paidAt: nullableBackupTimestampSchema,
+  settlementTransactionId: z.number().int().positive().nullable().optional(),
+});
+
+export const backupTransactionRowSchema = z
+  .object({
+    id: z.number().int().positive(),
+    type: z.enum(TRANSACTION_TYPES),
+    merchant: z.string().min(1),
+    amount: z.number().int(),
+    transactionDate: isoDateSchema,
+    category: z.string().min(1),
+    categoryId: z.number().int().positive().nullable().optional(),
+    walletId: z.number().int().positive(),
+    toWalletId: z.number().int().positive().nullable().optional(),
+    transferGroupId: z.string().nullable().optional(),
+    note: z.string().nullable().optional(),
+    ccCycleKey: z.string().nullable().optional(),
+    isConvertedToInstallment: z.boolean().default(false),
+    convertedAccountId: z.number().int().positive().nullable().optional(),
+    installmentId: z.number().int().positive().nullable().optional(),
+    debtAccountId: z.number().int().positive().nullable().optional(),
+    source: z.enum(TRANSACTION_SOURCES).default("manual"),
+    sourceRef: z.string().nullable().optional(),
+    createdAt: backupTimestampSchema.optional(),
+    updatedAt: backupTimestampSchema.optional(),
+  })
+  .refine((t) => t.type === "adjustment" || t.amount > 0, {
+    message: "Nominal transaksi non-adjustment harus lebih dari 0.",
+  })
+  .refine((t) => t.toWalletId == null || t.toWalletId !== t.walletId, {
+    message: "Dompet asal dan tujuan transfer pada transaksi tidak boleh sama.",
+  });
+
+export const backupTransactionSplitRowSchema = z.object({
+  id: z.number().int().positive(),
+  transactionId: z.number().int().positive(),
+  category: z.string().min(1),
+  categoryId: z.number().int().positive().nullable().optional(),
+  amount: z.number().int().positive(),
+  note: z.string().nullable().optional(),
+  createdAt: backupTimestampSchema.optional(),
+});
+
+export const backupSettlementAllocationRowSchema = z.object({
+  id: z.number().int().positive(),
+  settlementTransactionId: z.number().int().positive(),
+  targetType: z.enum(["installment", "cc_cycle"]),
+  installmentId: z.number().int().positive().nullable().optional(),
+  ccWalletId: z.number().int().positive().nullable().optional(),
+  ccCycleKey: z.string().nullable().optional(),
+  allocatedAmount: z.number().int().positive(),
+  createdAt: backupTimestampSchema.optional(),
+});
+
+export const backupBudgetRowSchema = z.object({
+  id: z.number().int().positive(),
+  category: z.string().min(1),
+  categoryId: z.number().int().positive().nullable().optional(),
+  period: z.string().min(1).max(20),
+  limitAmount: z.number().int().positive(),
+  createdAt: backupTimestampSchema.optional(),
+  updatedAt: backupTimestampSchema.optional(),
+});
+
+export const backupGoalRowSchema = z.object({
+  id: z.number().int().positive(),
+  name: z.string().min(1),
+  emoji: z.string().min(1).default("🎯"),
+  targetAmount: z.number().int().positive(),
+  currentAmount: z.number().int().min(0).default(0),
+  targetDate: z.string().max(10).nullable().optional(),
+  isEmergencyFund: z.boolean().default(false),
+  walletId: z.number().int().positive().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  createdAt: backupTimestampSchema.optional(),
+  updatedAt: backupTimestampSchema.optional(),
+});
+
+export const backupAssetRowSchema = z.object({
+  id: z.number().int().positive(),
+  name: z.string().min(1),
+  category: z.enum(ASSET_CATEGORIES),
+  type: z.string().min(1),
+  valuationAmount: z.number().int().min(0),
+  acquisitionCost: z.number().int().min(0).nullable().optional(),
+  notes: z.string().nullable().optional(),
+  createdAt: backupTimestampSchema.optional(),
+  updatedAt: backupTimestampSchema.optional(),
+});
+
+export const backupWalletRecurringFeeRowSchema = z.object({
+  id: z.number().int().positive(),
+  walletId: z.number().int().positive(),
+  name: z.string().min(1),
+  amount: z.number().int().positive(),
+  isActive: z.boolean().default(true),
+  createdAt: backupTimestampSchema.optional(),
+});
+
+export const backupRecurringRuleRowSchema = z.object({
+  id: z.number().int().positive(),
+  merchant: z.string().min(1),
+  amount: z.number().int().positive(),
+  category: z.string().min(1),
+  categoryId: z.number().int().positive().nullable().optional(),
+  walletId: z.number().int().positive(),
+  dueDay: z.number().int().min(1).max(31),
+  isActive: z.boolean().default(true),
+  lastPaidPeriod: z.string().max(20).nullable().optional(),
+  createdAt: backupTimestampSchema.optional(),
+});
+
+export const backupSettingsSnapshotSchema = z.object({
+  grossSalary: z.number().int().min(0).default(0),
+  netSalary: z.number().int().min(0).default(0),
+  payrollDeduction: z.number().int().min(0).default(0),
+  defaultSalaryWalletId: z.number().int().positive().nullable().optional(),
+  gajianStartDay: z.number().int().min(1).max(28).default(25),
+  cardCutoffDay: z.number().int().min(1).max(28).default(20),
+  statementDay: z.number().int().min(1).max(28).default(21),
+  cardPaymentDay: z.number().int().min(1).max(28).default(25),
+  cardLimit: z.number().int().min(0).default(0),
+  legacySettledBeforeCycle: z.string().max(20).nullable().optional(),
+  lastAutoSyncDate: z.string().max(10).nullable().optional(),
+});
+
+export const backupSnapshotV2Schema = z.object({
+  version: z.literal(2),
+  exportedAt: z.string().min(1),
+  period: z.literal("all"),
+  scope: z.literal("full").optional(),
+  settings: backupSettingsSnapshotSchema,
+  categories: z.array(backupCategoryRowSchema),
+  wallets: z.array(backupWalletRowSchema),
+  walletRecurringFees: z.array(backupWalletRecurringFeeRowSchema),
+  accounts: z.array(backupDebtAccountRowSchema),
+  installments: z.array(backupInstallmentRowSchema),
+  budgets: z.array(backupBudgetRowSchema),
+  transactions: z.array(backupTransactionRowSchema),
+  transactionSplits: z.array(backupTransactionSplitRowSchema),
+  settlementAllocations: z.array(backupSettlementAllocationRowSchema),
+  goals: z.array(backupGoalRowSchema),
+  assets: z.array(backupAssetRowSchema),
+  recurringRules: z.array(backupRecurringRuleRowSchema),
+});
+
+export type BackupSnapshotV2 = z.infer<typeof backupSnapshotV2Schema>;
+
+export const backupImportRequestSchema = z.object({
+  confirmation: z.literal("IMPORT_CONFIRMED"),
+  snapshot: backupSnapshotV2Schema,
 });

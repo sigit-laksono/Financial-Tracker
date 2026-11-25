@@ -6,6 +6,7 @@ import {
   earlyPayoffSchema,
   settleSchema,
   unsettleSchema,
+  updateDebtSchema,
   updateInstallmentSchema,
 } from "../../../shared/src/schemas";
 import type { AppDb } from "../db";
@@ -15,15 +16,19 @@ import {
   settlementAllocations,
   transactionSplits,
   transactions,
+  wallets,
 } from "../db/schema";
 import { recordAuditLog } from "../lib/auditService";
+import { ccCycleForDate } from "../lib/dates";
 import { NotFoundError, ValidationError } from "../lib/errors";
 import {
   buildDebtsData,
   createDebtAccountWithSchedule,
   earlyPayoffDebtAccount,
+  getSettings,
   settleObligations,
   unsettleInstallment,
+  updateDebtAccountWithSchedule,
 } from "../lib/ledger";
 
 export function createDebtRoutes(db: AppDb) {
@@ -43,6 +48,22 @@ export function createDebtRoutes(db: AppDb) {
 
     const result = await createDebtAccountWithSchedule(db, parsed.data);
     return c.json({ ok: true, ...result }, 201);
+  });
+
+  router.patch("/:id", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) {
+      return c.json({ error: "ID akun utang tidak valid." }, 400);
+    }
+
+    const body = await c.req.json().catch(() => null);
+    const parsed = updateDebtSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: parsed.error.issues[0]?.message ?? "Data edit utang tidak valid." }, 400);
+    }
+
+    const result = await updateDebtAccountWithSchedule(db, id, parsed.data);
+    return c.json(result);
   });
 
   router.post("/:id/payoff", async (c) => {
@@ -236,7 +257,32 @@ export function createInstallmentRoutes(db: AppDb) {
     }
     if (parsed.data.dueDate !== undefined) {
       updates.dueDate = parsed.data.dueDate;
-      updates.period = parsed.data.dueDate.slice(0, 7);
+      let nextPeriod = parsed.data.dueDate.slice(0, 7);
+      if (existing.accountId) {
+        const [acc] = await db
+          .select({
+            kind: debtAccounts.kind,
+            walletId: debtAccounts.walletId,
+            sourceTransactionId: debtAccounts.sourceTransactionId,
+          })
+          .from(debtAccounts)
+          .where(eq(debtAccounts.id, existing.accountId))
+          .limit(1);
+        if (acc && acc.kind === "card_installment" && !acc.sourceTransactionId) {
+          const settings = await getSettings(db);
+          let cutoffDay = settings.cardCutoffDay;
+          if (acc.walletId) {
+            const [w] = await db
+              .select({ cutoffDay: wallets.cutoffDay })
+              .from(wallets)
+              .where(eq(wallets.id, acc.walletId))
+              .limit(1);
+            cutoffDay = w?.cutoffDay ?? cutoffDay;
+          }
+          nextPeriod = ccCycleForDate(parsed.data.dueDate, cutoffDay);
+        }
+      }
+      updates.period = nextPeriod;
     }
 
     const [updated] = await db

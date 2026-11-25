@@ -2,6 +2,7 @@ import { and, desc, gte, lte } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppDb } from "../db";
 import { transactions } from "../db/schema";
+import { buildFullJsonBackupData, importBackupSnapshot } from "../lib/backupService";
 import { isValidYearMonth, periodBounds } from "../lib/dates";
 import { computeLedgerSnapshot } from "../lib/ledger";
 
@@ -100,24 +101,66 @@ export function createExportRoutes(db: AppDb) {
       });
     }
 
+    const txIdsFilter = period === "all" ? undefined : txRows.map((t) => t.id);
+    const fullBackupData = await buildFullJsonBackupData(db, txIdsFilter);
+
     const payload = {
+      version: 2 as const,
       exportedAt: new Date().toISOString(),
       period,
+      scope: period === "all" ? ("full" as const) : ("period" as const),
+      settings: fullBackupData.settings,
+      categories: fullBackupData.categories,
       wallets: snap.wallets,
+      walletRecurringFees: fullBackupData.walletRecurringFees,
       accounts: snap.accounts,
-      installments: snap.activeInstallments,
+      installments:
+        period === "all" ? fullBackupData.installments : snap.activeInstallments,
       budgets: snap.budgets,
       transactions: txRows.map((t) => ({
         ...t,
         walletName: walletById.get(t.walletId) ?? null,
         toWalletName: t.toWalletId ? (walletById.get(t.toWalletId) ?? null) : null,
       })),
+      transactionSplits: fullBackupData.transactionSplits,
+      settlementAllocations: fullBackupData.settlementAllocations,
+      goals: fullBackupData.goals,
+      assets: fullBackupData.assets,
+      recurringRules: fullBackupData.recurringRules,
     };
     return new Response(JSON.stringify(payload, null, 2), {
       headers: {
         "Content-Type": "application/json; charset=utf-8",
         "Content-Disposition": `attachment; filename="financial-tracker-${period}.json"`,
       },
+    });
+  });
+
+  router.post("/import", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as {
+      confirmation?: unknown;
+      snapshot?: unknown;
+    } | null;
+
+    if (!body || typeof body !== "object") {
+      return c.json({ error: "Payload impor tidak valid." }, 400);
+    }
+
+    if (body.confirmation !== "IMPORT_CONFIRMED") {
+      return c.json(
+        {
+          error: 'Konfirmasi impor tidak valid. Ketik "IMPORT_CONFIRMED" untuk melanjutkan.',
+        },
+        400,
+      );
+    }
+
+    const result = await importBackupSnapshot(db, body.snapshot);
+    return c.json({
+      ok: true,
+      message: `Data berhasil dipulihkan (${result.counts.wallets} dompet, ${result.counts.transactions} transaksi).`,
+      exportedAt: result.exportedAt,
+      counts: result.counts,
     });
   });
 

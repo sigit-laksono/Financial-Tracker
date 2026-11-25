@@ -1,9 +1,24 @@
-import { useState } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertIcon, DownloadIcon, TrashIcon } from "../../components/Icons";
-import { Button, Card, ModalSheet } from "../../components/UI";
-import { api, ApiError, type DashboardDto } from "../../lib/api";
+import { backupSnapshotV2Schema } from "../../../../shared/src/schemas";
+import { AlertIcon, CheckIcon, DownloadIcon, TrashIcon, UploadIcon } from "../../components/Icons";
+import { Button, ModalSheet } from "../../components/UI";
+import { api, ApiError, type BackupCountsDto, type DashboardDto } from "../../lib/api";
 import { formatMonthTitle } from "../../lib/format";
+
+interface ParsedBackupPreview {
+  fileName: string;
+  fileSizeBytes: number;
+  exportedAt: string;
+  counts: BackupCountsDto;
+  rawPayload: unknown;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 export function DataBackupTab({
   data,
@@ -13,14 +28,121 @@ export function DataBackupTab({
   onToast: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [exportPeriod, setExportPeriod] = useState<string>("all");
   const [showResetModal, setShowResetModal] = useState(false);
   const [resetMode, setResetMode] = useState<"all" | "transactions">("all");
   const [resetConfirmInput, setResetConfirmInput] = useState("");
   const [resetError, setResetError] = useState("");
 
+  const [backupPreview, setBackupPreview] = useState<ParsedBackupPreview | null>(null);
+  const [fileParseError, setFileParseError] = useState("");
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importConfirmInput, setImportConfirmInput] = useState("");
+  const [importError, setImportError] = useState("");
+
   const csvUrl = `/api/export?format=csv&period=${encodeURIComponent(exportPeriod)}&cycle=${data.cycle}`;
   const jsonUrl = `/api/export?format=json&period=${encodeURIComponent(exportPeriod)}&cycle=${data.cycle}`;
+
+  const clearSelectedFile = () => {
+    setBackupPreview(null);
+    setFileParseError("");
+    setImportConfirmInput("");
+    setImportError("");
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    setFileParseError("");
+    setBackupPreview(null);
+    setImportConfirmInput("");
+    setImportError("");
+
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const raw = JSON.parse(text) as Record<string, unknown>;
+
+      if (!raw || typeof raw !== "object") {
+        setFileParseError("File JSON tidak berisi objek cadangan yang valid.");
+        return;
+      }
+      if (raw.version !== 2) {
+        setFileParseError(
+          "Format cadangan versi lama (v1) tidak lengkap. Silakan ekspor ulang file JSON terbaru dengan opsi Semua Periode.",
+        );
+        return;
+      }
+      if (raw.period !== "all") {
+        setFileParseError(
+          'File ini hanya berisi ekspor sebagian periode. Pilih file hasil "Semua Periode (Pencadangan Total)" agar data sinkron utuh.',
+        );
+        return;
+      }
+
+      const validated = backupSnapshotV2Schema.safeParse(raw);
+      if (!validated.success) {
+        const issue = validated.error.issues[0];
+        const pathLabel = issue?.path?.length ? ` (${issue.path.join(".")})` : "";
+        setFileParseError(
+          `Struktur file cadangan tidak valid${pathLabel}: ${issue?.message ?? "format salah"}`,
+        );
+        return;
+      }
+
+      const snap = validated.data;
+      setBackupPreview({
+        fileName: file.name,
+        fileSizeBytes: file.size,
+        exportedAt: snap.exportedAt,
+        counts: {
+          wallets: snap.wallets.length,
+          categories: snap.categories.length,
+          accounts: snap.accounts.length,
+          installments: snap.installments.length,
+          transactions: snap.transactions.length,
+          transactionSplits: snap.transactionSplits.length,
+          settlementAllocations: snap.settlementAllocations.length,
+          budgets: snap.budgets.length,
+          goals: snap.goals.length,
+          assets: snap.assets.length,
+          walletRecurringFees: snap.walletRecurringFees.length,
+          recurringRules: snap.recurringRules.length,
+        },
+        rawPayload: raw,
+      });
+    } catch {
+      setFileParseError("Gagal membaca file. Pastikan file yang dipilih berformat JSON yang valid.");
+    }
+  };
+
+  const importMutation = useMutation({
+    mutationFn: () => {
+      if (!backupPreview) throw new Error("Tidak ada file cadangan yang dipilih.");
+      return api.importBackup(backupPreview.rawPayload, importConfirmInput.trim());
+    },
+    onSuccess: async (res) => {
+      if (res.counts.wallets > 0) {
+        localStorage.setItem("ft-onboarding-completed", "true");
+      } else {
+        localStorage.removeItem("ft-onboarding-completed");
+      }
+      localStorage.removeItem("ft-last-wallet-id");
+      await queryClient.invalidateQueries();
+      setShowImportModal(false);
+      clearSelectedFile();
+      onToast(res.message ?? "Database berhasil dipulihkan dari cadangan JSON.");
+    },
+    onError: (err) => {
+      const msg = err instanceof ApiError ? err.message : "Gagal mengimpor file cadangan.";
+      setImportError(msg);
+    },
+  });
 
   const resetMutation = useMutation({
     mutationFn: () => api.resetData(resetConfirmInput.trim(), resetMode),
@@ -51,9 +173,13 @@ export function DataBackupTab({
       <div className="rounded-[18px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-5 sm:p-6 shadow-xs space-y-5">
         <div>
           <h2 className="text-base font-bold text-neutral-900 dark:text-white">Cadangan & Ekspor Data</h2>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5 leading-relaxed">
             Unduh salinan arsip data keuangan Anda dalam format CSV (spreadsheet) atau JSON (arsip
-            terstruktur).
+            lengkap). Untuk menyamakan data VPS (Prod) ke Laptop (Dev), pilih{" "}
+            <span className="font-semibold text-neutral-700 dark:text-neutral-300">
+              Semua Periode (Pencadangan Total)
+            </span>{" "}
+            lalu klik <span className="font-semibold text-neutral-700 dark:text-neutral-300">Unduh JSON</span>.
           </p>
         </div>
 
@@ -99,6 +225,132 @@ export function DataBackupTab({
             </a>
           </div>
         </div>
+      </div>
+
+      {/* Import / Restore Section */}
+      <div className="rounded-[18px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-5 sm:p-6 shadow-xs space-y-5">
+        <div>
+          <h2 className="text-base font-bold text-neutral-900 dark:text-white">
+            Impor & Pulihkan Snapshot (JSON)
+          </h2>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5 leading-relaxed">
+            Pulihkan seluruh isi database dari file cadangan JSON v2 (Semua Periode). Proses ini
+            mengganti seluruh data dompet, kategori, transaksi, alokasi kartu kredit, hutang/cicilan,
+            anggaran, target, aset, dan pengaturan siklus agar{" "}
+            <span className="font-semibold text-neutral-700 dark:text-neutral-300">100% identik</span>{" "}
+            (PIN & log aktivitas lokal tetap aman).
+          </p>
+        </div>
+
+        <input
+          ref={fileInputRef}
+          id="backup-import-file"
+          type="file"
+          accept=".json,application/json"
+          onChange={handleFileChange}
+          className="sr-only"
+        />
+
+        {!backupPreview ? (
+          <div className="flex flex-wrap items-center justify-between gap-4 rounded-[16px] border border-dashed border-neutral-300 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/40 p-4 sm:p-5">
+            <div className="space-y-1 flex-1 min-w-[220px]">
+              <p className="text-sm font-semibold text-neutral-900 dark:text-white">
+                Pilih file <span className="font-mono text-xs">financial-tracker-all.json</span>
+              </p>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                File akan diperiksa dan ditampilkan ringkasannya terlebih dahulu sebelum menimpa database.
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => fileInputRef.current?.click()}
+              className="min-h-[44px] rounded-[14px] px-4 text-sm font-semibold shadow-xs"
+            >
+              <UploadIcon className="w-4 h-4 text-[var(--primary)]" />
+              <span>Pilih File JSON</span>
+            </Button>
+          </div>
+        ) : (
+          <div className="rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/40 p-4 sm:p-5 space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <CheckIcon className="w-4 h-4 text-[var(--primary)] shrink-0" />
+                  <p className="text-sm font-bold text-neutral-900 dark:text-white break-all">
+                    {backupPreview.fileName}
+                  </p>
+                </div>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Ukuran {formatFileSize(backupPreview.fileSizeBytes)} · Diekspor pada{" "}
+                  {new Date(backupPreview.exportedAt).toLocaleString("id-ID", {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  })}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={clearSelectedFile}
+                className="text-xs font-semibold text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white underline underline-offset-2"
+              >
+                Ganti File
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              {[
+                { label: "Dompet", value: backupPreview.counts.wallets },
+                { label: "Transaksi", value: backupPreview.counts.transactions },
+                { label: "Kategori", value: backupPreview.counts.categories },
+                { label: "Hutang/Cicilan", value: backupPreview.counts.accounts },
+                { label: "Jadwal Cicilan", value: backupPreview.counts.installments },
+                { label: "Anggaran", value: backupPreview.counts.budgets },
+                { label: "Target Tabungan", value: backupPreview.counts.goals },
+                { label: "Aset", value: backupPreview.counts.assets },
+              ].map((stat) => (
+                <div
+                  key={stat.label}
+                  className="rounded-[12px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2"
+                >
+                  <p className="text-[11px] font-semibold text-neutral-400 dark:text-neutral-500">
+                    {stat.label}
+                  </p>
+                  <p className="text-sm font-bold tabular-nums text-neutral-900 dark:text-white">
+                    {stat.value.toLocaleString("id-ID")}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2.5 pt-1">
+              <Button
+                variant="secondary"
+                onClick={clearSelectedFile}
+                className="min-h-[42px] rounded-[12px] px-4 text-xs font-bold"
+              >
+                Batal
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setImportConfirmInput("");
+                  setImportError("");
+                  setShowImportModal(true);
+                }}
+                className="min-h-[42px] rounded-[12px] px-4 text-xs font-bold"
+              >
+                <UploadIcon className="w-3.5 h-3.5" />
+                <span>Pulihkan Data Dari File Ini</span>
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {fileParseError && (
+          <p role="alert" className="text-xs font-semibold text-red-500">
+            {fileParseError}
+          </p>
+        )}
       </div>
 
       {/* Danger Zone: Reset Database */}
@@ -162,7 +414,70 @@ export function DataBackupTab({
         </div>
       </div>
 
-      {/* Confirmation Modal */}
+      {/* Import Confirmation Modal */}
+      <ModalSheet
+        open={showImportModal}
+        onClose={() => {
+          if (!importMutation.isPending) setShowImportModal(false);
+        }}
+        title="Konfirmasi Impor & Pulihkan Data"
+        subtitle="Seluruh data keuangan di database saat ini akan diganti total agar identik dengan isi file cadangan."
+      >
+        <div className="space-y-4">
+          <div className="rounded-[14px] border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/30 p-4 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+            Pastikan Anda sudah memilih file cadangan yang benar ({backupPreview?.fileName}). Ketik{" "}
+            <strong className="font-mono font-bold">IMPORT_CONFIRMED</strong> di bawah ini untuk
+            melanjutkan pemulihan data:
+          </div>
+
+          <div className="space-y-1.5">
+            <label
+              htmlFor="import-confirm-text"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400 dark:text-neutral-500"
+            >
+              Ketik IMPORT_CONFIRMED
+            </label>
+            <input
+              id="import-confirm-text"
+              type="text"
+              value={importConfirmInput}
+              onChange={(e) => {
+                setImportConfirmInput(e.target.value);
+                setImportError("");
+              }}
+              placeholder="IMPORT_CONFIRMED"
+              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-mono font-semibold text-neutral-900 dark:text-white focus:border-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
+            />
+          </div>
+
+          {importError && (
+            <p role="alert" className="text-xs font-semibold text-red-500">
+              {importError}
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2.5 pt-2">
+            <Button
+              variant="secondary"
+              disabled={importMutation.isPending}
+              onClick={() => setShowImportModal(false)}
+              className="min-h-[44px] rounded-[14px] px-5 font-bold"
+            >
+              Batal
+            </Button>
+            <Button
+              variant="primary"
+              disabled={importConfirmInput !== "IMPORT_CONFIRMED" || importMutation.isPending}
+              onClick={() => importMutation.mutate()}
+              className="min-h-[44px] rounded-[14px] px-5 font-bold"
+            >
+              {importMutation.isPending ? "Memulihkan..." : "Pulihkan Sekarang"}
+            </Button>
+          </div>
+        </div>
+      </ModalSheet>
+
+      {/* Reset Confirmation Modal */}
       <ModalSheet
         open={showResetModal}
         onClose={() => setShowResetModal(false)}
