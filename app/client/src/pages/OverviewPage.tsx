@@ -424,7 +424,7 @@ export function OverviewPage({
               <p className="font-bold text-[var(--foreground)]">Bebas Bunga Kartu Kredit</p>
               <p className="text-[var(--muted-foreground)]">
                 Hemat estimasi bunga ~
-                {formatCompactRupiah(Math.round(metrics.totalCcExpense * 0.0175))} jika dibayar
+                {formatCompactRupiah(Math.round(metrics.totalCcExpense * 0.0175), isMasked)} jika dibayar
                 lunas sebelum jatuh tempo.
               </p>
             </div>

@@ -18,6 +18,7 @@ import {
   parsePositiveInt,
   spellOutRupiah,
 } from "../lib/format";
+import { usePrivacyMode } from "../lib/usePrivacyMode";
 import { budgetKeys, goalKeys } from "../lib/queryKeys";
 import { AlertIcon, SplitPayIcon, TrashIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
@@ -266,6 +267,7 @@ export function QuickAddSheet({
   onRequestSplitPay?: (tx: TransactionDto) => void;
 }) {
   const queryClient = useQueryClient();
+  const { isMasked } = usePrivacyMode();
   const baseId = useId();
   const formId = `${baseId}-form`;
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -335,6 +337,23 @@ export function QuickAddSheet({
   const [settleTarget, setSettleTarget] = useState<string>("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isSavedSuccess, setIsSavedSuccess] = useState(false);
+  // Pending auto-close after a save. Cleared when the sheet closes so a stale timer can't
+  // close the sheet the next time it is opened.
+  const closeTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (open) return;
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setIsSavedSuccess(false);
+  }, [open]);
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
+    },
+    [],
+  );
   const [error, setError] = useState("");
 
   // Split Category states
@@ -787,7 +806,9 @@ export function QuickAddSheet({
             : "Tagihan berhasil dilunasi",
       };
       onSuccessMessage(labels[mode]);
-      window.setTimeout(() => {
+      if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = window.setTimeout(() => {
+        closeTimerRef.current = null;
         setIsSavedSuccess(false);
         onClose();
       }, 400);
@@ -814,6 +835,7 @@ export function QuickAddSheet({
 
   const submitDisabled =
     saveMutation.isPending ||
+    deleteMutation.isPending ||
     isSavedSuccess ||
     (mode === "settle" && (!settleTarget || isSettleInsufficient)) ||
     (mode === "transfer" && isTransferInsufficient) ||
@@ -1117,14 +1139,14 @@ export function QuickAddSheet({
                     >
                       {selectedInsts.length > 1 && settleTarget.startsWith("inst:") && (
                         <option value={settleTarget}>
-                          {selectedInsts.length} Angsuran Terpilih ({formatRupiah(selectedSettleBillAmount)})
+                          {selectedInsts.length} Angsuran Terpilih ({formatRupiah(selectedSettleBillAmount, isMasked)})
                         </option>
                       )}
                       {unpaidCcCycles.length > 0 && (
                         <optgroup label="Tagihan Kartu Kredit">
                           {unpaidCcCycles.map((c) => (
                             <option key={c.key} value={c.key}>
-                              {c.walletName} · Siklus {c.cycleKey} ({formatRupiah(c.totalBill)})
+                              {c.walletName} · Siklus {c.cycleKey} ({formatRupiah(c.totalBill, isMasked)})
                             </option>
                           ))}
                         </optgroup>
@@ -1134,7 +1156,7 @@ export function QuickAddSheet({
                           {upcomingInstallments.map((i) => (
                             <option key={`inst:${i.id}`} value={`inst:${i.id}`}>
                               {i.accountName} ({formatShortDate(i.dueDate)}) -{" "}
-                              {formatRupiah(i.plannedAmount)}
+                              {formatRupiah(i.plannedAmount, isMasked)}
                             </option>
                           ))}
                         </optgroup>
@@ -1159,7 +1181,7 @@ export function QuickAddSheet({
                     >
                       {cashWallets.map((w) => (
                         <option key={w.id} value={w.id}>
-                          {w.name} ({formatRupiah(w.balance)})
+                          {w.name} ({formatRupiah(w.balance, isMasked)})
                         </option>
                       ))}
                     </select>
@@ -1170,8 +1192,8 @@ export function QuickAddSheet({
                           <p className="font-bold">Saldo Dompet Tidak Mencukupi!</p>
                           <p className="mt-0.5">
                             Saldo {selectedSettleWallet.name} saat ini{" "}
-                            {formatRupiah(selectedSettleWallet.balance)}, sedangkan tagihan sebesar{" "}
-                            {formatRupiah(selectedSettleBillAmount)}. Pembayaran tidak dapat diproses.
+                            {formatRupiah(selectedSettleWallet.balance, isMasked)}, sedangkan tagihan sebesar{" "}
+                            {formatRupiah(selectedSettleBillAmount, isMasked)}. Pembayaran tidak dapat diproses.
                           </p>
                         </div>
                       </div>
@@ -1287,7 +1309,7 @@ export function QuickAddSheet({
                             {selectableWallets.map((w) => (
                               <option key={w.id} value={w.id}>
                                 {w.name}
-                                {!w.isActive ? " (Nonaktif)" : ""} ({formatRupiah(w.balance)})
+                                {!w.isActive ? " (Nonaktif)" : ""} ({formatRupiah(w.balance, isMasked)})
                               </option>
                             ))}
                           </select>
@@ -1305,7 +1327,7 @@ export function QuickAddSheet({
                             {transferToWallets.map((w) => (
                               <option key={w.id} value={w.id}>
                                 {w.name}
-                                {!w.isActive ? " (Nonaktif)" : ""} ({formatRupiah(w.balance)})
+                                {!w.isActive ? " (Nonaktif)" : ""} ({formatRupiah(w.balance, isMasked)})
                               </option>
                             ))}
                           </select>
@@ -1369,8 +1391,8 @@ export function QuickAddSheet({
                             <p className="font-bold">Saldo Dompet Tidak Mencukupi!</p>
                             <p className="mt-0.5">
                               Saldo {selectedTransferWallet.name} saat ini{" "}
-                              {formatRupiah(effectiveTransferBalance)}, sedangkan kebutuhan
-                              transfer + admin sebesar {formatRupiah(transferTotalNeeded)}.
+                              {formatRupiah(effectiveTransferBalance, isMasked)}, sedangkan kebutuhan
+                              transfer + admin sebesar {formatRupiah(transferTotalNeeded, isMasked)}.
                             </p>
                           </div>
                         </div>
@@ -1436,8 +1458,8 @@ export function QuickAddSheet({
                                 {w.name}
                                 {!w.isActive ? " (Nonaktif)" : ""} (
                                 {w.type === "credit_card"
-                                  ? `Sisa Limit ${formatRupiah(w.balance)}`
-                                  : formatRupiah(w.balance)}
+                                  ? `Sisa Limit ${formatRupiah(w.balance, isMasked)}`
+                                  : formatRupiah(w.balance, isMasked)}
                                 )
                               </option>
                             ))}
@@ -1481,7 +1503,7 @@ export function QuickAddSheet({
                                 <p className="font-bold">Melebihi Sisa Limit Kartu Kredit!</p>
                                 <p>
                                   Sisa limit tersedia {selectedExpenseWallet.name} saat ini{" "}
-                                  <strong>{formatRupiah(effectiveCcAvailableLimit)}</strong>
+                                  <strong>{formatRupiah(effectiveCcAvailableLimit, isMasked)}</strong>
                                   {selectedCcCard && selectedCcCard.installmentLimitUsed > 0
                                     ? ` (Rp ${selectedCcCard.installmentLimitUsed.toLocaleString("id-ID")} terkunci cicilan aktif)`
                                     : ""}
@@ -1493,15 +1515,15 @@ export function QuickAddSheet({
                                 <span>
                                   Sisa limit tersedia{" "}
                                   <strong className="font-mono text-[var(--foreground)]">
-                                    {formatRupiah(effectiveCcAvailableLimit)}
+                                    {formatRupiah(effectiveCcAvailableLimit, isMasked)}
                                   </strong>{" "}
                                   dari{" "}
-                                  {formatCompactRupiah(selectedExpenseWallet.creditLimit ?? 0)}
+                                  {formatCompactRupiah(selectedExpenseWallet.creditLimit ?? 0, isMasked)}
                                 </span>
                                 {selectedCcCard && selectedCcCard.installmentLimitUsed > 0 && (
                                   <span className="text-[11px] font-semibold text-[var(--highlight-text)]">
                                     Terkunci cicilan:{" "}
-                                    {formatCompactRupiah(selectedCcCard.installmentLimitUsed)}
+                                    {formatCompactRupiah(selectedCcCard.installmentLimitUsed, isMasked)}
                                   </span>
                                 )}
                               </div>
@@ -1539,7 +1561,7 @@ export function QuickAddSheet({
                     >
                       <span className="font-bold">{t.merchant}</span>
                       <span className="text-[var(--muted-foreground)]">
-                        · {formatCompactRupiah(t.suggestedAmount)}
+                        · {formatCompactRupiah(t.suggestedAmount, isMasked)}
                       </span>
                     </button>
                   ))}

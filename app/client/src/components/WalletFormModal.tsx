@@ -14,6 +14,7 @@ import {
   parsePositiveInt,
   parseSignedInt,
 } from "../lib/format";
+import { usePrivacyMode } from "../lib/usePrivacyMode";
 import { budgetKeys } from "../lib/queryKeys";
 import { AlertIcon, TrashIcon } from "./Icons";
 import { Button, ModalSheet } from "./UI";
@@ -223,6 +224,7 @@ export function WalletFormModal({
   onOpenReconcile?: (wallet: WalletDto) => void;
 }) {
   const queryClient = useQueryClient();
+  const { isMasked } = usePrivacyMode();
   const formId = useId();
 
   // Core Form State
@@ -821,7 +823,7 @@ export function WalletFormModal({
                 <div className="flex items-center justify-between gap-2">
                   <span className={labelClass}>SALDO SAAT INI</span>
                   <strong className="tabular-nums font-mono text-base font-black text-[var(--foreground)]">
-                    {formatRupiah(wallet.balance)}
+                    {formatRupiah(wallet.balance, isMasked)}
                   </strong>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-2">

@@ -44,7 +44,8 @@ export function CycleTimeline({
   }, [nodes, filter]);
 
   const cashflowRiskNotice = useMemo(() => {
-    const ccNode = nodes.find((n) => n.category === "cc_payment");
+    // Only an unpaid card bill is a cash-flow risk; a paid one needs no warning.
+    const ccNode = nodes.find((n) => n.category === "cc_payment" && n.status !== "done");
     const gajianNode = nodes.find((n) => n.category === "gajian");
     if (!ccNode || !gajianNode || !ccNode.amount || ccNode.amount <= 0) return null;
     const ccDate = ccNode.date;

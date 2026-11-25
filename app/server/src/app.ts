@@ -9,6 +9,7 @@ import {
   type LoginRateLimiter,
 } from "./lib/auth";
 import { DomainError } from "./lib/errors";
+import { MAX_PG_INT } from "../../shared/src/schemas";
 import { createAssetRoutes } from "./routes/assets";
 import { createAuthRoutes } from "./routes/auth";
 import { createBudgetRoutes } from "./routes/budgets";
@@ -98,6 +99,16 @@ export function createApp(
   });
 
   app.use("/api/*", createCsrfGuard());
+  // Postgres ids are int4. A larger numeric path id would make the query throw (500), so reject
+  // it up front for every route.
+  app.use("/api/*", async (c, next) => {
+    for (const segment of c.req.path.split("/")) {
+      if (/^\d+$/.test(segment) && Number(segment) > MAX_PG_INT) {
+        return c.json({ error: "ID tidak valid." }, 400);
+      }
+    }
+    return next();
+  });
   app.use("/api/*", createAuthMiddleware(db, secret));
 
   app.route("/api/auth", createAuthRoutes(db, { secret, rateLimiter: options.rateLimiter }));

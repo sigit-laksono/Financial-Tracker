@@ -2,6 +2,7 @@ import { useEffect, useId, useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type WalletDto } from "../lib/api";
 import { formatRupiah, formatSignedDigitsInput, jakartaToday, parseSignedInt } from "../lib/format";
+import { usePrivacyMode } from "../lib/usePrivacyMode";
 import { budgetKeys, goalKeys } from "../lib/queryKeys";
 import { AlertIcon } from "./Icons";
 import { Button, ModalSheet } from "./UI";
@@ -16,6 +17,7 @@ export function ReconcileModal({
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const { isMasked } = usePrivacyMode();
   const formId = useId();
   const [actualInput, setActualInput] = useState("");
   const [note, setNote] = useState("");
@@ -54,7 +56,7 @@ export function ReconcileModal({
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       await queryClient.invalidateQueries({ queryKey: goalKeys.all });
       if (res?.adjusted) {
-        onSuccess(`Saldo ${wallet?.name} disesuaikan (${formatRupiah(res.delta)})`);
+        onSuccess(`Saldo ${wallet?.name} disesuaikan (${formatRupiah(res.delta, isMasked)})`);
       } else {
         onSuccess(`Saldo ${wallet?.name} sudah sesuai`);
       }
@@ -92,7 +94,7 @@ export function ReconcileModal({
               ? "Menyimpan..."
               : delta === 0
                 ? "Saldo Sudah Sesuai"
-                : `Sesuaikan (${delta > 0 ? `+${formatRupiah(delta)}` : formatRupiah(delta)})`}
+                : `Sesuaikan (${delta > 0 ? `+${formatRupiah(delta, isMasked)}` : formatRupiah(delta, isMasked)})`}
           </Button>
         </div>
       }
@@ -104,7 +106,7 @@ export function ReconcileModal({
               Saldo Tercatat di Aplikasi
             </span>
             <strong className="tabular-nums text-base font-black text-[var(--foreground)]">
-              {formatRupiah(wallet?.balance ?? 0)}
+              {formatRupiah(wallet?.balance ?? 0, isMasked)}
             </strong>
           </div>
         </div>
@@ -153,13 +155,13 @@ export function ReconcileModal({
               Selisih Penyesuaian
             </span>
             <strong className="tabular-nums text-base font-black text-[var(--foreground)]">
-              {delta > 0 ? `+${formatRupiah(delta)}` : formatRupiah(delta)}
+              {delta > 0 ? `+${formatRupiah(delta, isMasked)}` : formatRupiah(delta, isMasked)}
             </strong>
           </div>
           <p className="text-xs text-[var(--muted-foreground)]">
             {delta === 0
               ? "Saldo sudah cocok sempurna dengan m-banking."
-              : `Terdapat selisih ${formatRupiah(Math.abs(delta))} (${
+              : `Terdapat selisih ${formatRupiah(Math.abs(delta), isMasked)} (${
                   delta > 0 ? "saldo m-banking lebih tinggi" : "saldo m-banking lebih rendah"
                 }).`}
           </p>

@@ -10,6 +10,7 @@ import {
   parsePositiveInt,
   shiftMonth,
 } from "../lib/format";
+import { usePrivacyMode } from "../lib/usePrivacyMode";
 import { budgetKeys, goalKeys } from "../lib/queryKeys";
 import { AlertIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
@@ -46,6 +47,7 @@ export function SplitPayModal({
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const { isMasked } = usePrivacyMode();
   const formId = useId();
   const [name, setName] = useState("");
   const [count, setCount] = useState("6");
@@ -127,7 +129,7 @@ export function SplitPayModal({
       title="Ubah Jadi Cicilan Bulanan"
       subtitle={
         target
-          ? `${target.merchant} (${formatRupiah(target.amount)}) akan dikeluarkan dari tagihan penuh siklus ini dan dipecah bertahap.`
+          ? `${target.merchant} (${formatRupiah(target.amount, isMasked)}) akan dikeluarkan dari tagihan penuh siklus ini dan dipecah bertahap.`
           : undefined
       }
       footer={
@@ -253,7 +255,7 @@ export function SplitPayModal({
               Total Pokok + Bunga Cicilan
             </span>
             <strong className="tabular-nums font-black text-[var(--foreground)]">
-              {formatRupiah(totalConverted)}
+              {formatRupiah(totalConverted, isMasked)}
             </strong>
           </div>
           <p className="text-xs text-[var(--muted-foreground)]">

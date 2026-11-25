@@ -5,6 +5,7 @@ import {
   convertSplitPaySchema,
   createTxSchema,
   isoDateSchema,
+  MAX_PG_INT,
   transferSchema,
   updateTxSchema,
 } from "../../../shared/src/schemas";
@@ -36,13 +37,13 @@ import {
 const listQuerySchema = z.object({
   start: isoDateSchema.optional(),
   end: isoDateSchema.optional(),
-  walletId: z.coerce.number().int().positive().optional(),
+  walletId: z.coerce.number().int().positive().max(MAX_PG_INT).optional(),
   type: z.enum(TRANSACTION_TYPES).optional(),
   category: z.string().trim().min(1).max(60).optional(),
   search: z.string().trim().max(120).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursorDate: isoDateSchema.optional(),
-  cursorId: z.coerce.number().int().positive().optional(),
+  cursorId: z.coerce.number().int().positive().max(MAX_PG_INT).optional(),
 });
 
 export function createTransactionRoutes(db: AppDb) {

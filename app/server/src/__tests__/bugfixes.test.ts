@@ -9,6 +9,7 @@ import {
   wallets,
 } from "../db/schema";
 import { LoginRateLimiter } from "../lib/auth";
+import { resolveBudgetsForPeriod } from "../lib/budgetService";
 import { buildDebtsData } from "../lib/dashboardQuery";
 import { computeLedgerSnapshot } from "../lib/ledger";
 import { receiveSalaryForPeriod } from "../lib/salaryService";
@@ -585,6 +586,54 @@ describe("Regression: goal progress stays in step with its transfers", () => {
       expect(await goalAmount(ctx.db, goalId)).toBe(0);
     } finally {
       await ctx.cleanup();
+    }
+  });
+});
+
+describe("Regression: low-priority server fixes", () => {
+  it("budget at 99.5% is a warning, not over", () => {
+    const row = {
+      id: 1,
+      category: "Makan",
+      categoryId: null,
+      period: "2026-11",
+      limitAmount: 1_000_000,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const statusFor = (spent: number) =>
+      resolveBudgetsForPeriod([row], "2026-11", new Map([["Makan", spent]]), "2026-12-24", "2026-11-30")[0]!
+        .status;
+    expect(statusFor(995_000)).toBe("warning");
+    expect(statusFor(1_000_000)).toBe("warning");
+    expect(statusFor(1_000_001)).toBe("over");
+    expect(statusFor(799_999)).toBe("ok");
+  });
+
+  it("parallel budget saves for the same category and period do not 500", async () => {
+    const { app, cleanup } = await setupTestContext();
+    try {
+      const save = (limitAmount: number) =>
+        app.request("/api/budgets", {
+          method: "PUT",
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ category: "Makanan & Belanja Dapur", period: "2026-11", limitAmount }),
+        });
+      const results = await Promise.all([save(500_000), save(600_000), save(700_000)]);
+      for (const r of results) expect(r.status).toBeLessThan(300);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("an id above the Postgres int range is a 400, not a 500", async () => {
+    const { app, cleanup } = await setupTestContext();
+    try {
+      expect((await app.request("/api/goals/99999999999", { method: "DELETE" })).status).toBe(400);
+      const res = await app.request("/api/transactions?walletId=99999999999");
+      expect(res.status).toBe(400);
+    } finally {
+      await cleanup();
     }
   });
 });

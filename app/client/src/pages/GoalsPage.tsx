@@ -642,6 +642,7 @@ function ContributeModal({
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const { isMasked } = usePrivacyMode();
   const liquidWallets = useMemo(
     () => wallets.filter((w) => w.type !== "credit_card"),
     [wallets],
@@ -770,7 +771,7 @@ function ContributeModal({
           </div>
           {isOverdraft && selectedWallet && (
             <p role="alert" className="text-xs font-semibold text-[var(--destructive)]">
-              Nominal melebihi saldo {selectedWallet.name} ({formatRupiah(selectedWallet.balance)}).
+              Nominal melebihi saldo {selectedWallet.name} ({formatRupiah(selectedWallet.balance, isMasked)}).
             </p>
           )}
         </div>
@@ -793,7 +794,7 @@ function ContributeModal({
             ) : (
               liquidWallets.map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.name} · Saldo: {formatRupiah(w.balance)}
+                  {w.name} · Saldo: {formatRupiah(w.balance, isMasked)}
                 </option>
               ))
             )}

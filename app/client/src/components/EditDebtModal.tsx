@@ -16,6 +16,7 @@ import {
   formatRupiah,
   parsePositiveInt,
 } from "../lib/format";
+import { usePrivacyMode } from "../lib/usePrivacyMode";
 import { AlertIcon, CalendarIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
 
@@ -43,6 +44,7 @@ export function EditDebtModal({
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const { isMasked } = usePrivacyMode();
   const formId = useId();
 
   const [name, setName] = useState("");
@@ -364,8 +366,8 @@ export function EditDebtModal({
                 >
                   {creditCardWallets.map((w) => (
                     <option key={w.id} value={w.id}>
-                      {w.name} — Sisa Limit: {formatRupiah(w.balance)} (dari{" "}
-                      {formatRupiah(w.creditLimit ?? 0)})
+                      {w.name} — Sisa Limit: {formatRupiah(w.balance, isMasked)} (dari{" "}
+                      {formatRupiah(w.creditLimit ?? 0, isMasked)})
                     </option>
                   ))}
                 </select>
@@ -374,7 +376,7 @@ export function EditDebtModal({
                     <div className="rounded-[10px] bg-[var(--card)] px-3 py-2 border border-dashed border-[var(--border)]">
                       <span className="text-[var(--muted-foreground)] block">Kapasitas Limit Tersedia</span>
                       <strong className="font-mono text-xs text-[var(--foreground)]">
-                        {formatRupiah(effectiveAvailableLimit)}
+                        {formatRupiah(effectiveAvailableLimit, isMasked)}
                       </strong>
                     </div>
                     <div className="rounded-[10px] bg-[var(--card)] px-3 py-2 border border-dashed border-[var(--border)]">
@@ -386,7 +388,7 @@ export function EditDebtModal({
                             : "text-emerald-600 dark:text-emerald-400"
                         }`}
                       >
-                        {formatRupiah(Math.max(0, effectiveAvailableLimit - totalEditedRemaining))}
+                        {formatRupiah(Math.max(0, effectiveAvailableLimit - totalEditedRemaining), isMasked)}
                       </strong>
                     </div>
                   </div>
@@ -395,8 +397,8 @@ export function EditDebtModal({
                   <div className="flex items-start gap-2 rounded-[12px] border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-2.5 text-xs text-rose-800 dark:text-rose-200">
                     <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
                     <span>
-                      Sisa cicilan ({formatRupiah(totalEditedRemaining)}) melebihi kapasitas limit{" "}
-                      {selectedCcWallet.name} ({formatRupiah(effectiveAvailableLimit)}).
+                      Sisa cicilan ({formatRupiah(totalEditedRemaining, isMasked)}) melebihi kapasitas limit{" "}
+                      {selectedCcWallet.name} ({formatRupiah(effectiveAvailableLimit, isMasked)}).
                     </span>
                   </div>
                 )}
@@ -431,7 +433,7 @@ export function EditDebtModal({
                 </span>
               </div>
               <strong className="font-mono text-xs text-[var(--primary)]">
-                Total: {formatRupiah(totalEditedOverall)}
+                Total: {formatRupiah(totalEditedOverall, isMasked)}
               </strong>
             </div>
 

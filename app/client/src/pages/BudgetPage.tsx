@@ -819,9 +819,9 @@ export function BudgetPage({
                     const hasBudget = c.budgetLimit > 0;
                     const isEditingRowBudget = editingCategoryBudgetId === c.categoryId;
                     const barColor =
-                      c.percentUsed >= 100
+                      c.status === "exceeded"
                         ? "var(--destructive)"
-                        : c.percentUsed >= 80
+                        : c.status === "warning"
                           ? "#f59e0b"
                           : c.color || accentColor;
 

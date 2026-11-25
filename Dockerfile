@@ -29,6 +29,10 @@ ENV PORT=3001
 
 EXPOSE 3001
 
+# The server only reads its files and talks to Postgres, so it doesn't need root. The
+# oven/bun images ship an unprivileged "bun" user.
+USER bun
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -fsS http://127.0.0.1:3001/api/health || exit 1
 

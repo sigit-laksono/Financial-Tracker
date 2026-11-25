@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CategoryDto, type RecurringRuleDto, type WalletDto } from "../lib/api";
 import { MAX_IDR_AMOUNT, formatDigitsInput, formatRupiah, parsePositiveInt } from "../lib/format";
+import { usePrivacyMode } from "../lib/usePrivacyMode";
 import { EditIcon, TrashIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
 
@@ -19,6 +20,7 @@ export function RecurringBillsModal({
   onToast?: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const { isMasked } = usePrivacyMode();
   const formRef = useRef<HTMLFormElement>(null);
 
   const expenseCategories = useMemo(
@@ -264,7 +266,7 @@ export function RecurringBillsModal({
 
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)] mr-1">
-                        {formatRupiah(rule.amount)}
+                        {formatRupiah(rule.amount, isMasked)}
                       </span>
                       <button
                         type="button"

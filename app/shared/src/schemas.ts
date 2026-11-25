@@ -50,7 +50,7 @@ export const createTxSchema = z
     amount: z.number().int().positive("Nominal harus lebih dari 0.").max(MAX_PG_INT, MAX_PG_INT_MSG),
     transactionDate: isoDateSchema,
     category: z.string().trim().min(1).max(60),
-    walletId: z.number().int().positive(),
+    walletId: z.number().int().positive().max(MAX_PG_INT),
     note: z.string().trim().max(500).optional(),
     source: z.enum(["manual", "whatsapp", "import"]).default("manual"),
     sourceRef: z.string().trim().max(200).optional(),
@@ -75,8 +75,8 @@ export const updateTxSchema = z
     amount: z.number().int().positive().max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
     transactionDate: isoDateSchema.optional(),
     category: z.string().trim().min(1).max(60).optional(),
-    walletId: z.number().int().positive().optional(),
-    toWalletId: z.number().int().positive().nullable().optional(),
+    walletId: z.number().int().positive().max(MAX_PG_INT).optional(),
+    toWalletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
     adminFee: z.number().int().min(0).max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
     note: z.string().trim().max(500).nullable().optional(),
     splits: z.array(splitItemSchema).optional(),
@@ -97,8 +97,8 @@ export const updateTxSchema = z
   );
 
 export const transferSchema = z.object({
-  fromWalletId: z.number().int().positive(),
-  toWalletId: z.number().int().positive(),
+  fromWalletId: z.number().int().positive().max(MAX_PG_INT),
+  toWalletId: z.number().int().positive().max(MAX_PG_INT),
   amount: z.number().int().positive("Nominal transfer harus lebih dari 0.").max(MAX_PG_INT, MAX_PG_INT_MSG),
   adminFee: z.number().int().min(0).max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
   transactionDate: isoDateSchema,
@@ -141,12 +141,12 @@ export const createDebtSchema = z.object({
   interestAmount: z.number().int().min(0).max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
   firstDueDate: isoDateSchema,
   paymentMethod: z.string().trim().min(1).max(60),
-  walletId: z.number().int().positive().nullable().optional(),
+  walletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   color: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/)
     .optional(),
-  disburseWalletId: z.number().int().positive().nullable().optional(),
+  disburseWalletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   recordDisbursement: z.boolean().default(false),
   interestRateBps: z.number().int().min(0).max(10000).optional(),
   customSchedule: z.array(customInstallmentScheduleItemSchema).optional(),
@@ -157,7 +157,7 @@ export const closeDebtSchema = z.object({
 });
 
 export const updateDebtInstallmentItemSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
   dueDate: isoDateSchema,
   plannedAmount: z.number().int().positive("Nominal cicilan harus lebih dari Rp 0.").max(MAX_PG_INT, MAX_PG_INT_MSG),
 });
@@ -167,7 +167,7 @@ export const updateDebtSchema = z.object({
   lender: z.string().trim().min(1, "Pemberi pinjaman/peminjam wajib diisi.").max(120).optional(),
   kind: z.enum(DEBT_KINDS).optional(),
   paymentMethod: z.string().trim().min(1).max(60).optional(),
-  walletId: z.number().int().positive().nullable().optional(),
+  walletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   installments: z.array(updateDebtInstallmentItemSchema).optional(),
 });
 
@@ -180,10 +180,10 @@ export const earlyPayoffSchema = z.object({
 });
 
 export const settleSchema = z.object({
-  installmentIds: z.array(z.number().int().positive()).optional(),
-  ccWalletId: z.number().int().positive().optional(),
+  installmentIds: z.array(z.number().int().positive().max(MAX_PG_INT)).optional(),
+  ccWalletId: z.number().int().positive().max(MAX_PG_INT).optional(),
   ccCycleKey: yearMonthSchema.optional(),
-  fromWalletId: z.number().int().positive(),
+  fromWalletId: z.number().int().positive().max(MAX_PG_INT),
   paymentDate: isoDateSchema,
   customAmount: z.number().int().positive().max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
   recordSettlementTx: z.boolean().default(true),
@@ -220,7 +220,7 @@ export const updateRecurringRuleSchema = z.object({
   merchant: z.string().trim().min(1).max(120).optional(),
   amount: z.number().int().positive().max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
   category: z.string().trim().min(1).max(60).optional(),
-  walletId: z.number().int().positive().optional(),
+  walletId: z.number().int().positive().max(MAX_PG_INT).optional(),
   dueDay: z.number().int().min(1).max(31).optional(),
   isActive: z.boolean().optional(),
 });
@@ -228,7 +228,7 @@ export const updateRecurringRuleSchema = z.object({
 export const payRecurringRuleSchema = z.object({
   period: yearMonthSchema.optional(),
   transactionDate: isoDateSchema.optional(),
-  walletId: z.number().int().positive().optional(),
+  walletId: z.number().int().positive().max(MAX_PG_INT).optional(),
   amount: z.number().int().positive().max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
   note: z.string().trim().max(300).optional(),
 });
@@ -268,7 +268,7 @@ export const updateWalletSchema = z.object({
     .optional(),
   accountNumber: z.string().trim().max(40).nullable().optional(),
   isActive: z.boolean().optional(),
-  sortOrder: z.number().int().optional(),
+  sortOrder: z.number().int().min(-MAX_PG_INT).max(MAX_PG_INT).optional(),
 });
 
 export const reconcileSchema = z.object({
@@ -299,7 +299,7 @@ export const updateCategorySchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/)
     .optional(),
   isArchived: z.boolean().optional(),
-  sortOrder: z.number().int().optional(),
+  sortOrder: z.number().int().min(-MAX_PG_INT).max(MAX_PG_INT).optional(),
   budgetLimit: z.number().int().min(0).max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
   period: z.union([z.literal("default"), yearMonthSchema]).optional(),
 });
@@ -318,7 +318,7 @@ export const updateSettingsSchema = z.object({
   grossSalary: z.number().int().min(0).max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
   netSalary: z.number().int().min(0).max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
   payrollDeduction: z.number().int().min(0).max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
-  defaultSalaryWalletId: z.number().int().positive().nullable().optional(),
+  defaultSalaryWalletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   gajianStartDay: z.number().int().min(1).max(28).optional(),
   cardCutoffDay: z.number().int().min(1).max(28).optional(),
   statementDay: z.number().int().min(1).max(28).optional(),
@@ -329,14 +329,14 @@ export const updateSettingsSchema = z.object({
 export const receiveSalarySchema = z.object({
   period: yearMonthSchema.optional(),
   grossSalary: z.number().int().positive("Gaji kotor harus lebih dari 0.").max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
-  walletId: z.number().int().positive().optional(),
+  walletId: z.number().int().positive().max(MAX_PG_INT).optional(),
   transactionDate: isoDateSchema.optional(),
 });
 
 export const salaryPreviewQuerySchema = z.object({
   period: yearMonthSchema.optional(),
   grossSalary: z.coerce.number().int().positive().max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
-  walletId: z.coerce.number().int().positive().optional(),
+  walletId: z.coerce.number().int().positive().max(MAX_PG_INT).optional(),
 });
 
 export const createGoalSchema = z.object({
@@ -346,7 +346,7 @@ export const createGoalSchema = z.object({
   currentAmount: z.number().int().min(0).max(MAX_PG_INT, MAX_PG_INT_MSG).default(0),
   targetDate: isoDateSchema.nullable().optional(),
   isEmergencyFund: z.boolean().default(false),
-  walletId: z.number().int().positive().nullable().optional(),
+  walletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   notes: z.string().trim().max(300).nullable().optional(),
 });
 
@@ -357,7 +357,7 @@ export const updateGoalSchema = z.object({
   currentAmount: z.number().int().min(0).max(MAX_PG_INT, MAX_PG_INT_MSG).optional(),
   targetDate: isoDateSchema.nullable().optional(),
   isEmergencyFund: z.boolean().optional(),
-  walletId: z.number().int().positive().nullable().optional(),
+  walletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   notes: z.string().trim().max(300).nullable().optional(),
 });
 
@@ -406,88 +406,88 @@ const backupTimestampSchema = z
 const nullableBackupTimestampSchema = backupTimestampSchema.nullable().optional();
 
 export const backupWalletRowSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
   key: z.string().min(1),
   name: z.string().min(1),
   type: z.enum(WALLET_TYPES),
   accountGroup: z.enum(ACCOUNT_GROUPS).default("bank"),
   provider: z.enum(WALLET_PROVIDERS).default("other"),
   role: z.enum(WALLET_ROLES).default("spending"),
-  openingBalance: z.number().int().default(0),
-  creditLimit: z.number().int().nullable().optional(),
+  openingBalance: z.number().int().min(-MAX_PG_INT).max(MAX_PG_INT).default(0),
+  creditLimit: z.number().int().min(-MAX_PG_INT).max(MAX_PG_INT).nullable().optional(),
   cutoffDay: z.number().int().min(1).max(28).nullable().optional(),
   statementDay: z.number().int().min(1).max(28).nullable().optional(),
   paymentDay: z.number().int().min(1).max(28).nullable().optional(),
   color: z.string().min(1),
   accountNumber: z.string().nullable().optional(),
-  sortOrder: z.number().int().default(0),
+  sortOrder: z.number().int().min(-MAX_PG_INT).max(MAX_PG_INT).default(0),
   isActive: z.boolean().default(true),
   createdAt: backupTimestampSchema.optional(),
 });
 
 export const backupCategoryRowSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
   name: z.string().min(1),
   type: z.enum(CATEGORY_TYPES),
   bucket: z.enum(["needs", "wants", "savings"]).default("needs"),
   isMandatory: z.boolean().default(false),
   color: z.string().min(1).default("#00797a"),
-  sortOrder: z.number().int().default(0),
+  sortOrder: z.number().int().min(-MAX_PG_INT).max(MAX_PG_INT).default(0),
   isArchived: z.boolean().default(false),
 });
 
 export const backupDebtAccountRowSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
   key: z.string().min(1),
   name: z.string().min(1),
   lender: z.string().min(1),
   kind: z.enum(DEBT_KINDS),
   direction: z.enum(DEBT_DIRECTIONS).default("payable"),
-  walletId: z.number().int().positive().nullable().optional(),
-  initialBalance: z.number().int(),
-  paymentDay: z.number().int().nullable().optional(),
+  walletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
+  initialBalance: z.number().int().min(-MAX_PG_INT).max(MAX_PG_INT),
+  paymentDay: z.number().int().min(-MAX_PG_INT).max(MAX_PG_INT).nullable().optional(),
   paymentMethod: z.string().min(1),
   color: z.string().min(1),
-  disburseWalletId: z.number().int().positive().nullable().optional(),
+  disburseWalletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   disbursedAt: nullableBackupTimestampSchema,
-  interestRateBps: z.number().int().nullable().optional(),
-  sourceTransactionId: z.number().int().positive().nullable().optional(),
+  interestRateBps: z.number().int().min(-MAX_PG_INT).max(MAX_PG_INT).nullable().optional(),
+  sourceTransactionId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   closedAt: nullableBackupTimestampSchema,
   createdAt: backupTimestampSchema.optional(),
 });
 
 export const backupInstallmentRowSchema = z.object({
-  id: z.number().int().positive(),
-  accountId: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
+  accountId: z.number().int().positive().max(MAX_PG_INT),
   period: z.string().min(1).max(20),
   dueDate: isoDateSchema,
-  plannedAmount: z.number().int(),
-  principalAmount: z.number().int().nullable().optional(),
-  interestAmount: z.number().int().nullable().optional(),
-  actualAmount: z.number().int().nullable().optional(),
+  plannedAmount: z.number().int().positive().max(MAX_PG_INT),
+  principalAmount: z.number().int().min(0).max(MAX_PG_INT).nullable().optional(),
+  interestAmount: z.number().int().min(0).max(MAX_PG_INT).nullable().optional(),
+  actualAmount: z.number().int().min(0).max(MAX_PG_INT).nullable().optional(),
   status: z.enum(INSTALLMENT_STATUSES).default("upcoming"),
   paidAt: nullableBackupTimestampSchema,
-  settlementTransactionId: z.number().int().positive().nullable().optional(),
+  settlementTransactionId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
 });
 
 export const backupTransactionRowSchema = z
   .object({
-    id: z.number().int().positive(),
+    id: z.number().int().positive().max(MAX_PG_INT),
     type: z.enum(TRANSACTION_TYPES),
     merchant: z.string().min(1),
-    amount: z.number().int(),
+    amount: z.number().int().min(-MAX_PG_INT).max(MAX_PG_INT),
     transactionDate: isoDateSchema,
     category: z.string().min(1),
-    categoryId: z.number().int().positive().nullable().optional(),
-    walletId: z.number().int().positive(),
-    toWalletId: z.number().int().positive().nullable().optional(),
+    categoryId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
+    walletId: z.number().int().positive().max(MAX_PG_INT),
+    toWalletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
     transferGroupId: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
     ccCycleKey: z.string().nullable().optional(),
     isConvertedToInstallment: z.boolean().default(false),
-    convertedAccountId: z.number().int().positive().nullable().optional(),
-    installmentId: z.number().int().positive().nullable().optional(),
-    debtAccountId: z.number().int().positive().nullable().optional(),
+    convertedAccountId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
+    installmentId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
+    debtAccountId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
     source: z.enum(TRANSACTION_SOURCES).default("manual"),
     sourceRef: z.string().nullable().optional(),
     createdAt: backupTimestampSchema.optional(),
@@ -501,52 +501,52 @@ export const backupTransactionRowSchema = z
   });
 
 export const backupTransactionSplitRowSchema = z.object({
-  id: z.number().int().positive(),
-  transactionId: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
+  transactionId: z.number().int().positive().max(MAX_PG_INT),
   category: z.string().min(1),
-  categoryId: z.number().int().positive().nullable().optional(),
-  amount: z.number().int().positive(),
+  categoryId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
+  amount: z.number().int().positive().max(MAX_PG_INT),
   note: z.string().nullable().optional(),
   createdAt: backupTimestampSchema.optional(),
 });
 
 export const backupSettlementAllocationRowSchema = z.object({
-  id: z.number().int().positive(),
-  settlementTransactionId: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
+  settlementTransactionId: z.number().int().positive().max(MAX_PG_INT),
   targetType: z.enum(["installment", "cc_cycle"]),
-  installmentId: z.number().int().positive().nullable().optional(),
-  ccWalletId: z.number().int().positive().nullable().optional(),
+  installmentId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
+  ccWalletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   ccCycleKey: z.string().nullable().optional(),
-  allocatedAmount: z.number().int().positive(),
+  allocatedAmount: z.number().int().positive().max(MAX_PG_INT),
   createdAt: backupTimestampSchema.optional(),
 });
 
 export const backupBudgetRowSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
   category: z.string().min(1),
-  categoryId: z.number().int().positive().nullable().optional(),
-  period: z.string().min(1).max(20),
-  limitAmount: z.number().int().positive(),
+  categoryId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
+  period: z.union([z.literal("default"), yearMonthSchema]),
+  limitAmount: z.number().int().positive().max(MAX_PG_INT),
   createdAt: backupTimestampSchema.optional(),
   updatedAt: backupTimestampSchema.optional(),
 });
 
 export const backupGoalRowSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
   name: z.string().min(1),
   emoji: z.string().min(1).default("🎯"),
-  targetAmount: z.number().int().positive(),
+  targetAmount: z.number().int().positive().max(MAX_PG_INT),
   currentAmount: z.number().int().min(0).default(0),
   targetDate: z.string().max(10).nullable().optional(),
   isEmergencyFund: z.boolean().default(false),
-  walletId: z.number().int().positive().nullable().optional(),
+  walletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   notes: z.string().nullable().optional(),
   createdAt: backupTimestampSchema.optional(),
   updatedAt: backupTimestampSchema.optional(),
 });
 
 export const backupAssetRowSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
   name: z.string().min(1),
   category: z.enum(ASSET_CATEGORIES),
   type: z.string().min(1),
@@ -558,21 +558,21 @@ export const backupAssetRowSchema = z.object({
 });
 
 export const backupWalletRecurringFeeRowSchema = z.object({
-  id: z.number().int().positive(),
-  walletId: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
+  walletId: z.number().int().positive().max(MAX_PG_INT),
   name: z.string().min(1),
-  amount: z.number().int().positive(),
+  amount: z.number().int().positive().max(MAX_PG_INT),
   isActive: z.boolean().default(true),
   createdAt: backupTimestampSchema.optional(),
 });
 
 export const backupRecurringRuleRowSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().max(MAX_PG_INT),
   merchant: z.string().min(1),
-  amount: z.number().int().positive(),
+  amount: z.number().int().positive().max(MAX_PG_INT),
   category: z.string().min(1),
-  categoryId: z.number().int().positive().nullable().optional(),
-  walletId: z.number().int().positive(),
+  categoryId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
+  walletId: z.number().int().positive().max(MAX_PG_INT),
   dueDay: z.number().int().min(1).max(31),
   isActive: z.boolean().default(true),
   lastPaidPeriod: z.string().max(20).nullable().optional(),
@@ -583,7 +583,7 @@ export const backupSettingsSnapshotSchema = z.object({
   grossSalary: z.number().int().min(0).default(0),
   netSalary: z.number().int().min(0).default(0),
   payrollDeduction: z.number().int().min(0).default(0),
-  defaultSalaryWalletId: z.number().int().positive().nullable().optional(),
+  defaultSalaryWalletId: z.number().int().positive().max(MAX_PG_INT).nullable().optional(),
   gajianStartDay: z.number().int().min(1).max(28).default(25),
   cardCutoffDay: z.number().int().min(1).max(28).default(20),
   statementDay: z.number().int().min(1).max(28).default(21),

@@ -41,8 +41,14 @@ export function resolveBudgetsForPeriod(
       const remainingAmount = effective.limitAmount - spentAmount;
       const percentUsed =
         effective.limitAmount > 0 ? Math.round((spentAmount / effective.limitAmount) * 100) : 0;
+      // Compare exact amounts, not the rounded percentage: 995rb of 1jt rounds to 100% but is
+      // not over budget yet.
       const status: BudgetStatus =
-        percentUsed >= 100 ? "over" : percentUsed >= 80 ? "warning" : "ok";
+        effective.limitAmount > 0 && spentAmount > effective.limitAmount
+          ? "over"
+          : effective.limitAmount > 0 && spentAmount >= effective.limitAmount * 0.8
+            ? "warning"
+            : "ok";
 
       return {
         id: effective.id,

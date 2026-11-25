@@ -208,7 +208,11 @@ export function createBudgetRoutes(db: AppDb) {
       const remaining = budgetLimit - actualSpent;
       const percentUsed = budgetLimit > 0 ? Math.round((actualSpent / budgetLimit) * 100) : 0;
       const status: "safe" | "warning" | "exceeded" =
-        percentUsed >= 100 ? "exceeded" : percentUsed >= 80 ? "warning" : "safe";
+        budgetLimit > 0 && actualSpent > budgetLimit
+          ? "exceeded"
+          : budgetLimit > 0 && actualSpent >= budgetLimit * 0.8
+            ? "warning"
+            : "safe";
 
       return {
         categoryId: cat.id,
@@ -399,30 +403,28 @@ export function createBudgetRoutes(db: AppDb) {
       .where(and(eq(budgets.category, canonicalName), eq(budgets.period, parsed.data.period)))
       .limit(1);
 
-    if (existing[0]) {
-      const [updated] = await db
-        .update(budgets)
-        .set({
-          limitAmount: parsed.data.limitAmount,
-          categoryId: matchedCat?.id ?? existing[0].categoryId,
-          updatedAt: new Date(),
-        })
-        .where(eq(budgets.id, existing[0].id))
-        .returning();
-      return c.json({ ok: true, budget: updated });
-    }
-
-    const [created] = await db
+    const values = {
+      category: canonicalName,
+      categoryId: matchedCat?.id ?? null,
+      period: parsed.data.period,
+      limitAmount: parsed.data.limitAmount,
+    };
+    // Upsert on the unique (category, period) index so a double-submit updates instead of
+    // failing with a duplicate-key 500.
+    const [saved] = await db
       .insert(budgets)
-      .values({
-        category: canonicalName,
-        categoryId: matchedCat?.id ?? null,
-        period: parsed.data.period,
-        limitAmount: parsed.data.limitAmount,
+      .values(values)
+      .onConflictDoUpdate({
+        target: [budgets.category, budgets.period],
+        set: {
+          limitAmount: values.limitAmount,
+          categoryId: sql`COALESCE(excluded.category_id, ${budgets.categoryId})`,
+          updatedAt: new Date(),
+        },
       })
       .returning();
 
-    return c.json({ ok: true, budget: created }, 201);
+    return c.json({ ok: true, budget: saved }, existing[0] ? 200 : 201);
   });
 
   router.delete("/:id", async (c) => {

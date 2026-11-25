@@ -78,24 +78,32 @@ function formatUnit(val: number): string {
   return (rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1)).replace(".", ",");
 }
 
+const COMPACT_TIERS = [
+  { size: 1_000, suffix: "rb", decimals: false },
+  { size: 1_000_000, suffix: "jt", decimals: true },
+  { size: 1_000_000_000, suffix: "M", decimals: true },
+  { size: 1_000_000_000_000, suffix: "T", decimals: true },
+] as const;
+
 export function formatCompactRupiah(amount: number, isMasked = false): string {
   if (isMasked) return "Rp\u00A0•••••••";
   const abs = Math.abs(amount);
   const sign = amount < 0 ? "-" : "";
-  if (abs >= 1_000_000_000_000) {
-    return `${sign}Rp\u00A0${formatUnit(abs / 1_000_000_000_000)}\u00A0T`;
-  }
-  if (abs >= 1_000_000_000) {
-    return `${sign}Rp\u00A0${formatUnit(abs / 1_000_000_000)}\u00A0M`;
-  }
-  if (abs >= 1_000_000) {
-    return `${sign}Rp\u00A0${formatUnit(abs / 1_000_000)}\u00A0jt`;
-  }
-  if (abs >= 1_000) {
-    const val = Math.round(abs / 1_000);
-    return `${sign}Rp\u00A0${val}\u00A0rb`;
-  }
-  return formatRupiah(amount);
+  if (abs < 1_000) return formatRupiah(amount);
+
+  // Pick the largest tier that fits, then move up a tier if rounding reaches 1000 of it
+  // (999.500 must read "1 jt", not "1000 rb").
+  let index = COMPACT_TIERS.length - 1;
+  while (index > 0 && abs < COMPACT_TIERS[index]!.size) index -= 1;
+  const rounded = (i: number) => {
+    const tier = COMPACT_TIERS[i]!;
+    return tier.decimals ? Number((abs / tier.size).toFixed(1)) : Math.round(abs / tier.size);
+  };
+  if (index < COMPACT_TIERS.length - 1 && rounded(index) >= 1000) index += 1;
+
+  const tier = COMPACT_TIERS[index]!;
+  const text = tier.decimals ? formatUnit(abs / tier.size) : String(Math.round(abs / tier.size));
+  return `${sign}Rp\u00A0${text}\u00A0${tier.suffix}`;
 }
 
 export function formatShortDate(isoDate: string): string {

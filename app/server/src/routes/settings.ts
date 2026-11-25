@@ -130,7 +130,12 @@ export function createSettingsRoutes(db: AppDb) {
       query = query.where(eq(auditLogs.entityType, entityType)) as typeof query;
     }
 
-    const rows = await query.orderBy(desc(auditLogs.createdAt)).limit(limit).offset(offset);
+    // Tie-break on id: rows written in the same transaction share createdAt, and without a
+    // stable order offset pagination can skip or repeat them.
+    const rows = await query
+      .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+      .limit(limit)
+      .offset(offset);
 
     const [totalRow] = await db
       .select({ count: sql<number>`count(*)` })

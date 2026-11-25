@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type DashboardDto } from "../lib/api";
 import { formatDigitsInput, formatRupiah, formatShortDate, parsePositiveInt } from "../lib/format";
+import { usePrivacyMode } from "../lib/usePrivacyMode";
 import { budgetKeys, goalKeys } from "../lib/queryKeys";
 import { AlertIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
@@ -20,6 +21,7 @@ export function ReceiveSalaryModal({
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const { isMasked } = usePrivacyMode();
   const formId = useId();
 
   const liquidWallets = useMemo(
@@ -60,7 +62,7 @@ export function ReceiveSalaryModal({
         grossSalary: parsedGross,
         walletId: selectedWalletId,
       }),
-    enabled: open,
+    enabled: open && parsedGross > 0,
   });
 
   const preview = previewQuery.data;
@@ -84,7 +86,7 @@ export function ReceiveSalaryModal({
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       await queryClient.invalidateQueries({ queryKey: goalKeys.all });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
-      onSuccess(`Gaji periode ${period} berhasil dicatat (${formatRupiah(netSalary)})`);
+      onSuccess(`Gaji periode ${period} berhasil dicatat (${formatRupiah(netSalary, isMasked)})`);
       onClose();
     },
     onError: (err) => {
@@ -124,21 +126,28 @@ export function ReceiveSalaryModal({
           <Button
             type="submit"
             form={formId}
-            disabled={receiveMutation.isPending || preview?.alreadyReceived}
+            // Wait for the preview: until it loads we don't know the payroll deduction or whether
+            // this period was already received, so the amount on the button would be wrong.
+            disabled={receiveMutation.isPending || !preview || preview.alreadyReceived}
             className="flex-1 sm:flex-none"
           >
             {receiveMutation.isPending
               ? "Menyimpan..."
-              : `Catat Terima Gaji (${formatRupiah(netSalary)})`}
+              : `Catat Terima Gaji (${formatRupiah(netSalary, isMasked)})`}
           </Button>
         </div>
       }
     >
       <form id={formId} onSubmit={handleSubmit} className="space-y-4">
-        {error && (
+        {(error || previewQuery.error) && (
           <div className="flex items-center gap-2 rounded-[14px] border border-[var(--destructive)] bg-[var(--destructive)]/10 p-3 text-xs text-[var(--destructive)]">
             <AlertIcon className="h-4 w-4 shrink-0" />
-            <span>{error}</span>
+            <span>
+              {error ||
+                (previewQuery.error instanceof ApiError
+                  ? previewQuery.error.message
+                  : "Gagal memuat rincian gaji. Coba tutup lalu buka lagi.")}
+            </span>
           </div>
         )}
 
@@ -190,7 +199,7 @@ export function ReceiveSalaryModal({
             {liquidWallets.map((w) => (
               <option key={w.id} value={w.id}>
                 {w.name} ({w.role === "savings" ? "Tabungan" : "Harian"}) · Saldo:{" "}
-                {formatRupiah(w.balance)}
+                {formatRupiah(w.balance, isMasked)}
               </option>
             ))}
           </select>
@@ -217,7 +226,7 @@ export function ReceiveSalaryModal({
                     </span>
                   </div>
                   <span className="tabular-nums font-bold text-[var(--destructive)] shrink-0">
-                    -{formatRupiah(inst.plannedAmount)}
+                    -{formatRupiah(inst.plannedAmount, isMasked)}
                   </span>
                 </div>
               ))}
@@ -237,10 +246,10 @@ export function ReceiveSalaryModal({
             <Badge tone="soft">Masuk ke Kas</Badge>
           </div>
           <p className="tabular-nums mt-1 text-2xl font-black text-[var(--foreground)]">
-            {formatRupiah(netSalary)}
+            {formatRupiah(netSalary, isMasked)}
           </p>
           <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
-            {formatRupiah(parsedGross)} (Kotor) - {formatRupiah(totalPayrollDue)} (Potongan Kantor)
+            {formatRupiah(parsedGross, isMasked)} (Kotor) - {formatRupiah(totalPayrollDue, isMasked)} (Potongan Kantor)
           </p>
         </div>
       </form>

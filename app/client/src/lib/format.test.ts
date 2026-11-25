@@ -38,6 +38,10 @@ describe("Client & shared formatting helpers", () => {
     expect(formatCompactRupiah(1_500_000_000)).toBe("Rp\u00A01,5\u00A0M");
     expect(formatCompactRupiah(2_500_000_000)).toBe("Rp\u00A02,5\u00A0M");
     expect(formatCompactRupiah(10_000_000_000)).toBe("Rp\u00A010\u00A0M");
+    // Rounding up to the next tier must switch the unit.
+    expect(formatCompactRupiah(999_500)).toBe("Rp\u00A01\u00A0jt");
+    expect(formatCompactRupiah(999_400)).toBe("Rp\u00A0999\u00A0rb");
+    expect(formatCompactRupiah(999_960_000)).toBe("Rp\u00A01\u00A0M");
     expect(formatCompactRupiah(1_000_000_000_000)).toBe("Rp\u00A01\u00A0T");
     expect(formatCompactRupiah(2_500_000_000_000)).toBe("Rp\u00A02,5\u00A0T");
     expect(formatCompactRupiah(-5_000_000_000)).toBe("-Rp\u00A05\u00A0M");
