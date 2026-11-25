@@ -260,11 +260,11 @@ describe("Milestone 10: Goals & Emergency Fund Runway", () => {
     expect(initialSummary.unallocated).toBe(5_000_000);
     expect(initialSummary.needs.allocated).toBe(0);
 
-    // 2. Allocate custom envelopes for activePeriod: 3jt needs, 1jt wants, 1jt savings
+    // 2. Allocate category budgets for activePeriod: 3jt needs, 1jt wants, 1jt savings
     for (const [category, limitAmount] of [
-      ["bucket:needs", 3_000_000],
-      ["bucket:wants", 1_000_000],
-      ["bucket:savings", 1_000_000],
+      ["Makanan & Belanja Dapur", 3_000_000],
+      ["Jajan & Nongkrong", 1_000_000],
+      ["Tabungan", 1_000_000],
     ] as const) {
       const r = await app.request("/api/budgets", {
         method: "PUT",
@@ -333,7 +333,7 @@ describe("Milestone 10: Goals & Emergency Fund Runway", () => {
     expect(afterIncomeSummary.unallocated).toBe(1_500_000);
   });
 
-  it("supports bottom-up category summation, clears default fallback on zeroing, and enforces manual ceiling", async () => {
+  it("supports bottom-up category summation, clears default fallback on zeroing, and ignores legacy manual bucket rows", async () => {
     const { app } = await setupTestContext();
 
     const targetPeriod = "2026-11";
@@ -380,7 +380,7 @@ describe("Milestone 10: Goals & Emergency Fund Runway", () => {
     expect(summary2.needs.allocated).toBe(500_000);
     expect(summary2.needs.allocationSource).toBe("categories");
 
-    // 3. Set manual bucket:needs above subAllocated -> uses manual limit
+    // 3. A legacy manual bucket:needs row must not change the bucket allocation
     await app.request("/api/budgets", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -389,31 +389,21 @@ describe("Milestone 10: Goals & Emergency Fund Runway", () => {
     const summary3 = await (
       await app.request(`/api/budgets/summary?period=${targetPeriod}`)
     ).json();
-    expect(summary3.needs.allocated).toBe(2_000_000);
+    expect(summary3.needs.allocated).toBe(500_000);
     expect(summary3.needs.categoryAllocatedTotal).toBe(500_000);
-    expect(summary3.needs.allocationSource).toBe("manual");
-
-    // 4. Set manual bucket:needs below subAllocated -> Math.max keeps subAllocated
-    await app.request("/api/budgets", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ category: "bucket:needs", period: targetPeriod, limitAmount: 300_000 }),
-    });
-    const summary4 = await (
-      await app.request(`/api/budgets/summary?period=${targetPeriod}`)
-    ).json();
-    expect(summary4.needs.allocated).toBe(500_000);
-    expect(summary4.needs.allocationSource).toBe("manual");
+    expect(summary3.needs.allocationSource).toBe("categories");
   });
 
-  it("prioritizes selectedPeriod over default and includes subAllocated in dashboard budgetBuckets", async () => {
+  it("prioritizes selectedPeriod over default and sums category budgets into dashboard budgetBuckets", async () => {
     const { db, app } = await setupTestContext();
     const targetPeriod = "2026-11";
 
-    // Insert "default" first so a naive .find() would pick it over targetPeriod
+    // Insert "default" first so a naive .find() would pick it over targetPeriod.
+    // The legacy bucket:needs row must be ignored.
     await db.insert(budgets).values([
-      { category: "bucket:needs", period: "default", limitAmount: 1_000_000 },
-      { category: "bucket:needs", period: targetPeriod, limitAmount: 2_500_000 },
+      { category: "Makanan & Belanja Dapur", period: "default", limitAmount: 1_000_000 },
+      { category: "Makanan & Belanja Dapur", period: targetPeriod, limitAmount: 2_500_000 },
+      { category: "bucket:needs", period: targetPeriod, limitAmount: 9_000_000 },
     ]);
 
     // Set a "wants" category budget without setting bucket:wants

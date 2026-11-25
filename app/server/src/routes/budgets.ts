@@ -231,20 +231,13 @@ export function createBudgetRoutes(db: AppDb) {
     const wantsCats = categorySummaries.filter((c) => c.bucket === "wants");
     const savingsCats = categorySummaries.filter((c) => c.bucket === "savings");
 
-    // Per-cycle bucket allocation: manual bucket ceiling (never below sum of category limits) or bottom-up from categories
-    const buildBucketSummary = (bucketKey: string, cats: BudgetCategorySummary[]) => {
-      const bucketBudget = overrideMap.get(bucketKey);
+    // Bucket allocation is always the sum of its category budgets. Legacy manual
+    // "bucket:*" rows are ignored (kept in the table, no longer read).
+    const buildBucketSummary = (cats: BudgetCategorySummary[]) => {
       const categoryAllocatedTotal = cats.reduce((sum, c) => sum + c.budgetLimit, 0);
-      let allocated = 0;
-      let allocationSource: "manual" | "categories" | "none" = "none";
-
-      if (bucketBudget && bucketBudget.limitAmount > 0) {
-        allocated = Math.max(bucketBudget.limitAmount, categoryAllocatedTotal);
-        allocationSource = "manual";
-      } else if (categoryAllocatedTotal > 0) {
-        allocated = categoryAllocatedTotal;
-        allocationSource = "categories";
-      }
+      const allocated = categoryAllocatedTotal;
+      const allocationSource: "manual" | "categories" | "none" =
+        categoryAllocatedTotal > 0 ? "categories" : "none";
 
       const spent = cats.reduce((sum, c) => sum + c.actualSpent, 0);
       const remaining = allocated > 0 ? Math.max(0, allocated - spent) : 0;
@@ -259,9 +252,9 @@ export function createBudgetRoutes(db: AppDb) {
       };
     };
 
-    const needsBucket = buildBucketSummary("bucket:needs", needsCats);
-    const wantsBucket = buildBucketSummary("bucket:wants", wantsCats);
-    const savingsBucket = buildBucketSummary("bucket:savings", savingsCats);
+    const needsBucket = buildBucketSummary(needsCats);
+    const wantsBucket = buildBucketSummary(wantsCats);
+    const savingsBucket = buildBucketSummary(savingsCats);
 
     const totalAllocated = needsBucket.allocated + wantsBucket.allocated + savingsBucket.allocated;
     const totalRemainingAllocated =

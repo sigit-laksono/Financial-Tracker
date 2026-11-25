@@ -870,13 +870,9 @@ export async function buildDashboardData(
     }
   }
 
-  const resolveBucketLimit = (bucket: "needs" | "wants" | "savings") => {
-    const key = `bucket:${bucket}`;
-    const manualRow = overrideBudgetMap.get(key) ?? defaultBudgetMap.get(key);
-    const manualLimit = manualRow && manualRow.limitAmount > 0 ? manualRow.limitAmount : 0;
-    const subAllocated = subAllocatedByBucket[bucket];
-    return manualLimit > 0 ? Math.max(manualLimit, subAllocated) : subAllocated;
-  };
+  // Bucket limit = sum of its category budgets; legacy manual "bucket:*" rows are ignored.
+  const resolveBucketLimit = (bucket: "needs" | "wants" | "savings") =>
+    subAllocatedByBucket[bucket];
 
   const limitNeeds = resolveBucketLimit("needs");
   const isConfiguredNeeds = limitNeeds > 0;

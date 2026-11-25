@@ -24,7 +24,7 @@ import {
 import { budgetKeys, dashboardKeys, goalKeys, transactionKeys } from "../lib/queryKeys";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
 
-type BucketFilterTab = "all" | CategoryBucket;
+type BucketFilterTab = CategoryBucket;
 type IncomeArchiveTab = "income" | "archived";
 
 const BUCKET_SHORT_LABELS: Record<CategoryBucket, string> = {
@@ -58,19 +58,12 @@ export function BudgetPage({
   const { isMasked } = usePrivacyMode();
 
   // Bucket filter & accordion for unconfigured Rp 0 categories
-  const [activeBucketTab, setActiveBucketTab] = useState<BucketFilterTab>("all");
+  const [activeBucketTab, setActiveBucketTab] = useState<BucketFilterTab>("needs");
   const [showZeroByBucket, setShowZeroByBucket] = useState<Record<CategoryBucket, boolean>>({
     needs: false,
     wants: false,
     savings: false,
   });
-
-  // Bucket top-level limit edit state
-  const [editingBucket, setEditingBucket] = useState<CategoryBucket | null>(null);
-  const [bucketLimitInput, setBucketLimitInput] = useState("");
-  const [formError, setFormError] = useState("");
-
-  // Quick inline category budget edit state
 
   // Modal Category Add/Edit state
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
@@ -136,25 +129,6 @@ export function BudgetPage({
     await queryClient.invalidateQueries({ queryKey: ["recurring-rules"] });
     await queryClient.invalidateQueries({ queryKey: goalKeys.all });
   };
-
-  const saveBudgetMutation = useMutation({
-    mutationFn: async ({ category, limitAmount }: { category: string; limitAmount: number }) => {
-      return api.upsertBudget({
-        category,
-        period,
-        limitAmount,
-      });
-    },
-    onSuccess: async () => {
-      await invalidateCategoryQueries();
-      onToast("Anggaran siklus berhasil diperbarui");
-    },
-    onError: (err) => {
-      const msg = err instanceof ApiError ? err.message : "Gagal menyimpan batas anggaran.";
-      setFormError(msg);
-      onToast(msg);
-    },
-  });
 
   const copyPreviousMutation = useMutation({
     mutationFn: () => api.copyPreviousBudgets(period),
@@ -442,40 +416,6 @@ export function BudgetPage({
     }
   };
 
-  const handleStartBucketEdit = (
-    bucketKey: CategoryBucket,
-    allocated: number,
-    remainingEnvelope: number,
-  ) => {
-    setEditingBucket(bucketKey);
-    const initialVal = isCurrentPeriod
-      ? allocated > 0
-        ? remainingEnvelope
-        : 0
-      : allocated;
-    setBucketLimitInput(initialVal > 0 ? initialVal.toLocaleString("id-ID") : "");
-    setFormError("");
-  };
-
-  const handleSaveBucketEdit = (bucketKey: CategoryBucket, spent: number) => {
-    const parsed = parsePositiveInt(bucketLimitInput);
-    if (parsed <= 0) {
-      setFormError("Jatah anggaran harus lebih dari Rp 0.");
-      return;
-    }
-    const targetLimitAmount = isCurrentPeriod ? parsed + spent : parsed;
-    if (targetLimitAmount > MAX_IDR_AMOUNT) {
-      setFormError(`Total jatah anggaran maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
-      return;
-    }
-    saveBudgetMutation.mutate({
-      category: `bucket:${bucketKey}`,
-      limitAmount: targetLimitAmount,
-    });
-    setEditingBucket(null);
-    setBucketLimitInput("");
-  };
-
   const deleteTargetHasBudget = (deletingCategory?.budgetLimit ?? 0) > 0;
   const deleteTargetHasSpend = (deletingCategory?.actualSpent ?? 0) > 0;
   const deleteNameMatches =
@@ -509,15 +449,10 @@ export function BudgetPage({
     },
     accentColor: string,
   ) => {
-    const { allocated, categoryAllocatedTotal, allocationSource, allocatedPercent, spent, categories } =
-      bucketData;
-    const envelopeRemaining =
-      bucketData.remaining ?? (allocated > 0 ? Math.max(0, allocated - spent) : 0);
-    const isEditingThisBucket = editingBucket === bucketKey;
+    const { allocated, spent, categories } = bucketData;
     const percentUsed = allocated > 0 ? Math.round((spent / allocated) * 100) : 0;
     const isOver = allocated > 0 && spent > allocated;
     const isWarning = allocated > 0 && spent >= allocated * 0.8 && !isOver;
-    const headlineAmount = isCurrentPeriod ? envelopeRemaining : allocated;
 
     const configuredCategories = categories.filter(
       (c) => c.budgetLimit > 0 || c.actualSpent > 0,
@@ -530,213 +465,47 @@ export function BudgetPage({
 
     return (
       <Card className="space-y-5 p-5 sm:p-6">
-        {/* Header Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-4">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <h2 className="text-lg font-black text-[var(--foreground)]">{title}</h2>
-            {allocated > 0 && (
-              <Badge tone="neutral" className="text-xs font-bold">
-                Porsi: {allocatedPercent}% dari Dana Likuid
-              </Badge>
-            )}
-          </div>
-        </div>
+        <div className="space-y-3 border-b border-[var(--border)] pb-4">
+          <h2 className="text-lg font-black text-[var(--foreground)]">{title}</h2>
 
-        {/* Hero Jatah Anggaran Kelompok */}
-        <div className="rounded-[16px] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5 space-y-4">
-          {isEditingThisBucket ? (
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-[var(--foreground)]">
-                  {isCurrentPeriod
-                    ? `Atur Sisa Amplop ${title} (dari Dana Likuid)`
-                    : `Atur Jatah ${title} (${periodRangeLabel})`}
+          {allocated > 0 ? (
+            <div className="space-y-2">
+              <div>
+                <span className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
+                  {isOver ? "Lebih dari budget" : "Sisa budget"}
                 </span>
-                {isCurrentPeriod && spent > 0 && (
-                  <span className="text-xs text-[var(--muted-foreground)]">
-                    Terpakai sebelumnya: <strong>{formatRupiah(spent, isMasked)}</strong>
-                  </span>
-                )}
-              </div>
-              {((isCurrentPeriod && spent > 0) ||
-                (allocationSource === "manual" &&
-                  categoryAllocatedTotal > 0 &&
-                  allocated > categoryAllocatedTotal)) && (
-                <div className="space-y-1 text-xs text-[var(--muted-foreground)]">
-                  {isCurrentPeriod && spent > 0 && (
-                    <p>
-                      Nominal yang dimasukkan adalah sisa amplop mulai saat ini. Total budget
-                      siklus otomatis dihitung sebagai input Anda + terpakai (
-                      {formatRupiah(spent, isMasked)}).
-                    </p>
-                  )}
-                  {allocationSource === "manual" && categoryAllocatedTotal > 0 && (
-                    <p>
-                      Total budget kategori di kelompok ini:{" "}
-                      <strong className="text-[var(--foreground)]">
-                        {formatRupiah(categoryAllocatedTotal, isMasked)}
-                      </strong>
-                      . Total budget kelompok minimal sebesar total kategori tersebut.
-                    </p>
-                  )}
-                </div>
-              )}
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative flex-1 min-w-[200px]">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-[var(--muted-foreground)]">
-                    Rp
-                  </span>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={bucketLimitInput}
-                    onChange={(e) => setBucketLimitInput(formatDigitsInput(e.target.value))}
-                    placeholder="Contoh: 2.000.000"
-                    className="tabular-nums min-h-[44px] w-full rounded-[10px] border border-[var(--primary)] bg-[var(--card)] pl-9 pr-3 text-sm font-bold text-[var(--foreground)]"
-                  />
-                </div>
-                <Button
-                  onClick={() => handleSaveBucketEdit(bucketKey, spent)}
-                  disabled={saveBudgetMutation.isPending}
-                  className="min-h-[44px] text-xs px-4"
+                <span
+                  className={`font-mono text-2xl font-black tabular-nums ${
+                    isOver ? "text-[var(--destructive)]" : "text-[var(--foreground)]"
+                  }`}
                 >
-                  Simpan Jatah
-                </Button>
-                {allocated > 0 && (
-                  <Button
-                    variant="secondary"
-                    onClick={() => {
-                      saveBudgetMutation.mutate({
-                        category: `bucket:${bucketKey}`,
-                        limitAmount: 0,
-                      });
-                      setEditingBucket(null);
-                      setBucketLimitInput("");
-                    }}
-                    disabled={saveBudgetMutation.isPending}
-                    className="min-h-[44px] text-xs px-3 text-[var(--destructive)]"
-                    title="Kosongkan jatah anggaran siklus ini"
-                  >
-                    Reset Jatah
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  onClick={() => setEditingBucket(null)}
-                  className="min-h-[44px] text-xs px-3"
-                >
-                  Batal
-                </Button>
+                  {formatRupiah(isOver ? spent - allocated : allocated - spent, isMasked)}
+                </span>
               </div>
-              {unallocated > 0 && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const currentVal = parsePositiveInt(bucketLimitInput);
-                      setBucketLimitInput((currentVal + unallocated).toLocaleString("id-ID"));
-                    }}
-                    className="min-h-[44px] inline-flex items-center text-xs font-bold text-[var(--primary)] hover:underline"
-                  >
-                    + Tambahkan seluruh sisa dana belum dialokasikan ({formatRupiah(unallocated, isMasked)})
-                  </button>
-                </div>
-              )}
+              <div className="h-2.5 w-full overflow-hidden rounded-full bg-[var(--surface)]">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    isOver
+                      ? "bg-[var(--destructive)]"
+                      : isWarning
+                        ? "bg-amber-500"
+                        : "bg-[var(--primary)]"
+                  }`}
+                  style={{ width: `${Math.min(100, percentUsed)}%` }}
+                />
+              </div>
+              <p className="text-xs text-[var(--muted-foreground)] tabular-nums">
+                Terpakai{" "}
+                <strong className="text-[var(--foreground)]">{formatRupiah(spent, isMasked)}</strong>{" "}
+                dari {formatRupiah(allocated, isMasked)} ({percentUsed}%)
+              </p>
             </div>
           ) : (
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <span className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
-                    {isCurrentPeriod
-                      ? "Sisa Amplop Tersedia (Dari Dana Likuid)"
-                      : "Jatah Anggaran Siklus Ini"}
-                  </span>
-                  <div className="flex flex-wrap items-baseline gap-2.5 mt-0.5">
-                    <span className="font-mono text-2xl sm:text-3xl font-black text-[var(--foreground)] tabular-nums">
-                      {allocated > 0 ? formatRupiah(headlineAmount, isMasked) : "Belum Diatur"}
-                    </span>
-                    <span className="text-xs font-semibold text-[var(--muted-foreground)]">
-                      ({allocatedPercent}% dari dana likuid)
-                    </span>
-                  </div>
-                  {allocationSource === "categories" && (
-                    <div className="mt-1.5">
-                      <Badge tone="info" className="text-[11px] font-semibold">
-                        Dihitung otomatis dari total budget kategori
-                      </Badge>
-                    </div>
-                  )}
-                  {allocationSource === "manual" && (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                      <Badge tone="neutral" className="text-[11px] font-semibold">
-                        Jatah manual
-                      </Badge>
-                      {categoryAllocatedTotal > 0 && allocated > categoryAllocatedTotal && (
-                        <span className="text-[11px] text-[var(--muted-foreground)]">
-                          Total budget kategori {formatRupiah(categoryAllocatedTotal, isMasked)}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {allocated > 0 && (
-                    <span
-                      className={`rounded-full border px-2.5 py-1 text-xs font-bold ${
-                        isOver
-                          ? "border-[var(--destructive)]/30 bg-[var(--destructive)]/15 text-[var(--destructive)]"
-                          : isWarning
-                            ? "border-[var(--highlight)]/30 bg-[var(--highlight)]/15 text-[var(--highlight-text)]"
-                            : "border-[var(--chart-income)]/30 bg-[var(--chart-income)]/15 text-[var(--chart-income)]"
-                      }`}
-                    >
-                      {isOver
-                        ? `Defisit ${formatRupiah(spent - allocated, isMasked)}`
-                        : isWarning
-                          ? `Mendekati Batas (${percentUsed}%)`
-                          : `Terkendali (${percentUsed}% Terpakai)`}
-                    </span>
-                  )}
-
-                  <Button
-                    variant="secondary"
-                    onClick={() => handleStartBucketEdit(bucketKey, allocated, envelopeRemaining)}
-                    className="min-h-[44px] text-xs px-3 font-semibold"
-                  >
-                    {allocated > 0 ? "Ubah Jatah" : "Atur Jatah"}
-                  </Button>
-                </div>
-              </div>
-
-              {/* Master Progress Bar */}
-              {allocated > 0 && (
-                <div className="space-y-1.5 pt-1">
-                  <div className="h-3 w-full rounded-full bg-[var(--border)] overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-500 ${
-                        isOver
-                          ? "bg-[var(--destructive)]"
-                          : isWarning
-                            ? "bg-amber-500"
-                            : "bg-[var(--primary)]"
-                      }`}
-                      style={{ width: `${Math.min(100, percentUsed)}%` }}
-                    />
-                  </div>
-                  <div className="flex flex-wrap justify-between gap-2 text-xs font-medium text-[var(--muted-foreground)] font-mono">
-                    <span>Terpakai siklus ini: {formatRupiah(spent, isMasked)}</span>
-                    <span>
-                      Total budget siklus: {formatRupiah(allocated, isMasked)}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
+            <p className="text-xs text-[var(--muted-foreground)]">
+              Belum ada budget. Atur budget lewat ikon edit di tiap kategori.
+            </p>
           )}
         </div>
-
         {/* Categories Section: Aliran Pengeluaran Riil */}
         <div className="space-y-3 pt-2">
           <h3 className="text-xs font-extrabold uppercase tracking-wider text-[var(--foreground)]">
@@ -886,6 +655,12 @@ export function BudgetPage({
   const wantsShareAmt = isCurrentPeriod ? (wants.remaining ?? 0) : wants.allocated;
   const savingsShareAmt = isCurrentPeriod ? (savings.remaining ?? 0) : savings.allocated;
 
+  const bucketFilterTabs: Array<{ id: BucketFilterTab; label: string }> = [
+    { id: "needs", label: "Kebutuhan" },
+    { id: "wants", label: "Keinginan" },
+    { id: "savings", label: "Tabungan & Utang" },
+  ];
+
   const summaryPillars: Array<{
     id: CategoryBucket;
     label: string;
@@ -972,7 +747,7 @@ export function BudgetPage({
             </Button>
 
             <Button
-              onClick={() => openCreateModal(activeBucketTab === "all" ? "needs" : activeBucketTab)}
+              onClick={() => openCreateModal(activeBucketTab)}
               className="w-full sm:w-auto justify-center gap-1.5"
             >
               <PlusIcon className="w-4 h-4" />
@@ -1068,9 +843,7 @@ export function BudgetPage({
             <button
               key={pillar.id}
               type="button"
-              onClick={() =>
-                setActiveBucketTab((prev) => (prev === pillar.id ? "all" : pillar.id))
-              }
+              onClick={() => setActiveBucketTab(pillar.id)}
               className={`rounded-[16px] border p-4 text-left transition-all ${
                 isSelected
                   ? "border-[var(--primary)] bg-[var(--card)] ring-2 ring-[var(--primary)]/20"
@@ -1126,35 +899,51 @@ export function BudgetPage({
         })}
       </div>
 
-      {/* Filter kelompok: ketuk kartu Kebutuhan/Keinginan/Tabungan di atas (ketuk lagi untuk semua) */}
-      <div className="flex justify-end border-b border-[var(--border)] pb-3">
+      {/* Tab kelompok: Kebutuhan | Keinginan | Tabungan & Utang */}
+      <div className="flex flex-col gap-2 border-b border-[var(--border)] pb-3 sm:flex-row sm:items-center sm:justify-between">
+        <div
+          role="tablist"
+          aria-label="Kelompok anggaran"
+          className="grid grid-cols-3 gap-1 sm:flex sm:flex-wrap sm:items-center sm:gap-2"
+        >
+          {bucketFilterTabs.map((tabItem) => {
+            const isActive = activeBucketTab === tabItem.id;
+            return (
+              <button
+                key={tabItem.id}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => setActiveBucketTab(tabItem.id)}
+                className={`min-h-[44px] rounded-[12px] px-1.5 text-center text-xs font-bold leading-tight transition-all sm:px-4 sm:text-sm ${
+                  isActive
+                    ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-sm"
+                    : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
+                }`}
+              >
+                {tabItem.label}
+              </button>
+            );
+          })}
+        </div>
+
         <Button
           variant="secondary"
           disabled={copyPreviousMutation.isPending}
           onClick={() => copyPreviousMutation.mutate()}
-          className="min-h-[44px] w-full text-xs px-3.5 sm:w-auto"
+          className="min-h-[44px] self-end text-xs px-3.5"
         >
           {copyPreviousMutation.isPending ? "Menyalin..." : "Salin dari Siklus Lalu"}
         </Button>
       </div>
 
-      {formError && (
-        <div
-          role="alert"
-          className="flex items-start gap-2 rounded-[10px] border border-[var(--destructive)] bg-[var(--surface)] p-3 text-xs text-[var(--destructive)]"
-        >
-          <AlertIcon className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{formError}</span>
-        </div>
-      )}
-
       {/* 3 Main Envelopes */}
       <div className="space-y-6">
-        {(activeBucketTab === "all" || activeBucketTab === "needs") &&
+        {activeBucketTab === "needs" &&
           renderBucketSection("Kebutuhan Hidup (Needs)", "needs", needs, "#38bdf8")}
-        {(activeBucketTab === "all" || activeBucketTab === "wants") &&
+        {activeBucketTab === "wants" &&
           renderBucketSection("Keinginan & Gaya Hidup (Wants)", "wants", wants, "#fb923c")}
-        {(activeBucketTab === "all" || activeBucketTab === "savings") &&
+        {activeBucketTab === "savings" &&
           renderBucketSection("Tabungan & Utang (Savings & Debt)", "savings", savings, "#4ade80")}
       </div>
 
