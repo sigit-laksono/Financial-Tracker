@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type AssetCategory, type AssetDto, type AssetType } from "../lib/api";
-import { formatDigitsInput, formatRupiah, parsePositiveInt } from "../lib/format";
+import { MAX_IDR_AMOUNT, formatDigitsInput, formatRupiah, parsePositiveInt } from "../lib/format";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
 import { BankBadge } from "../components/BankBadge";
 import { AlertIcon, AssetIcon, EditIcon, PlusIcon, TrashIcon } from "../components/Icons";
@@ -146,6 +146,18 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
     breakdown,
   } = data;
 
+  const isRatioInfinite = debtToAssetRatio == null;
+  const maxRatioScale =
+    debtToAssetRatio != null && debtToAssetRatio > 100
+      ? Math.ceil((debtToAssetRatio + 1) / 50) * 50
+      : 100;
+  const ratioBarWidth = isRatioInfinite
+    ? 100
+    : Math.max(0, Math.min(100, (debtToAssetRatio / maxRatioScale) * 100));
+  const marker35Left = maxRatioScale > 100 ? `${(35 / maxRatioScale) * 100}%` : "35%";
+  const marker50Left = maxRatioScale > 100 ? `${(50 / maxRatioScale) * 100}%` : "50%";
+  const marker100Left = `${(100 / maxRatioScale) * 100}%`;
+
   const openCreateModal = (category: AssetCategory) => {
     setEditingAsset(null);
     setFormName("");
@@ -189,8 +201,16 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
       setFormError("Taksiran nilai aset tidak boleh negatif.");
       return;
     }
+    if (valuationAmount > MAX_IDR_AMOUNT) {
+      setFormError("Taksiran nilai aset maksimal Rp 2.147.483.647.");
+      return;
+    }
 
     const acquisitionCost = formCost ? parsePositiveInt(formCost) : null;
+    if (acquisitionCost !== null && acquisitionCost > MAX_IDR_AMOUNT) {
+      setFormError("Harga beli / perolehan maksimal Rp 2.147.483.647.");
+      return;
+    }
 
     if (editingAsset) {
       updateAssetMutation.mutate({
@@ -223,6 +243,10 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
     const valuationAmount = parsePositiveInt(quickValuationInput);
     if (valuationAmount < 0) {
       setQuickValuationError("Taksiran nilai aset tidak boleh negatif.");
+      return;
+    }
+    if (valuationAmount > MAX_IDR_AMOUNT) {
+      setQuickValuationError("Taksiran nilai aset maksimal Rp 2.147.483.647.");
       return;
     }
 
@@ -450,14 +474,17 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
               className={
                 isMasked
                   ? "text-[var(--hero-card-foreground)]"
-                  : debtToAssetRatio > 50
+                  : isRatioInfinite || debtToAssetRatio > 50
                     ? "text-[var(--destructive)]"
                     : debtToAssetRatio > 35
                       ? "text-[var(--highlight-text)]"
                       : "text-emerald-600 dark:text-emerald-400"
               }
             >
-              Rasio Utang: {debtToAssetRatio}% · Liabilitas: {formatRupiah(totalLiabilities, isMasked)}
+              {isRatioInfinite
+                ? "Rasio Utang: > 100% (Aset ≤ Rp0)"
+                : `Rasio Utang: ${debtToAssetRatio}%`}{" "}
+              · Liabilitas: {formatRupiah(totalLiabilities, isMasked)}
             </span>
           </div>
 
@@ -466,27 +493,41 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
               <div className="h-full w-full overflow-hidden rounded-full">
                 <div
                   className={`h-full transition-all duration-300 ${
-                    debtToAssetRatio > 50
+                    isRatioInfinite || debtToAssetRatio > 50
                       ? "bg-[var(--destructive)]"
                       : debtToAssetRatio > 35
                         ? "bg-[var(--highlight)]"
                         : "bg-[var(--chart-income)]"
                   }`}
-                  style={{ width: `${Math.max(0, Math.min(100, debtToAssetRatio))}%` }}
-                  title={`Rasio Debt-to-Asset: ${debtToAssetRatio}%`}
+                  style={{ width: `${ratioBarWidth}%` }}
+                  title={
+                    isRatioInfinite
+                      ? "Rasio Debt-to-Asset: > 100% (Aset <= Rp0)"
+                      : `Rasio Debt-to-Asset: ${debtToAssetRatio}%`
+                  }
                 />
               </div>
-              {/* Vertical threshold markers: 35% ideal & 50% waspada */}
+              {/* Vertical threshold markers: 35% ideal & 50% waspada, plus 100% when scaled above 100% */}
               <span
                 aria-hidden="true"
                 title="Batas ideal <= 35%"
-                className="absolute -top-1 -bottom-1 left-[35%] w-0.5 bg-emerald-600 dark:bg-emerald-400"
+                style={{ left: marker35Left }}
+                className="absolute -top-1 -bottom-1 w-0.5 bg-emerald-600 dark:bg-emerald-400"
               />
               <span
                 aria-hidden="true"
                 title="Batas waspada 50%"
-                className="absolute -top-1 -bottom-1 left-[50%] w-0.5 bg-amber-600 dark:bg-amber-400"
+                style={{ left: marker50Left }}
+                className="absolute -top-1 -bottom-1 w-0.5 bg-amber-600 dark:bg-amber-400"
               />
+              {maxRatioScale > 100 && (
+                <span
+                  aria-hidden="true"
+                  title="Batas 100% aset"
+                  style={{ left: marker100Left }}
+                  className="absolute -top-1 -bottom-1 w-0.5 bg-[var(--muted-foreground)]/50"
+                />
+              )}
             </div>
 
             <div
@@ -494,9 +535,17 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
               aria-hidden="true"
             >
               <span className="absolute left-0">0%</span>
-              <span className="absolute left-[35%] -translate-x-1/2">35%</span>
-              <span className="absolute left-[50%] -translate-x-1/2">50%</span>
-              <span className="absolute right-0">100%</span>
+              {maxRatioScale <= 150 && (
+                <>
+                  <span className="absolute -translate-x-1/2" style={{ left: marker35Left }}>
+                    35%
+                  </span>
+                  <span className="absolute -translate-x-1/2" style={{ left: marker50Left }}>
+                    50%
+                  </span>
+                </>
+              )}
+              <span className="absolute right-0">{maxRatioScale}%</span>
             </div>
           </div>
 

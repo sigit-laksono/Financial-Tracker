@@ -51,7 +51,7 @@ export function createCategoryRoutes(db: AppDb) {
       return c.json({ error: "Gagal membuat kategori baru." }, 500);
     }
 
-    if (parsed.data.budgetLimit && parsed.data.budgetLimit > 0) {
+    if (created.type === "expense" && parsed.data.budgetLimit && parsed.data.budgetLimit > 0) {
       const targetPeriod = parsed.data.period ?? "default";
       await db
         .insert(budgets)
@@ -106,20 +106,24 @@ export function createCategoryRoutes(db: AppDb) {
     const { budgetLimit, period: budgetPeriod, ...categoryUpdates } = parsed.data;
 
     const updated = await db.transaction(async (tx) => {
-      const [row] = await tx
-        .update(categories)
-        .set(categoryUpdates)
-        .where(eq(categories.id, id))
-        .returning();
+      let row = existing;
+      if (Object.keys(categoryUpdates).length > 0) {
+        const [saved] = await tx
+          .update(categories)
+          .set(categoryUpdates)
+          .where(eq(categories.id, id))
+          .returning();
+        if (saved) row = saved;
+      }
 
       const effectiveName = parsed.data.name ?? existing.name;
+      const txTypeScope =
+        existing.type === "income"
+          ? eq(transactions.type, "income")
+          : inArray(transactions.type, ["expense", "settlement"]);
 
       if (parsed.data.name !== undefined && parsed.data.name !== existing.name) {
         const nextName = parsed.data.name;
-        const txTypeScope =
-          existing.type === "income"
-            ? eq(transactions.type, "income")
-            : inArray(transactions.type, ["expense", "settlement"]);
 
         await tx
           .update(transactions)
@@ -134,7 +138,33 @@ export function createCategoryRoutes(db: AppDb) {
             ),
           );
 
+        await tx
+          .update(transactionSplits)
+          .set({ category: nextName, categoryId: id })
+          .where(
+            or(
+              eq(transactionSplits.categoryId, id),
+              and(
+                sql`LOWER(TRIM(${transactionSplits.category})) = LOWER(TRIM(${existing.name}))`,
+                inArray(
+                  transactionSplits.transactionId,
+                  tx.select({ id: transactions.id }).from(transactions).where(txTypeScope),
+                ),
+              ),
+            ),
+          );
+
         if (existing.type === "expense") {
+          await tx
+            .update(recurringRules)
+            .set({ category: nextName, categoryId: id })
+            .where(
+              or(
+                eq(recurringRules.categoryId, id),
+                sql`LOWER(TRIM(${recurringRules.category})) = LOWER(TRIM(${existing.name}))`,
+              ),
+            );
+
           await tx
             .update(budgets)
             .set({ category: nextName, categoryId: id, updatedAt: new Date() })
@@ -147,7 +177,7 @@ export function createCategoryRoutes(db: AppDb) {
         }
       }
 
-      if (budgetLimit !== undefined) {
+      if (existing.type === "expense" && budgetLimit !== undefined) {
         const targetPeriod = budgetPeriod ?? "default";
         if (budgetLimit > 0) {
           await tx
@@ -167,9 +197,20 @@ export function createCategoryRoutes(db: AppDb) {
               },
             });
         } else {
+          // Delete both targetPeriod and "default" rows so clearing a budget does not silently resurrect a fallback.
+          const periodsToDelete =
+            targetPeriod === "default" ? ["default"] : [targetPeriod, "default"];
           await tx
             .delete(budgets)
-            .where(and(eq(budgets.categoryId, id), eq(budgets.period, targetPeriod)));
+            .where(
+              and(
+                inArray(budgets.period, periodsToDelete),
+                or(
+                  eq(budgets.categoryId, id),
+                  sql`LOWER(TRIM(${budgets.category})) = LOWER(TRIM(${effectiveName}))`,
+                ),
+              ),
+            );
         }
       }
 
@@ -186,14 +227,21 @@ export function createCategoryRoutes(db: AppDb) {
     const [existing] = await db.select().from(categories).where(eq(categories.id, id)).limit(1);
     if (!existing) return c.json({ error: "Kategori tidak ditemukan." }, 404);
 
-    // Check if category has transactions
+    const txTypeScope =
+      existing.type === "income"
+        ? eq(transactions.type, "income")
+        : inArray(transactions.type, ["expense", "settlement"]);
+
     const [txCount] = await db
       .select({ count: sql<number>`count(*)` })
       .from(transactions)
       .where(
         or(
           eq(transactions.categoryId, id),
-          sql`LOWER(TRIM(${transactions.category})) = LOWER(TRIM(${existing.name}))`,
+          and(
+            txTypeScope,
+            sql`LOWER(TRIM(${transactions.category})) = LOWER(TRIM(${existing.name}))`,
+          ),
         ),
       );
 
@@ -207,14 +255,19 @@ export function createCategoryRoutes(db: AppDb) {
       );
     }
 
-    // Check if category has transaction splits
     const [splitCount] = await db
       .select({ count: sql<number>`count(*)` })
       .from(transactionSplits)
       .where(
         or(
           eq(transactionSplits.categoryId, id),
-          sql`LOWER(TRIM(${transactionSplits.category})) = LOWER(TRIM(${existing.name}))`,
+          and(
+            sql`LOWER(TRIM(${transactionSplits.category})) = LOWER(TRIM(${existing.name}))`,
+            inArray(
+              transactionSplits.transactionId,
+              db.select({ id: transactions.id }).from(transactions).where(txTypeScope),
+            ),
+          ),
         ),
       );
 
@@ -228,36 +281,39 @@ export function createCategoryRoutes(db: AppDb) {
       );
     }
 
-    // Check if category is used by recurring rules
-    const [recurringCount] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(recurringRules)
-      .where(
-        or(
-          eq(recurringRules.categoryId, id),
-          sql`LOWER(TRIM(${recurringRules.category})) = LOWER(TRIM(${existing.name}))`,
-        ),
-      );
+    if (existing.type === "expense") {
+      const [recurringCount] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(recurringRules)
+        .where(
+          or(
+            eq(recurringRules.categoryId, id),
+            sql`LOWER(TRIM(${recurringRules.category})) = LOWER(TRIM(${existing.name}))`,
+          ),
+        );
 
-    const rCount = Number(recurringCount?.count ?? 0);
-    if (rCount > 0) {
-      return c.json(
-        {
-          error: `Kategori "${existing.name}" tidak dapat dihapus karena digunakan oleh ${rCount} aturan tagihan rutin. Ubah aturan terlebih dahulu.`,
-        },
-        400,
-      );
+      const rCount = Number(recurringCount?.count ?? 0);
+      if (rCount > 0) {
+        return c.json(
+          {
+            error: `Kategori "${existing.name}" tidak dapat dihapus karena digunakan oleh ${rCount} aturan tagihan rutin. Ubah aturan terlebih dahulu.`,
+          },
+          400,
+        );
+      }
     }
 
     await db.transaction(async (tx) => {
-      await tx
-        .delete(budgets)
-        .where(
-          or(
-            eq(budgets.categoryId, id),
-            sql`LOWER(TRIM(${budgets.category})) = LOWER(TRIM(${existing.name}))`,
-          ),
-        );
+      if (existing.type === "expense") {
+        await tx
+          .delete(budgets)
+          .where(
+            or(
+              eq(budgets.categoryId, id),
+              sql`LOWER(TRIM(${budgets.category})) = LOWER(TRIM(${existing.name}))`,
+            ),
+          );
+      }
       await tx.delete(categories).where(eq(categories.id, id));
     });
 

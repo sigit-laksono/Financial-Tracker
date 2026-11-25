@@ -21,21 +21,41 @@ export async function runDailyLedgerSync(
   options: { force?: boolean; extraCcCycles?: string[] } = {},
 ): Promise<{ synced: boolean; feesInserted: number; payrollSettled: number }> {
   const settings = await getSettings(db);
-  const currentCcCycle = ccCycleForDate(today, settings.cardCutoffDay);
-  const extraValid = (options.extraCcCycles ?? []).filter((cycleKey) => cycleKey <= currentCcCycle);
+  const activeCcWallets = await db
+    .select({ cutoffDay: wallets.cutoffDay })
+    .from(wallets)
+    .where(and(eq(wallets.type, "credit_card"), eq(wallets.isActive, true)));
+
+  const currentCcCycles = new Set<string>([ccCycleForDate(today, settings.cardCutoffDay)]);
+  for (const w of activeCcWallets) {
+    currentCcCycles.add(ccCycleForDate(today, w.cutoffDay ?? settings.cardCutoffDay));
+  }
+  const maxCurrentCcCycle = [...currentCcCycles].sort().pop() ?? ccCycleForDate(today, settings.cardCutoffDay);
+  const extraValid = (options.extraCcCycles ?? []).filter(
+    (cycleKey) => cycleKey <= maxCurrentCcCycle,
+  );
 
   if (!options.force && extraValid.length === 0 && settings.lastAutoSyncDate === today) {
     return { synced: false, feesInserted: 0, payrollSettled: 0 };
   }
 
-  const cyclesToEnsure = new Set<string>([
-    currentCcCycle,
-    shiftMonth(currentCcCycle, -1),
-    ...extraValid,
-  ]);
+  const directCycles = new Set<string>([...currentCcCycles, ...extraValid]);
+  const prevLookbackCycles = new Set<string>();
+  for (const c of currentCcCycles) {
+    const prev = shiftMonth(c, -1);
+    if (!directCycles.has(prev)) {
+      prevLookbackCycles.add(prev);
+    }
+  }
+
   let feesInserted = 0;
-  for (const cycleKey of cyclesToEnsure) {
+  for (const cycleKey of directCycles) {
     feesInserted += await ensureMonthlyBankFees(db, cycleKey);
+  }
+  for (const cycleKey of prevLookbackCycles) {
+    feesInserted += await ensureMonthlyBankFees(db, cycleKey, {
+      requireActivityForWallets: true,
+    });
   }
   const payrollSettled = await ensurePayrollAutoPaid(db, today);
 
@@ -134,14 +154,21 @@ export async function computeLedgerSnapshot(db: AppDb, today = jakartaToday()) {
           .groupBy(transactions.walletId, transactions.ccCycleKey)
       : [];
 
-  // Map: `${walletId ?? 'all'}:${cycleKey}` -> settled amount
+  // Map: `${walletId}:${cycleKey}` -> settled amount; null walletId tracked separately for single-CC fallback
   const settledDailyByWalletAndCycle = new Map<string, number>();
+  const settledNullWalletByCycle = new Map<string, number>();
   const settledDailyByCycle = new Map<string, number>();
   for (const row of ccSettledAgg) {
     if (row.ccCycleKey) {
       const amt = Number(row.total ?? 0);
       if (row.ccWalletId) {
-        settledDailyByWalletAndCycle.set(`${row.ccWalletId}:${row.ccCycleKey}`, amt);
+        const key = `${row.ccWalletId}:${row.ccCycleKey}`;
+        settledDailyByWalletAndCycle.set(key, (settledDailyByWalletAndCycle.get(key) ?? 0) + amt);
+      } else {
+        settledNullWalletByCycle.set(
+          row.ccCycleKey,
+          (settledNullWalletByCycle.get(row.ccCycleKey) ?? 0) + amt,
+        );
       }
       const existingCycleTotal = settledDailyByCycle.get(row.ccCycleKey) ?? 0;
       settledDailyByCycle.set(row.ccCycleKey, existingCycleTotal + amt);
@@ -233,10 +260,10 @@ export async function computeLedgerSnapshot(db: AppDb, today = jakartaToday()) {
   const unpaidCcDailyForWalletAndCycle = (walletId: number, cycleKey: string): number => {
     if (legacySettledBeforeCycle && cycleKey <= legacySettledBeforeCycle) return 0;
     const spend = ccSpendByWalletAndCycle.get(walletId)?.get(cycleKey) ?? 0;
-    const settled =
-      settledDailyByWalletAndCycle.get(`${walletId}:${cycleKey}`) ??
-      (ccWallets.length === 1 ? (settledDailyByCycle.get(cycleKey) ?? 0) : 0);
-    return Math.max(0, spend - settled);
+    const directSettled = settledDailyByWalletAndCycle.get(`${walletId}:${cycleKey}`) ?? 0;
+    const nullSettled =
+      ccWallets.length <= 1 ? (settledNullWalletByCycle.get(cycleKey) ?? 0) : 0;
+    return Math.max(0, spend - (directSettled + nullSettled));
   };
 
   const isCycleSettledForWallet = (walletId: number, cycleKey: string): boolean => {
@@ -255,15 +282,21 @@ export async function computeLedgerSnapshot(db: AppDb, today = jakartaToday()) {
 
   const unpaidCcDailyForCycle = (cycleKey: string): number => {
     if (legacySettledBeforeCycle && cycleKey <= legacySettledBeforeCycle) return 0;
-    const spend = ccSpendByCycle.get(cycleKey) ?? 0;
-    const settled = settledDailyByCycle.get(cycleKey) ?? 0;
-    return Math.max(0, spend - settled);
+    let total = 0;
+    for (const cc of ccWallets) {
+      total += unpaidCcDailyForWalletAndCycle(cc.id, cycleKey);
+    }
+    return total;
   };
 
-  const unpaidCcDailyTotal = [...ccSpendByCycle.keys()].reduce(
-    (sum, cycleKey) => sum + unpaidCcDailyForCycle(cycleKey),
-    0,
-  );
+  let unpaidCcDailyTotal = 0;
+  for (const cc of ccWallets) {
+    const wMap = ccSpendByWalletAndCycle.get(cc.id);
+    if (!wMap) continue;
+    for (const cycleKey of wMap.keys()) {
+      unpaidCcDailyTotal += unpaidCcDailyForWalletAndCycle(cc.id, cycleKey);
+    }
+  }
 
   const cardInstallmentRemaining = enrichedAccounts
     .filter((a) => a.kind === "card_installment" && !a.closed)
@@ -291,7 +324,8 @@ export async function computeLedgerSnapshot(db: AppDb, today = jakartaToday()) {
         .reduce((sum, a) => sum + a.remainingBalance, 0);
 
       const used = wUnpaidDaily + wCardInstallmentRemaining;
-      const curSpend = wMap?.get(currentCcCycle) ?? 0;
+      const cardCurrentCycle = ccCycleForDate(today, w.cutoffDay ?? settings.cardCutoffDay);
+      const curSpend = wMap?.get(cardCurrentCycle) ?? 0;
 
       return {
         ...w,
@@ -327,7 +361,9 @@ export async function computeLedgerSnapshot(db: AppDb, today = jakartaToday()) {
 
   const unpaidCcDailyTotalAllCycles = unpaidCcDailyTotal;
 
-  const enrichedCcWallets = walletBalances.filter((w) => w.type === "credit_card");
+  const enrichedCcWallets = walletBalances.filter(
+    (w) => w.type === "credit_card" && (w.isActive || w.limitUsed > 0),
+  );
   const enrichedPrimaryCc = enrichedCcWallets[0] ?? null;
 
   return {

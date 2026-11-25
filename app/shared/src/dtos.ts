@@ -235,24 +235,27 @@ export type BudgetOverviewDto = {
   totalAllocated: number;
   unallocated: number;
   needs: {
-    idealPercent: 50;
     allocated: number;
+    categoryAllocatedTotal: number;
+    allocationSource: "manual" | "categories" | "none";
     remaining?: number;
     allocatedPercent: number;
     spent: number;
     categories: BudgetCategorySummary[];
   };
   wants: {
-    idealPercent: 30;
     allocated: number;
+    categoryAllocatedTotal: number;
+    allocationSource: "manual" | "categories" | "none";
     remaining?: number;
     allocatedPercent: number;
     spent: number;
     categories: BudgetCategorySummary[];
   };
   savings: {
-    idealPercent: 20;
     allocated: number;
+    categoryAllocatedTotal: number;
+    allocationSource: "manual" | "categories" | "none";
     remaining?: number;
     allocatedPercent: number;
     spent: number;
@@ -299,7 +302,7 @@ export type NetWorthSummaryDto = {
   totalFixedAssets: number;
   totalAssets: number;
   totalLiabilities: number;
-  debtToAssetRatio: number;
+  debtToAssetRatio: number | null;
   financialStage: {
     level: "debt_hazard" | "starting" | "secure" | "stable" | "independent";
     title: string;
@@ -447,7 +450,7 @@ export type DashboardDto = {
   transactions: TransactionDto[];
   categories: CategoryDto[];
   recurringBills?: RecurringRuleDto[];
-  budget503020?: {
+  budgetBuckets?: {
     needs: {
       spent: number;
       limit: number;

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { periodForDate } from "../../../shared/src/dates";
@@ -14,6 +14,7 @@ import {
   formatRupiah,
   formatShortDate,
   jakartaToday,
+  MAX_IDR_AMOUNT,
   parsePositiveInt,
   shiftMonth,
 } from "../lib/format";
@@ -98,6 +99,15 @@ export function TransactionsPage({
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
 
+  const selectionResetKey = `${period}|${filters.weekChoice}|${filters.walletFilter}|${filters.typeFilter}|${filters.categoryFilter}|${filters.search}`;
+  const prevSelectionResetKeyRef = useRef(selectionResetKey);
+  useEffect(() => {
+    if (prevSelectionResetKeyRef.current !== selectionResetKey) {
+      prevSelectionResetKeyRef.current = selectionResetKey;
+      setSelectedIds([]);
+    }
+  }, [selectionResetKey]);
+
   const gajianPeriod = useMemo(
     () =>
       data.cycle === "gajian"
@@ -166,6 +176,7 @@ export function TransactionsPage({
       await queryClient.invalidateQueries({ queryKey: ["transactions"] });
       await queryClient.invalidateQueries({ queryKey: ["debts"] });
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
+      await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
       setConfirmDeleteTxId(null);
@@ -199,6 +210,7 @@ export function TransactionsPage({
       await queryClient.invalidateQueries({ queryKey: ["transactions"] });
       await queryClient.invalidateQueries({ queryKey: ["debts"] });
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
+      await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
       setBulkDeleteConfirmOpen(false);
@@ -557,6 +569,9 @@ export function TransactionsPage({
               <option value="income">Pemasukan</option>
               <option value="transfer">Transfer</option>
               <option value="settlement">Pembayaran Tagihan</option>
+              <option value="debt_collection">Penerimaan Piutang</option>
+              <option value="loan_disbursement">Pencairan Pinjaman</option>
+              <option value="debt_disbursement">Pemberian Pinjaman</option>
               <option value="adjustment">Penyesuaian Saldo</option>
             </select>
           </div>
@@ -794,6 +809,12 @@ export function TransactionsPage({
                                 setBudgetError("Masukkan nominal limit lebih dari Rp0.");
                                 return;
                               }
+                              if (limitAmount > MAX_IDR_AMOUNT) {
+                                setBudgetError(
+                                  `Nominal limit maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`,
+                                );
+                                return;
+                              }
                               budgetMutation.mutate({
                                 category: cat.category,
                                 limitAmount,
@@ -987,9 +1008,13 @@ export function TransactionsPage({
                           tx.type === "transfer" && tx.toWalletName
                             ? `${tx.walletName} → ${tx.toWalletName}`
                             : tx.merchant;
+                        const isInflow =
+                          tx.type === "income" ||
+                          tx.type === "debt_collection" ||
+                          tx.type === "loan_disbursement";
                         const amountDisplay = isMasked
                           ? formatRupiah(tx.amount, true)
-                          : tx.type === "income"
+                          : isInflow
                             ? `+${formatRupiah(tx.amount)}`
                             : tx.type === "adjustment"
                               ? tx.amount >= 0
@@ -998,7 +1023,7 @@ export function TransactionsPage({
                               : formatRupiah(tx.amount);
                         const amountColor = isMasked
                           ? "text-[var(--foreground)]"
-                          : tx.type === "income"
+                          : isInflow
                             ? "text-[var(--chart-income)]"
                             : "text-[var(--foreground)]";
 
@@ -1163,6 +1188,10 @@ export function TransactionsPage({
                   <div className="divide-y divide-[var(--border)]">
                     {rows.map((tx) => {
                       const isIncome = tx.type === "income";
+                      const isInflow =
+                        isIncome ||
+                        tx.type === "debt_collection" ||
+                        tx.type === "loan_disbursement";
                       const isTransfer = tx.type === "transfer";
                       const isAdjustment = tx.type === "adjustment";
                       const isEditable = isIncome || isTransfer || tx.type === "expense";
@@ -1175,7 +1204,7 @@ export function TransactionsPage({
                       const isSplit = Boolean(tx.splits && tx.splits.length > 0);
                       const adminFee = isTransfer ? (tx.linkedFeeTransaction?.amount ?? 0) : 0;
 
-                      const iconSymbol = isIncome
+                      const iconSymbol = isInflow
                         ? "↓"
                         : isTransfer
                           ? "⇄"
@@ -1184,7 +1213,7 @@ export function TransactionsPage({
                             : "↑";
                       const iconClass = isMasked
                         ? "bg-[var(--surface)] text-[var(--muted-foreground)] border border-[var(--border)]"
-                        : isIncome
+                        : isInflow
                           ? "bg-[var(--chart-income)]/15 text-[var(--chart-income)]"
                           : isTransfer
                             ? "bg-[var(--primary)]/10 text-[var(--primary)]"
@@ -1207,7 +1236,7 @@ export function TransactionsPage({
 
                       const amountText = isMasked
                         ? formatRupiah(tx.amount, true)
-                        : isIncome
+                        : isInflow
                           ? `+${formatRupiah(tx.amount)}`
                           : isTransfer
                             ? formatRupiah(tx.amount)
@@ -1219,7 +1248,7 @@ export function TransactionsPage({
 
                       const amountColor = isMasked
                         ? "text-[var(--muted-foreground)]"
-                        : isIncome
+                        : isInflow
                           ? "text-[var(--chart-income)]"
                           : isTransfer || isAdjustment
                             ? "text-[var(--foreground)]"
@@ -1449,6 +1478,9 @@ export function TransactionsPage({
               <option value="income">Pemasukan</option>
               <option value="transfer">Transfer</option>
               <option value="settlement">Pembayaran Tagihan</option>
+              <option value="debt_collection">Penerimaan Piutang</option>
+              <option value="loan_disbursement">Pencairan Pinjaman</option>
+              <option value="debt_disbursement">Pemberian Pinjaman</option>
               <option value="adjustment">Penyesuaian Saldo</option>
             </select>
           </div>

@@ -1,7 +1,7 @@
-import { and, eq, gte, inArray, lte, or } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import type { BudgetCategorySummary, BudgetOverviewDto } from "../../../shared/src/dtos";
-import { upsertBudgetSchema } from "../../../shared/src/schemas";
+import { upsertBudgetSchema, copyPreviousBudgetsSchema } from "../../../shared/src/schemas";
 import type { AppDb } from "../db";
 import { budgets, categories, transactionSplits, transactions } from "../db/schema";
 import { resolveBudgetsForPeriod } from "../lib/budgetService";
@@ -123,6 +123,7 @@ export function createBudgetRoutes(db: AppDb) {
       spentByCategory,
       bounds.end,
       today,
+      bounds.start,
     );
 
     return c.json({ period: requestedPeriod, budgets: items });
@@ -152,7 +153,7 @@ export function createBudgetRoutes(db: AppDb) {
 
     const [budgetRows, categoryRows, distinctDates, snap] = await Promise.all([
       db.select().from(budgets),
-      db.select().from(categories).where(eq(categories.isArchived, false)),
+      db.select().from(categories),
       db.selectDistinct({ transactionDate: transactions.transactionDate }).from(transactions),
       computeLedgerSnapshot(db, today),
     ]);
@@ -192,7 +193,13 @@ export function createBudgetRoutes(db: AppDb) {
       spentMap.set(k, (spentMap.get(k) ?? 0) + amt);
     }
 
-    const expenseCategories = categoryRows.filter((c) => c.type === "expense");
+    const expenseCategories = categoryRows.filter((c) => {
+      if (c.type !== "expense") return false;
+      if (!c.isArchived) return true;
+      const k = c.name.toLowerCase();
+      const budgetRow = overrideMap.get(k) ?? defaultMap.get(k);
+      return (budgetRow?.limitAmount ?? 0) > 0 || (spentMap.get(k) ?? 0) > 0;
+    });
     const categorySummaries: BudgetCategorySummary[] = expenseCategories.map((cat) => {
       const k = cat.name.toLowerCase();
       const budgetRow = overrideMap.get(k) ?? defaultMap.get(k);
@@ -220,37 +227,41 @@ export function createBudgetRoutes(db: AppDb) {
     const wantsCats = categorySummaries.filter((c) => c.bucket === "wants");
     const savingsCats = categorySummaries.filter((c) => c.bucket === "savings");
 
-    // Per-cycle custom bucket allocations (strictly scoped to requestedPeriod so each cycle is independent)
-    const needsBucketBudget = overrideMap.get("bucket:needs");
-    const wantsBucketBudget = overrideMap.get("bucket:wants");
-    const savingsBucketBudget = overrideMap.get("bucket:savings");
+    // Per-cycle bucket allocation: manual bucket ceiling (never below sum of category limits) or bottom-up from categories
+    const buildBucketSummary = (bucketKey: string, cats: BudgetCategorySummary[]) => {
+      const bucketBudget = overrideMap.get(bucketKey);
+      const categoryAllocatedTotal = cats.reduce((sum, c) => sum + c.budgetLimit, 0);
+      let allocated = 0;
+      let allocationSource: "manual" | "categories" | "none" = "none";
 
-    const needsSubAllocated = needsCats.reduce(
-      (sum, c) => sum + (overrideMap.get(c.categoryName.toLowerCase())?.limitAmount ?? 0),
-      0,
-    );
-    const wantsSubAllocated = wantsCats.reduce(
-      (sum, c) => sum + (overrideMap.get(c.categoryName.toLowerCase())?.limitAmount ?? 0),
-      0,
-    );
-    const savingsSubAllocated = savingsCats.reduce(
-      (sum, c) => sum + (overrideMap.get(c.categoryName.toLowerCase())?.limitAmount ?? 0),
-      0,
-    );
+      if (bucketBudget && bucketBudget.limitAmount > 0) {
+        allocated = Math.max(bucketBudget.limitAmount, categoryAllocatedTotal);
+        allocationSource = "manual";
+      } else if (categoryAllocatedTotal > 0) {
+        allocated = categoryAllocatedTotal;
+        allocationSource = "categories";
+      }
 
-    const needsAllocated = needsBucketBudget ? needsBucketBudget.limitAmount : needsSubAllocated;
-    const wantsAllocated = wantsBucketBudget ? wantsBucketBudget.limitAmount : wantsSubAllocated;
-    const savingsAllocated = savingsBucketBudget ? savingsBucketBudget.limitAmount : savingsSubAllocated;
-    const totalAllocated = needsAllocated + wantsAllocated + savingsAllocated;
+      const spent = cats.reduce((sum, c) => sum + c.actualSpent, 0);
+      const remaining = allocated > 0 ? Math.max(0, allocated - spent) : 0;
 
-    const needsSpent = needsCats.reduce((sum, c) => sum + c.actualSpent, 0);
-    const wantsSpent = wantsCats.reduce((sum, c) => sum + c.actualSpent, 0);
-    const savingsSpent = savingsCats.reduce((sum, c) => sum + c.actualSpent, 0);
+      return {
+        allocated,
+        categoryAllocatedTotal,
+        allocationSource,
+        remaining,
+        spent,
+        categories: cats,
+      };
+    };
 
-    const needsRemaining = needsAllocated > 0 ? Math.max(0, needsAllocated - needsSpent) : 0;
-    const wantsRemaining = wantsAllocated > 0 ? Math.max(0, wantsAllocated - wantsSpent) : 0;
-    const savingsRemaining = savingsAllocated > 0 ? Math.max(0, savingsAllocated - savingsSpent) : 0;
-    const totalRemainingAllocated = needsRemaining + wantsRemaining + savingsRemaining;
+    const needsBucket = buildBucketSummary("bucket:needs", needsCats);
+    const wantsBucket = buildBucketSummary("bucket:wants", wantsCats);
+    const savingsBucket = buildBucketSummary("bucket:savings", savingsCats);
+
+    const totalAllocated = needsBucket.allocated + wantsBucket.allocated + savingsBucket.allocated;
+    const totalRemainingAllocated =
+      needsBucket.remaining + wantsBucket.remaining + savingsBucket.remaining;
 
     const baselineFund = totalLiquidCash;
     const usedForShare = isCurrentPeriod ? totalRemainingAllocated : totalAllocated;
@@ -271,32 +282,69 @@ export function createBudgetRoutes(db: AppDb) {
       totalAllocated,
       unallocated,
       needs: {
-        idealPercent: 50,
-        allocated: needsAllocated,
-        remaining: needsRemaining,
-        allocatedPercent: pctOfBaseline(isCurrentPeriod ? needsRemaining : needsAllocated),
-        spent: needsSpent,
-        categories: needsCats,
+        ...needsBucket,
+        allocatedPercent: pctOfBaseline(
+          isCurrentPeriod ? needsBucket.remaining : needsBucket.allocated,
+        ),
       },
       wants: {
-        idealPercent: 30,
-        allocated: wantsAllocated,
-        remaining: wantsRemaining,
-        allocatedPercent: pctOfBaseline(isCurrentPeriod ? wantsRemaining : wantsAllocated),
-        spent: wantsSpent,
-        categories: wantsCats,
+        ...wantsBucket,
+        allocatedPercent: pctOfBaseline(
+          isCurrentPeriod ? wantsBucket.remaining : wantsBucket.allocated,
+        ),
       },
       savings: {
-        idealPercent: 20,
-        allocated: savingsAllocated,
-        remaining: savingsRemaining,
-        allocatedPercent: pctOfBaseline(isCurrentPeriod ? savingsRemaining : savingsAllocated),
-        spent: savingsSpent,
-        categories: savingsCats,
+        ...savingsBucket,
+        allocatedPercent: pctOfBaseline(
+          isCurrentPeriod ? savingsBucket.remaining : savingsBucket.allocated,
+        ),
       },
     };
 
     return c.json(summary);
+  });
+
+  router.post("/copy-previous", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = copyPreviousBudgetsSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: parsed.error.issues[0]?.message ?? "Target periode tidak valid." }, 400);
+    }
+
+    const { targetPeriod } = parsed.data;
+    const sourcePeriod = shiftMonth(targetPeriod, -1);
+
+    const relevantRows = await db
+      .select()
+      .from(budgets)
+      .where(inArray(budgets.period, [sourcePeriod, targetPeriod]));
+
+    const existingTargetCats = new Set(
+      relevantRows
+        .filter((b) => b.period === targetPeriod)
+        .map((b) => b.category.trim().toLowerCase()),
+    );
+
+    const toInsert = relevantRows
+      .filter(
+        (b) =>
+          b.period === sourcePeriod &&
+          b.limitAmount > 0 &&
+          !b.category.toLowerCase().startsWith("bucket:") &&
+          !existingTargetCats.has(b.category.trim().toLowerCase()),
+      )
+      .map((b) => ({
+        category: b.category,
+        categoryId: b.categoryId,
+        period: targetPeriod,
+        limitAmount: b.limitAmount,
+      }));
+
+    if (toInsert.length > 0) {
+      await db.insert(budgets).values(toInsert).onConflictDoNothing();
+    }
+
+    return c.json({ ok: true, copiedCount: toInsert.length });
   });
 
   router.put("/", async (c) => {
@@ -306,27 +354,50 @@ export function createBudgetRoutes(db: AppDb) {
       return c.json({ error: parsed.error.issues[0]?.message ?? "Data budget tidak valid." }, 400);
     }
 
+    const trimmedCategory = parsed.data.category.trim();
+    const lowerCategory = trimmedCategory.toLowerCase();
+    const isBucketKey =
+      lowerCategory === "bucket:needs" ||
+      lowerCategory === "bucket:wants" ||
+      lowerCategory === "bucket:savings";
+
     const expenseCats = await db
       .select({ id: categories.id, name: categories.name })
       .from(categories)
       .where(eq(categories.type, "expense"));
     const matchedCat = expenseCats.find(
-      (cat) => cat.name.trim().toLowerCase() === parsed.data.category.toLowerCase(),
+      (cat) => cat.name.trim().toLowerCase() === lowerCategory,
     );
-    const canonicalName = matchedCat?.name ?? parsed.data.category;
+    if (!isBucketKey && !matchedCat) {
+      return c.json({ error: "Kategori pengeluaran tidak ditemukan." }, 400);
+    }
+    const canonicalName = isBucketKey ? lowerCategory : matchedCat!.name;
+
+    if (parsed.data.limitAmount <= 0) {
+      // Clear both period and "default" fallback so removing a budget does not silently revert.
+      const periodsToDelete =
+        parsed.data.period === "default" ? ["default"] : [parsed.data.period, "default"];
+      await db
+        .delete(budgets)
+        .where(
+          and(
+            inArray(budgets.period, periodsToDelete),
+            matchedCat
+              ? or(
+                  eq(budgets.categoryId, matchedCat.id),
+                  sql`LOWER(TRIM(${budgets.category})) = LOWER(TRIM(${canonicalName}))`,
+                )
+              : sql`LOWER(TRIM(${budgets.category})) = LOWER(TRIM(${canonicalName}))`,
+          ),
+        );
+      return c.json({ ok: true, budget: null });
+    }
 
     const existing = await db
       .select()
       .from(budgets)
       .where(and(eq(budgets.category, canonicalName), eq(budgets.period, parsed.data.period)))
       .limit(1);
-
-    if (parsed.data.limitAmount <= 0) {
-      if (existing[0]) {
-        await db.delete(budgets).where(eq(budgets.id, existing[0].id));
-      }
-      return c.json({ ok: true, budget: null });
-    }
 
     if (existing[0]) {
       const [updated] = await db

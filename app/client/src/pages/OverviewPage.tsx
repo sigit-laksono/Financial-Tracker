@@ -23,11 +23,12 @@ import {
 import { Badge, Button, Card, ErrorBoundary, ProgressBar } from "../components/UI";
 import { DailyHeroCard } from "../components/DailyHeroCard";
 import { NetWorthHeroCard } from "../components/NetWorthHeroCard";
-import { Budget503020Progress } from "../components/Budget503020Progress";
+import { BudgetBucketProgress } from "../components/BudgetBucketProgress";
 import { CalendarActivityGrid } from "../components/CalendarActivityGrid";
 import { RecentTransactionsWidget } from "../components/RecentTransactionsWidget";
 import { RecurringBillsModal } from "../components/RecurringBillsModal";
 import { BankBadge } from "../components/BankBadge";
+import { budgetKeys } from "../lib/queryKeys";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
 
 export function OverviewPage({
@@ -87,6 +88,10 @@ export function OverviewPage({
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       await queryClient.invalidateQueries({ queryKey: ["transactions"] });
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
+      await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+      await queryClient.invalidateQueries({ queryKey: ["debts"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       onToast?.("Tagihan rutin berhasil dicatat sebagai pengeluaran");
     },
     onError: (err) => {
@@ -96,7 +101,13 @@ export function OverviewPage({
   const liquidWallets = wallets.filter((w) => w.isActive && w.type !== "credit_card");
   const spendingWallets = liquidWallets.filter((w) => w.role !== "savings");
   const savingsWallets = liquidWallets.filter((w) => w.role === "savings");
-  const ccWallet = wallets.find((w) => w.type === "credit_card");
+  const activeCcWallets = wallets.filter((w) => w.isActive && w.type === "credit_card");
+  const ccCardTitle =
+    activeCcWallets.length > 1
+      ? `Kartu Kredit (${activeCcWallets.length} Kartu)`
+      : activeCcWallets[0]
+        ? `Kartu Kredit ${activeCcWallets[0].name}`
+        : "Kartu Kredit";
   const ccPercent =
     metrics.ccLimit > 0 ? Math.round((metrics.ccLimitUsed / metrics.ccLimit) * 100) : 0;
 
@@ -366,8 +377,8 @@ export function OverviewPage({
           </Card>
         }
       >
-        <Budget503020Progress
-          budget503020={data.budget503020}
+        <BudgetBucketProgress
+          budgetBuckets={data.budgetBuckets}
           daysElapsed={daysElapsed}
           daysTotal={daysTotal}
           onOpenBudget={onOpenBudget}
@@ -573,7 +584,7 @@ export function OverviewPage({
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
-                  {ccWallet ? `Kartu Kredit ${ccWallet.name}` : "Kartu Kredit"}
+                  {ccCardTitle}
                 </p>
                 <span className="tabular-nums text-xs font-semibold text-[var(--muted-foreground)]">
                   Terpakai {ccPercent}%

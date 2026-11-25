@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { AppDb } from "../db";
 import {
   appSettings,
@@ -12,7 +12,7 @@ import {
 import { recordAuditLog } from "./auditService";
 import { computeWalletBalance } from "./cashLedger";
 import { getCreditCardLimitStatus } from "./ccLimit";
-import { addMonthsToDate, ccCycleForDate, jakartaToday } from "./dates";
+import { addMonthsToDate, ccCycleForDate, ccDueDateForCycle, jakartaToday, shiftMonth } from "./dates";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
 
 const ACCOUNT_COLORS = [
@@ -33,6 +33,127 @@ function slugifyKey(value: string): string {
       .replace(/^-+|-+$/g, "")
       .slice(0, 48) || "utang"
   );
+}
+
+type DebtEngineDb = Pick<AppDb, "select" | "update" | "insert">;
+
+function allocateAmountProportionally(plannedAmounts: number[], targetTotal: number): number[] {
+  if (plannedAmounts.length === 0) return [];
+  const sumPlanned = plannedAmounts.reduce((sum, amt) => sum + amt, 0);
+  if (targetTotal === sumPlanned) return [...plannedAmounts];
+  if (sumPlanned <= 0) {
+    const base = Math.floor(targetTotal / plannedAmounts.length);
+    let rem = targetTotal - base * plannedAmounts.length;
+    return plannedAmounts.map(() => {
+      const extra = rem > 0 ? 1 : 0;
+      if (rem > 0) rem -= 1;
+      return base + extra;
+    });
+  }
+
+  const parts = plannedAmounts.map((amt, index) => {
+    const exact = (amt * targetTotal) / sumPlanned;
+    const floored = Math.floor(exact);
+    return { index, floored, frac: exact - floored };
+  });
+  let remainder = targetTotal - parts.reduce((sum, p) => sum + p.floored, 0);
+  const byFrac = [...parts].sort((a, b) => b.frac - a.frac || a.index - b.index);
+  for (let i = 0; i < byFrac.length && remainder > 0; i++) {
+    byFrac[i]!.floored += 1;
+    remainder -= 1;
+  }
+  const result = new Array<number>(plannedAmounts.length);
+  for (const p of parts) {
+    result[p.index] = p.floored;
+  }
+  return result;
+}
+
+export async function closeAccountsIfFullyPaid(
+  db: DebtEngineDb,
+  accountIds: number[],
+  options: {
+    action: "auto_close_settled" | "auto_close_payroll";
+    resolveClosedAt: (paidRows: Array<typeof installments.$inferSelect>) => Date;
+  },
+): Promise<number[]> {
+  if (accountIds.length === 0) return [];
+  const accounts = await db
+    .select()
+    .from(debtAccounts)
+    .where(inArray(debtAccounts.id, accountIds));
+  const openAccounts = accounts.filter((a) => !a.closedAt);
+  if (openAccounts.length === 0) return [];
+
+  const allInsts = await db
+    .select()
+    .from(installments)
+    .where(inArray(installments.accountId, openAccounts.map((a) => a.id)));
+
+  const closedAccountIds: number[] = [];
+  for (const account of openAccounts) {
+    const accountRows = allInsts.filter((item) => item.accountId === account.id);
+    const paidRows = accountRows.filter((item) => item.status === "paid");
+    const paidAmount = paidRows.reduce(
+      (sum, item) => sum + (item.actualAmount ?? item.plannedAmount),
+      0,
+    );
+    const totalPlanned = accountRows.reduce((sum, item) => sum + item.plannedAmount, 0);
+    const targetObligation = Math.max(account.initialBalance, totalPlanned);
+    if (paidAmount >= targetObligation) {
+      const closedAt = options.resolveClosedAt(paidRows);
+      await db
+        .update(debtAccounts)
+        .set({ closedAt })
+        .where(eq(debtAccounts.id, account.id));
+      await recordAuditLog(db, {
+        entityType: "debt_account",
+        entityId: account.id,
+        action: options.action,
+        before: { closedAt: null },
+        after: {
+          closedAt: closedAt.toISOString(),
+          paidAmount,
+          initialBalance: account.initialBalance,
+        },
+      });
+      closedAccountIds.push(account.id);
+    }
+  }
+  return closedAccountIds;
+}
+
+export async function reopenDebtAccountsIfNeeded(
+  db: Pick<AppDb, "select" | "update">,
+  accountIds: number[],
+): Promise<void> {
+  if (accountIds.length === 0) return;
+  const accounts = await db
+    .select()
+    .from(debtAccounts)
+    .where(inArray(debtAccounts.id, accountIds));
+  const closedAccounts = accounts.filter((a) => a.closedAt != null);
+  if (closedAccounts.length === 0) return;
+
+  const allInsts = await db
+    .select()
+    .from(installments)
+    .where(inArray(installments.accountId, closedAccounts.map((a) => a.id)));
+
+  for (const account of closedAccounts) {
+    const accountRows = allInsts.filter((item) => item.accountId === account.id);
+    const paidAmount = accountRows
+      .filter((item) => item.status === "paid")
+      .reduce((sum, item) => sum + (item.actualAmount ?? item.plannedAmount), 0);
+    const totalPlanned = accountRows.reduce((sum, item) => sum + item.plannedAmount, 0);
+    const targetObligation = Math.max(account.initialBalance, totalPlanned);
+    if (targetObligation - paidAmount > 0) {
+      await db
+        .update(debtAccounts)
+        .set({ closedAt: null })
+        .where(eq(debtAccounts.id, account.id));
+    }
+  }
 }
 
 export async function ensurePayrollAutoPaid(db: AppDb, today = jakartaToday()): Promise<number> {
@@ -58,6 +179,21 @@ export async function ensurePayrollAutoPaid(db: AppDb, today = jakartaToday()): 
       })
       .where(eq(installments.id, row.id));
   }
+
+  const affectedIds = [...new Set(due.map((row) => row.accountId))];
+  await closeAccountsIfFullyPaid(db, affectedIds, {
+    action: "auto_close_payroll",
+    resolveClosedAt: (paidRows) => {
+      let latestPaidAt: Date | null = null;
+      for (const row of paidRows) {
+        if (row.paidAt && (!latestPaidAt || row.paidAt > latestPaidAt)) {
+          latestPaidAt = row.paidAt;
+        }
+      }
+      return latestPaidAt ?? new Date(`${today}T00:00:00.000Z`);
+    },
+  });
+
   return due.length;
 }
 
@@ -65,15 +201,17 @@ export function filterActiveInstallmentIds(
   accounts: Array<typeof debtAccounts.$inferSelect>,
   allInstallments: Array<typeof installments.$inferSelect>,
 ): Set<number> {
-  // Drop stale future plan rows once paid installments cover the account's initial balance.
+  // Drop stale future plan rows only after paid installments cover both initialBalance and total planned schedule.
   const activeIds = new Set<number>();
   for (const account of accounts) {
     const rows = allInstallments
       .filter((item) => item.accountId === account.id)
       .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id - b.id);
+    const totalPlanned = rows.reduce((sum, item) => sum + item.plannedAmount, 0);
+    const targetObligation = Math.max(account.initialBalance, totalPlanned);
     let runningPaid = 0;
     for (const row of rows) {
-      if (runningPaid >= account.initialBalance) break;
+      if (runningPaid >= targetObligation) break;
       activeIds.add(row.id);
       if (row.status === "paid") {
         runningPaid += row.actualAmount ?? row.plannedAmount;
@@ -135,9 +273,21 @@ export async function settleObligations(
       accountIds.length > 0
         ? await tx.select().from(debtAccounts).where(inArray(debtAccounts.id, accountIds))
         : [];
-    const isReceivableCollection =
-      relatedAccounts.length > 0 && relatedAccounts.every((a) => a.direction === "receivable");
+    const hasReceivable = relatedAccounts.some((a) => a.direction === "receivable");
+    const hasPayable = relatedAccounts.some((a) => a.direction !== "receivable");
+    if (hasReceivable && hasPayable) {
+      throw new ValidationError(
+        "Tidak dapat menggabungkan pelunasan utang dan penagihan piutang dalam satu transaksi.",
+      );
+    }
+    if (hasReceivable && input.ccCycleKey) {
+      throw new ValidationError(
+        "Penagihan piutang tidak dapat digabungkan dengan pembayaran tagihan kartu kredit.",
+      );
+    }
+    const isReceivableCollection = relatedAccounts.length > 0 && hasReceivable;
 
+    const isSingleCc = ccWallets.length <= 1;
     let remainingCcDaily = 0;
     if (input.ccCycleKey) {
       if (!ccWallet) {
@@ -166,8 +316,13 @@ export async function settleObligations(
           .where(
             and(
               eq(settlementAllocations.targetType, "cc_cycle"),
-              eq(settlementAllocations.ccWalletId, ccWallet.id),
               eq(settlementAllocations.ccCycleKey, input.ccCycleKey),
+              isSingleCc
+                ? or(
+                    eq(settlementAllocations.ccWalletId, ccWallet.id),
+                    isNull(settlementAllocations.ccWalletId),
+                  )
+                : eq(settlementAllocations.ccWalletId, ccWallet.id),
             ),
           );
         const priorSettledDaily = Number(allocRow?.total ?? 0);
@@ -257,12 +412,16 @@ export async function settleObligations(
     }
 
     const paidAt = new Date(`${input.paymentDate}T00:00:00.000Z`);
+    const allocationTargets = upcomingInstallments.map((r) => r.plannedAmount);
+    if (input.ccCycleKey && remainingCcDaily > 0) {
+      allocationTargets.push(remainingCcDaily);
+    }
+    const allocatedParts = allocateAmountProportionally(allocationTargets, totalAmount);
+
     let settledInstTotal = 0;
-    for (const row of upcomingInstallments) {
-      const actual =
-        upcomingInstallments.length === 1 && !input.ccCycleKey && input.customAmount
-          ? input.customAmount
-          : row.plannedAmount;
+    for (let i = 0; i < upcomingInstallments.length; i++) {
+      const row = upcomingInstallments[i]!;
+      const actual = allocatedParts[i] ?? row.plannedAmount;
       settledInstTotal += actual;
       await tx
         .update(installments)
@@ -301,10 +460,20 @@ export async function settleObligations(
       }
     }
 
+    const closedAccountIds = await closeAccountsIfFullyPaid(
+      tx,
+      relatedAccounts.map((a) => a.id),
+      {
+        action: "auto_close_settled",
+        resolveClosedAt: () => paidAt,
+      },
+    );
+
     return {
       settledCount: upcomingInstallments.length,
       totalAmount,
       settlementTransactionId,
+      closedAccountIds,
     };
   });
 }
@@ -385,6 +554,8 @@ export async function unsettleInstallment(
         }
       }
     }
+
+    await reopenDebtAccountsIfNeeded(tx, [row.accountId]);
 
     await recordAuditLog(tx, {
       entityType: "installment",
@@ -534,13 +705,22 @@ export async function createDebtAccountWithSchedule(
     if (!account) throw new Error("Gagal menyimpan akun utang.");
 
     // Handle immediate wallet movement (disbursement)
-    if (input.recordDisbursement && disburseWalletId) {
-      const [wallet] = await tx
+    let disburseWallet: typeof wallets.$inferSelect | null = null;
+    if (disburseWalletId) {
+      const [foundWallet] = await tx
         .select()
         .from(wallets)
         .where(eq(wallets.id, disburseWalletId))
         .limit(1);
-      if (!wallet) throw new ValidationError("Dompet pencairan tidak ditemukan.");
+      if (!foundWallet) throw new ValidationError("Dompet pencairan tidak ditemukan.");
+      if (foundWallet.type === "credit_card") {
+        throw new ValidationError("Dompet kartu kredit tidak dapat digunakan sebagai dompet pencairan.");
+      }
+      disburseWallet = foundWallet;
+    }
+
+    if (input.recordDisbursement && disburseWallet) {
+      const wallet = disburseWallet;
 
       const allCats = await tx.select().from(categories);
       const today = jakartaToday();
@@ -563,7 +743,7 @@ export async function createDebtAccountWithSchedule(
             transactionDate: today,
             category: loanCat?.name ?? "Pinjaman",
             categoryId: loanCat?.id ?? null,
-            walletId: disburseWalletId,
+            walletId: wallet.id,
             debtAccountId: account.id,
             source: "system",
             note: `Pencairan dana ${input.name} ke dompet ${wallet.name}`,
@@ -583,7 +763,7 @@ export async function createDebtAccountWithSchedule(
             transactionDate: today,
             category: piutangCat?.name ?? "Piutang",
             categoryId: piutangCat?.id ?? null,
-            walletId: disburseWalletId,
+            walletId: wallet.id,
             debtAccountId: account.id,
             source: "system",
             note: `Pemberian pinjaman/talangan ${input.name} dari dompet ${wallet.name}`,
@@ -936,25 +1116,31 @@ export async function earlyPayoffDebtAccount(
       }
     }
 
-    for (const inst of upcoming) {
+    const allocatedInsts = allocateAmountProportionally(
+      upcoming.map((inst) => inst.plannedAmount),
+      payoffAmount,
+    );
+    for (let i = 0; i < upcoming.length; i++) {
+      const inst = upcoming[i]!;
+      const actual = allocatedInsts[i] ?? inst.plannedAmount;
       await tx
         .update(installments)
         .set({
           status: "paid",
-          actualAmount: inst.plannedAmount,
+          actualAmount: actual,
           paidAt,
           settlementTransactionId,
         })
         .where(eq(installments.id, inst.id));
 
-      if (settlementTransactionId && inst.plannedAmount > 0) {
+      if (settlementTransactionId && actual > 0) {
         await tx
           .insert(settlementAllocations)
           .values({
             settlementTransactionId,
             targetType: "installment",
             installmentId: inst.id,
-            allocatedAmount: inst.plannedAmount,
+            allocatedAmount: actual,
           });
       }
     }
@@ -1022,8 +1208,36 @@ export async function convertTransactionToInstallment(
     }
 
     const settingsRows = await tx.select().from(appSettings).where(eq(appSettings.id, 1)).limit(1);
+    const settings = settingsRows[0];
+    const cutoffDay = wallet.cutoffDay ?? settings?.cardCutoffDay ?? 20;
     const paymentDay =
-      input.paymentDay ?? wallet.paymentDay ?? settingsRows[0]?.cardPaymentDay ?? 25;
+      input.paymentDay ?? wallet.paymentDay ?? settings?.cardPaymentDay ?? 25;
+    const effectiveCycleKey =
+      sourceTx.ccCycleKey ?? ccCycleForDate(sourceTx.transactionDate, cutoffDay);
+
+    if (settings?.legacySettledBeforeCycle && effectiveCycleKey <= settings.legacySettledBeforeCycle) {
+      throw new ValidationError(
+        "Transaksi pada siklus kartu kredit yang sudah lunas tidak dapat diubah ke cicilan.",
+      );
+    }
+
+    const limitStatus = await getCreditCardLimitStatus(tx, wallet.id);
+    const unpaidCycleAmount = limitStatus.unpaidByCycle.get(effectiveCycleKey) ?? 0;
+    if (unpaidCycleAmount <= 0) {
+      throw new ValidationError(
+        "Transaksi dari siklus kartu kredit yang sudah lunas tidak dapat diubah ke cicilan.",
+      );
+    }
+
+    const initialBalance = input.installmentCount * input.installmentAmount;
+    const creditBack = Math.min(sourceTx.amount, unpaidCycleAmount);
+    const effectiveAvailable = limitStatus.availableLimit + creditBack;
+    if (initialBalance > effectiveAvailable) {
+      throw new ValidationError(
+        `Total cicilan melebihi sisa limit ${limitStatus.walletName} (Sisa limit tersedia: Rp${effectiveAvailable.toLocaleString("id-ID")}, Total cicilan: Rp${initialBalance.toLocaleString("id-ID")}).`,
+      );
+    }
+
     const accountName = input.name?.trim() || `${sourceTx.merchant} (Split Pay)`;
     const existingKeys = new Set(
       (
@@ -1040,7 +1254,6 @@ export async function convertTransactionToInstallment(
       suffix += 1;
     }
 
-    const initialBalance = input.installmentCount * input.installmentAmount;
     const [account] = await tx
       .insert(debtAccounts)
       .values({
@@ -1058,9 +1271,9 @@ export async function convertTransactionToInstallment(
       .returning({ id: debtAccounts.id });
     if (!account) throw new Error("Gagal membuat akun cicilan Split Pay.");
 
-    const firstDueDate = `${input.firstPeriod}-${String(paymentDay).padStart(2, "0")}`;
     const scheduleRows = Array.from({ length: input.installmentCount }, (_, index) => {
-      const { period, dueDate } = addMonthsToDate(firstDueDate, index);
+      const period = shiftMonth(input.firstPeriod, index);
+      const dueDate = ccDueDateForCycle(period, cutoffDay, paymentDay);
       return {
         accountId: account.id,
         period,

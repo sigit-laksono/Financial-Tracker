@@ -64,6 +64,13 @@ export function createAuthRoutes(
 
   router.post("/login", async (c) => {
     const key = `login:${clientRateKey(c)}`;
+    const globalLimit = limiter.checkGlobal();
+    if (!globalLimit.allowed) {
+      return c.json(
+        { error: `Terlalu banyak percobaan. Coba lagi dalam ${globalLimit.retryAfterSeconds} detik.` },
+        429,
+      );
+    }
     const limit = limiter.check(key);
     if (!limit.allowed) {
       return c.json(
@@ -135,6 +142,13 @@ export function createAuthRoutes(
     const key = `change-pin:${clientRateKey(c)}`;
     const settings = await getSettings(db);
     if (settings.pinHash) {
+      const globalLimit = limiter.checkGlobal();
+      if (!globalLimit.allowed) {
+        return c.json(
+          { error: `Terlalu banyak percobaan. Coba lagi dalam ${globalLimit.retryAfterSeconds} detik.` },
+          429,
+        );
+      }
       const limit = limiter.check(key);
       if (!limit.allowed) {
         return c.json(

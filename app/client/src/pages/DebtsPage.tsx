@@ -26,8 +26,10 @@ import {
   formatRupiah,
   formatShortDate,
   jakartaToday,
+  MAX_IDR_AMOUNT,
   parsePositiveInt,
 } from "../lib/format";
+import { budgetKeys } from "../lib/queryKeys";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
 
 type DebtPageTab = "summary" | "loan" | "cards" | "payroll" | "receivable";
@@ -121,6 +123,9 @@ export function DebtsPage({
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
+      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       onToast("Akun utang/piutang berhasil dihapus");
       setDeletingAccount(null);
     },
@@ -149,6 +154,9 @@ export function DebtsPage({
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       onToast("Status lunas cicilan dibatalkan");
     },
     onError: (err) => {
@@ -161,6 +169,9 @@ export function DebtsPage({
       if (!payoffTarget) return;
       const customAmt = parsePositiveInt(payoffAmountInput);
       const effectiveAmt = customAmt > 0 ? customAmt : payoffTarget.remaining;
+      if (effectiveAmt > MAX_IDR_AMOUNT) {
+        throw new Error(`Nominal pelunasan maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
+      }
       if (
         payoffTarget.direction !== "receivable" &&
         selectedPayoffWallet &&
@@ -183,6 +194,8 @@ export function DebtsPage({
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
       await queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       onToast("Pelunasan berhasil dicatat dan akun ditutup.");
       setPayoffTarget(null);
     },
@@ -418,7 +431,7 @@ export function DebtsPage({
                 </div>
               )}
 
-              {acc.remainingBalance === 0 && (
+              {acc.remainingBalance === 0 && !acc.closed && (
                 <Button
                   variant="secondary"
                   onClick={() => closeMutation.mutate({ id: acc.id, closed: true })}
@@ -1593,8 +1606,11 @@ export function DebtsPage({
               {deletingAccount.lender})?
             </p>
             <p className="text-xs text-[var(--muted-foreground)]">
-              Seluruh jadwal angsuran dan riwayat terkait akun ini akan dihapus secara permanen dari
-              sistem. Tindakan ini tidak dapat dibatalkan.
+              Menghapus akun ini akan menghapus kartu{" "}
+              {deletingAccount.direction === "receivable" ? "piutang" : "utang"} beserta jadwal
+              angsurannya, sedangkan riwayat transaksi yang sudah tercatat dan saldo dompet tidak
+              berubah. Jika ingin mengembalikan saldo dompet, gunakan Batal Lunas pada angsuran
+              atau hapus transaksi terkait di halaman Transaksi.
             </p>
           </div>
         </ModalSheet>

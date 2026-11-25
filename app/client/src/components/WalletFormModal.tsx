@@ -7,9 +7,18 @@ import type {
   WalletType,
 } from "../../../shared/src/types";
 import { api, ApiError, type WalletDto } from "../lib/api";
-import { formatDigitsInput, parsePositiveInt, parseSignedInt } from "../lib/format";
+import {
+  formatDigitsInput,
+  formatRupiah,
+  formatSignedDigitsInput,
+  parsePositiveInt,
+  parseSignedInt,
+} from "../lib/format";
+import { budgetKeys } from "../lib/queryKeys";
 import { AlertIcon, TrashIcon } from "./Icons";
 import { Button, ModalSheet } from "./UI";
+
+const MAX_IDR_AMOUNT = 2_147_483_647;
 
 export type WalletUiType = "bank" | "ewallet" | "credit_card" | "paylater" | "cash";
 // Backwards compatibility alias
@@ -205,11 +214,13 @@ export function WalletFormModal({
   onClose,
   wallet,
   onSuccess,
+  onOpenReconcile,
 }: {
   open: boolean;
   onClose: () => void;
   wallet: WalletDto | null;
   onSuccess: (msg: string) => void;
+  onOpenReconcile?: (wallet: WalletDto) => void;
 }) {
   const queryClient = useQueryClient();
   const formId = useId();
@@ -217,12 +228,14 @@ export function WalletFormModal({
   // Core Form State
   const [uiType, setUiType] = useState<WalletUiType>("bank");
   const [provider, setProvider] = useState<WalletProvider>("bca");
+  const [role, setRole] = useState<"spending" | "savings">("spending");
   const [name, setName] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
   const [balance, setBalance] = useState("0");
   const [creditLimit, setCreditLimit] = useState("0");
   const [pemakaian, setPemakaian] = useState("0");
   const [cutoffDay, setCutoffDay] = useState("21");
+  const [statementDay, setStatementDay] = useState<number | null>(null);
   const [paymentDay, setPaymentDay] = useState("7");
   const [dueMode, setDueMode] = useState<"days" | "date">("days");
   const [daysAfterCutoff, setDaysAfterCutoff] = useState("16");
@@ -291,9 +304,14 @@ export function WalletFormModal({
 
     if (wallet) {
       // Map existing wallet to uiType
+      const isPaylaterProvider =
+        wallet.provider !== "other" && PAYLATER_PROVIDERS.some((p) => p.id === wallet.provider);
       let initialUiType: WalletUiType = "bank";
       if (wallet.type === "credit_card") {
-        initialUiType = wallet.name.toLowerCase().includes("paylater") ? "paylater" : "credit_card";
+        initialUiType =
+          isPaylaterProvider || wallet.name.toLowerCase().includes("paylater")
+            ? "paylater"
+            : "credit_card";
       } else if (wallet.type === "cash") {
         initialUiType = "cash";
       } else if (wallet.type === "ewallet") {
@@ -304,14 +322,16 @@ export function WalletFormModal({
 
       setUiType(initialUiType);
       setProvider(wallet.provider || "other");
+      setRole(wallet.role === "savings" ? "savings" : "spending");
       setName(wallet.name);
       setAccountNumber(wallet.accountNumber ?? "");
-      setBalance(Math.max(0, wallet.openingBalance).toLocaleString("id-ID"));
+      setBalance(formatSignedDigitsInput(String(wallet.openingBalance)));
       setCreditLimit((wallet.creditLimit ?? 0).toLocaleString("id-ID"));
       setPemakaian((wallet.limitUsed ?? 0).toLocaleString("id-ID"));
       const c = wallet.cutoffDay ?? 21;
       const p = wallet.paymentDay ?? 7;
       setCutoffDay(String(c));
+      setStatementDay(wallet.statementDay ?? null);
       setPaymentDay(String(p));
       const res = computeFromDates(c, p);
       setDaysAfterCutoff(String(res.daysDiff || 16));
@@ -322,12 +342,14 @@ export function WalletFormModal({
       // Fresh new wallet state
       setUiType("bank");
       setProvider("bca");
+      setRole("spending");
       setName("BCA");
       setAccountNumber("");
       setBalance("0");
       setCreditLimit("0");
       setPemakaian("0");
       setCutoffDay("21");
+      setStatementDay(null);
       setPaymentDay("7");
       setDaysAfterCutoff("16");
       setDueMode("days");
@@ -429,13 +451,31 @@ export function WalletFormModal({
             ? "ewallet"
             : "bank";
 
-      const actualRole: WalletRole = isCreditType ? "credit_card" : "spending";
+      const actualRole: WalletRole = isCreditType ? "credit_card" : role;
       const parsedBalance = parseSignedInt(balance);
       const parsedLimit = isCreditType ? parsePositiveInt(creditLimit) : null;
+      const parsedInitialUsage = isCreditType && !isEditing ? parsePositiveInt(pemakaian) : 0;
       const parsedCutoff = isCreditType ? Number(cutoffDay) || 1 : null;
       const parsedPayment = isCreditType ? dueInfo.paymentDay : null;
 
+      if (!isCreditType && Math.abs(parsedBalance) > MAX_IDR_AMOUNT) {
+        throw new Error("Nominal saldo maksimal Rp 2.147.483.647.");
+      }
+      if (isCreditType && parsedLimit !== null && parsedLimit > MAX_IDR_AMOUNT) {
+        throw new Error("Limit kartu maksimal Rp 2.147.483.647.");
+      }
+      if (isCreditType && !isEditing && parsedInitialUsage > MAX_IDR_AMOUNT) {
+        throw new Error("Pemakaian awal maksimal Rp 2.147.483.647.");
+      }
+
       if (isEditing && wallet) {
+        const syncedStatementDay = isCreditType
+          ? parsedCutoff !== wallet.cutoffDay
+            ? parsedCutoff
+              ? Math.min(28, parsedCutoff + 1)
+              : null
+            : statementDay
+          : null;
         return api.updateWallet(wallet.id, {
           name: name.trim(),
           role: actualRole,
@@ -445,7 +485,7 @@ export function WalletFormModal({
           accountNumber: accountNumber.trim() || null,
           creditLimit: parsedLimit,
           cutoffDay: parsedCutoff,
-          statementDay: parsedCutoff,
+          statementDay: syncedStatementDay,
           paymentDay: parsedPayment,
           color,
           isActive,
@@ -459,10 +499,11 @@ export function WalletFormModal({
         provider,
         role: actualRole,
         openingBalance: isCreditType ? 0 : parsedBalance,
+        initialUsage: isCreditType ? parsedInitialUsage : undefined,
         accountNumber: accountNumber.trim() || null,
         creditLimit: parsedLimit,
         cutoffDay: parsedCutoff,
-        statementDay: parsedCutoff,
+        statementDay: isCreditType && parsedCutoff ? Math.min(28, parsedCutoff + 1) : null,
         paymentDay: parsedPayment,
         color,
       });
@@ -472,6 +513,10 @@ export function WalletFormModal({
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
       await queryClient.invalidateQueries({ queryKey: ["debts"] });
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+      await queryClient.invalidateQueries({ queryKey: ["goals"] });
+      await queryClient.invalidateQueries({ queryKey: ["recurring-rules"] });
       onSuccess(
         isEditing ? `Dompet ${name} berhasil diperbarui` : `Dompet ${name} berhasil ditambahkan`,
       );
@@ -497,6 +542,10 @@ export function WalletFormModal({
       await queryClient.invalidateQueries({ queryKey: ["debts"] });
       await queryClient.invalidateQueries({ queryKey: ["assets"] });
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+      await queryClient.invalidateQueries({ queryKey: ["goals"] });
+      await queryClient.invalidateQueries({ queryKey: ["recurring-rules"] });
       onSuccess(`Dompet ${wallet?.name} berhasil dihapus.`);
       onClose();
     },
@@ -743,27 +792,80 @@ export function WalletFormModal({
           </div>
         )}
 
-        {/* 5. SALDO SAAT INI - For Bank, E-Wallet, Tunai */}
+        {/* 5. PERAN DOMPET & SALDO - For Bank, E-Wallet, Tunai */}
         {!isCreditOrPaylater && (
-          <div className="space-y-1.5">
-            <label htmlFor="wallet-balance-input" className={labelClass}>
-              SALDO SAAT INI
-            </label>
-            <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
-                Rp
-              </span>
-              <input
-                id="wallet-balance-input"
-                type="text"
-                inputMode="numeric"
-                value={balance}
-                onChange={(e) => setBalance(formatDigitsInput(e.target.value))}
-                placeholder="0"
-                className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
-              />
+          <>
+            <div className="space-y-1.5">
+              <label htmlFor="wallet-role-select" className={labelClass}>
+                PERAN DOMPET
+              </label>
+              <select
+                id="wallet-role-select"
+                value={role}
+                onChange={(e) => setRole(e.target.value as "spending" | "savings")}
+                className="min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
+              >
+                <option value="spending">Kas Harian (Safe to Spend)</option>
+                <option value="savings">Tabungan / Simpanan (Dana Darurat)</option>
+              </select>
             </div>
-          </div>
+
+            {isEditing && wallet && (
+              <div className="rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface)] p-3.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className={labelClass}>SALDO SAAT INI</span>
+                  <strong className="tabular-nums font-mono text-base font-black text-[var(--foreground)]">
+                    {formatRupiah(wallet.balance)}
+                  </strong>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[11px] text-[var(--muted-foreground)]">
+                    {onOpenReconcile
+                      ? "Ingin menyamakan saldo dengan m-banking tanpa mengubah saldo awal?"
+                      : "Gunakan Cocokkan Saldo di halaman Dompet untuk menyesuaikan saldo saat ini."}
+                  </p>
+                  {onOpenReconcile && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenReconcile(wallet);
+                      }}
+                      className="inline-flex min-h-[44px] items-center rounded-[10px] border border-[var(--control-border)] bg-[var(--card)] px-3 text-xs font-semibold text-[var(--primary)] hover:border-[var(--primary)] transition-colors"
+                    >
+                      Cocokkan Saldo
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label htmlFor="wallet-balance-input" className={labelClass}>
+                {isEditing ? "SALDO AWAL" : "SALDO SAAT INI"}
+              </label>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
+                  Rp
+                </span>
+                <input
+                  id="wallet-balance-input"
+                  type="text"
+                  inputMode={isEditing ? "text" : "numeric"}
+                  value={balance}
+                  onChange={(e) =>
+                    setBalance(
+                      isEditing
+                        ? formatSignedDigitsInput(e.target.value)
+                        : formatDigitsInput(e.target.value),
+                    )
+                  }
+                  placeholder="0"
+                  className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
+                />
+              </div>
+            </div>
+          </>
         )}
 
         {/* 6. CREDIT LIMIT & PEMAKAIAN - For Kartu Kredit & PayLater */}
@@ -801,20 +903,41 @@ export function WalletFormModal({
                   ?
                 </span>
               </div>
-              <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
-                  Rp
-                </span>
-                <input
-                  id="wallet-pemakaian"
-                  type="text"
-                  inputMode="numeric"
-                  value={pemakaian}
-                  onChange={(e) => setPemakaian(formatDigitsInput(e.target.value))}
-                  placeholder="0"
-                  className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
-                />
-              </div>
+              {isEditing ? (
+                <>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
+                      Rp
+                    </span>
+                    <input
+                      id="wallet-pemakaian"
+                      type="text"
+                      readOnly
+                      aria-readonly="true"
+                      value={pemakaian}
+                      className="w-full rounded-[14px] bg-[var(--surface)] border border-[var(--border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--muted-foreground)] font-mono cursor-default"
+                    />
+                  </div>
+                  <p className="text-[11px] text-[var(--muted-foreground)]">
+                    Pemakaian dihitung otomatis dari transaksi dan cicilan aktif kartu ini.
+                  </p>
+                </>
+              ) : (
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
+                    Rp
+                  </span>
+                  <input
+                    id="wallet-pemakaian"
+                    type="text"
+                    inputMode="numeric"
+                    value={pemakaian}
+                    onChange={(e) => setPemakaian(formatDigitsInput(e.target.value))}
+                    placeholder="0"
+                    className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
+                  />
+                </div>
+              )}
             </div>
 
             {/* SIKLUS TAGIHAN & JATUH TEMPO */}

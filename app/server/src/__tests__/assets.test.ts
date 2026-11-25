@@ -132,4 +132,67 @@ describe("Milestone 11: Aset & Net Worth (Kekayaan Bersih)", () => {
     expect(summary.breakdown.investments).toHaveLength(1);
     expect(summary.breakdown.fixedAssets).toHaveLength(1);
   });
+
+  it("returns null debtToAssetRatio when totalAssets <= 0 and totalLiabilities > 0", async () => {
+    const { app } = await setupTestContext();
+
+    // Baseline: 0 assets, 0 liabilities -> ratio should be 0
+    const resZero = await app.request("/api/assets/net-worth-summary");
+    expect(resZero.status).toBe(200);
+    const summaryZero = await resZero.json();
+    expect(summaryZero.totalAssets).toBe(0);
+    expect(summaryZero.totalLiabilities).toBe(0);
+    expect(summaryZero.debtToAssetRatio).toBe(0);
+
+    // Add a liability while totalAssets is 0
+    const createDebtRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Utang Tanpa Aset",
+        lender: "Bank",
+        kind: "loan",
+        direction: "payable",
+        initialBalance: 1_000_000,
+        installmentCount: 2,
+        installmentAmount: 500_000,
+        firstDueDate: "2026-11-10",
+        paymentMethod: "Transfer",
+      }),
+    });
+    expect(createDebtRes.status).toBe(201);
+
+    const resZeroAssets = await app.request("/api/assets/net-worth-summary");
+    expect(resZeroAssets.status).toBe(200);
+    const summaryZeroAssets = await resZeroAssets.json();
+    expect(summaryZeroAssets.totalAssets).toBe(0);
+    expect(summaryZeroAssets.totalLiabilities).toBe(1_000_000);
+    expect(summaryZeroAssets.debtToAssetRatio).toBeNull();
+
+    // Negative totalAssets (overdrawn liquid cash) with totalLiabilities > 0 also returns null
+    const walletsRes = await app.request("/api/wallets");
+    const walletsBody = (await walletsRes.json()) as {
+      wallets: Array<{ id: number; key: string }>;
+    };
+    const bni = walletsBody.wallets.find((w) => w.key === "bni")!;
+    await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "expense",
+        merchant: "Pengeluaran Defisit",
+        amount: 200_000,
+        transactionDate: "2026-10-20",
+        category: "Makanan & Belanja Dapur",
+        walletId: bni.id,
+      }),
+    });
+
+    const resNegAssets = await app.request("/api/assets/net-worth-summary");
+    expect(resNegAssets.status).toBe(200);
+    const summaryNegAssets = await resNegAssets.json();
+    expect(summaryNegAssets.totalAssets).toBeLessThan(0);
+    expect(summaryNegAssets.totalLiabilities).toBe(1_000_000);
+    expect(summaryNegAssets.debtToAssetRatio).toBeNull();
+  });
 });

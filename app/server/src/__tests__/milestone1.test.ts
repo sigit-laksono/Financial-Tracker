@@ -71,7 +71,7 @@ describe("Milestone 1: Akurasi Cashflow & Siklus Gajian", () => {
         merchant: "Kopi Kenangan CC",
         amount: 100_000,
         transactionDate: "2026-10-22",
-        category: "Makanan & Minuman",
+        category: "Makanan & Belanja Dapur",
         walletId: cc!.id,
       }),
     });
@@ -135,7 +135,7 @@ describe("Milestone 1: Akurasi Cashflow & Siklus Gajian", () => {
         merchant: "Belanja Bulan Lalu",
         amount: 500_000,
         transactionDate: "2026-09-25",
-        category: "Belanja",
+        category: "Belanja Pribadi & Hobi",
         walletId: bni!.id,
       }),
     });

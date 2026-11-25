@@ -187,6 +187,8 @@ export function buildWeekSlices(startIso: string, endIso: string): WeekSlice[] {
   return slices;
 }
 
+export const MAX_IDR_AMOUNT = 2_147_483_647;
+
 export function parsePositiveInt(raw: string): number {
   const digits = raw.replace(/[^0-9]/g, "");
   return digits ? Number(digits) : 0;

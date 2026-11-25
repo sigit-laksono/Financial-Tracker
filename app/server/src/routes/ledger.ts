@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { receiveSalarySchema, yearMonthSchema } from "../../../shared/src/schemas";
+import {
+  receiveSalarySchema,
+  salaryPreviewQuerySchema,
+  yearMonthSchema,
+} from "../../../shared/src/schemas";
 import type { AppDb } from "../db";
 import { jakartaToday } from "../lib/dates";
 import { ConflictError, NotFoundError, ValidationError } from "../lib/errors";
@@ -30,18 +34,20 @@ export function createLedgerRoutes(db: AppDb) {
   });
 
   router.get("/salary-preview", async (c) => {
-    const period = c.req.query("period");
-    const grossSalaryRaw = c.req.query("grossSalary");
-    const walletIdRaw = c.req.query("walletId");
+    const rawQuery = {
+      period: c.req.query("period") || undefined,
+      grossSalary: c.req.query("grossSalary") || undefined,
+      walletId: c.req.query("walletId") || undefined,
+    };
+    const parsed = salaryPreviewQuerySchema.safeParse(rawQuery);
+    if (!parsed.success) {
+      return c.json(
+        { error: parsed.error.issues[0]?.message ?? "Parameter pratinjau gaji tidak valid." },
+        400,
+      );
+    }
 
-    const grossSalary = grossSalaryRaw ? Number(grossSalaryRaw) : undefined;
-    const walletId = walletIdRaw ? Number(walletIdRaw) : undefined;
-
-    const preview = await getSalaryPreview(db, {
-      period: period || undefined,
-      grossSalary: Number.isFinite(grossSalary) ? grossSalary : undefined,
-      walletId: Number.isFinite(walletId) ? walletId : undefined,
-    });
+    const preview = await getSalaryPreview(db, parsed.data);
 
     return c.json({ ok: true, ...preview });
   });

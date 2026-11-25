@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CategoryDto, type RecurringRuleDto, type WalletDto } from "../lib/api";
-import { formatDigitsInput, formatRupiah, parsePositiveInt } from "../lib/format";
+import { MAX_IDR_AMOUNT, formatDigitsInput, formatRupiah, parsePositiveInt } from "../lib/format";
 import { EditIcon, TrashIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
 
@@ -87,6 +87,9 @@ export function RecurringBillsModal({
       }
       if (parsedAmount <= 0) {
         throw new Error("Nominal bulanan harus lebih dari Rp0.");
+      }
+      if (parsedAmount > MAX_IDR_AMOUNT) {
+        throw new Error("Nominal bulanan maksimal Rp 2.147.483.647.");
       }
       if (!category) {
         throw new Error("Pilih kategori pengeluaran terlebih dahulu.");

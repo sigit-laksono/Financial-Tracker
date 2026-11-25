@@ -185,7 +185,7 @@ export function createAssetRoutes(db: AppDb) {
       totalAssets > 0
         ? Number(((totalLiabilities / totalAssets) * 100).toFixed(1))
         : totalLiabilities > 0
-          ? 100
+          ? null
           : 0;
 
     // 5. Monthly Living Expense Baseline for Financial Stage

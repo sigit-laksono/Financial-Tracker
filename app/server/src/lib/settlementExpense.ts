@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import type { AppDb } from "../db";
 import { settlementAllocations } from "../db/schema";
 
@@ -6,7 +6,8 @@ type DbOrTx = Pick<AppDb, "select">;
 
 /**
  * Sums settlement_allocations targeted to "cc_cycle" (already counted as daily CC expenses)
- * keyed by settlementTransactionId, so installment settlements can be counted without double-counting.
+ * keyed by settlementTransactionId, while also recording 0 for settlements that only have
+ * installment allocations so legacy zero-return applies only when no allocation rows exist.
  */
 export async function getCcCycleAllocatedByTxId(
   db: DbOrTx,
@@ -18,21 +19,16 @@ export async function getCcCycleAllocatedByTxId(
   const rows = await db
     .select({
       settlementTransactionId: settlementAllocations.settlementTransactionId,
+      targetType: settlementAllocations.targetType,
       allocatedAmount: settlementAllocations.allocatedAmount,
     })
     .from(settlementAllocations)
-    .where(
-      and(
-        inArray(settlementAllocations.settlementTransactionId, settlementTxIds),
-        eq(settlementAllocations.targetType, "cc_cycle"),
-      ),
-    );
+    .where(inArray(settlementAllocations.settlementTransactionId, settlementTxIds));
 
   for (const row of rows) {
-    map.set(
-      row.settlementTransactionId,
-      (map.get(row.settlementTransactionId) ?? 0) + row.allocatedAmount,
-    );
+    const prev = map.get(row.settlementTransactionId) ?? 0;
+    const add = row.targetType === "cc_cycle" ? row.allocatedAmount : 0;
+    map.set(row.settlementTransactionId, prev + add);
   }
   return map;
 }

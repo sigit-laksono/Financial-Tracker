@@ -6,9 +6,11 @@ import {
   formatMonthTitle,
   formatRupiah,
   jakartaToday,
+  MAX_IDR_AMOUNT,
   parsePositiveInt,
   shiftMonth,
 } from "../lib/format";
+import { budgetKeys } from "../lib/queryKeys";
 import { AlertIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
 
@@ -72,6 +74,12 @@ export function SplitPayModal({
       if (installmentAmount <= 0) {
         throw new Error("Nominal cicilan per bulan harus lebih dari Rp0.");
       }
+      if (installmentAmount > MAX_IDR_AMOUNT) {
+        throw new Error(`Nominal cicilan maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
+      }
+      if (installmentCount * installmentAmount > MAX_IDR_AMOUNT) {
+        throw new Error(`Total nilai cicilan maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
+      }
       return api.convertToSplitPay(target.id, {
         name: name.trim() || undefined,
         installmentCount,
@@ -83,6 +91,9 @@ export function SplitPayModal({
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       await queryClient.invalidateQueries({ queryKey: ["transactions"] });
       await queryClient.invalidateQueries({ queryKey: ["debts"] });
+      await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       onSuccess("Transaksi berhasil diubah menjadi cicilan bulanan");
       onClose();
     },

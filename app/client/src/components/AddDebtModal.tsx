@@ -9,8 +9,10 @@ import {
   formatRupiah,
   formatShortDate,
   jakartaToday,
+  MAX_IDR_AMOUNT,
   parsePositiveInt,
 } from "../lib/format";
+import { budgetKeys } from "../lib/queryKeys";
 import { AlertIcon } from "./Icons";
 import { Button, ModalSheet } from "./UI";
 
@@ -193,10 +195,23 @@ export function AddDebtModal({
     isCardInstallment && selectedCcWallet && totalCalculated > selectedCcWallet.balance,
   );
   const missingCcWallet = isCardInstallment && creditCardWallets.length === 0;
+  const selectedDisburseWallet = useMemo(
+    () => liquidWallets.find((w) => w.id === disburseWalletId) ?? liquidWallets[0] ?? null,
+    [liquidWallets, disburseWalletId],
+  );
+  const isReceivableDisburseOverdraft = Boolean(
+    !isCardInstallment &&
+      direction === "receivable" &&
+      recordDisbursement &&
+      selectedDisburseWallet &&
+      totalCalculated > 0 &&
+      totalCalculated > selectedDisburseWallet.balance,
+  );
 
   // Sync default lender & kind when direction switches
   const handleDirectionChange = (newDir: DebtDirection) => {
     setDirection(newDir);
+    setSplitPrincipalInterest(false);
     setError("");
     if (newDir === "receivable") {
       setKind("receivable");
@@ -216,6 +231,9 @@ export function AddDebtModal({
   const handleKindChange = (nextKind: DebtKind) => {
     setKind(nextKind);
     setError("");
+    if (nextKind !== "loan") {
+      setSplitPrincipalInterest(false);
+    }
     if (nextKind === "card_installment") {
       setRecordDisbursement(false);
       if (paymentMethod === "Transfer" || paymentMethod === "Potong gaji") {
@@ -248,32 +266,23 @@ export function AddDebtModal({
         throw new Error("Jumlah cicilan minimal 1.");
       }
       if (installmentAmount <= 0) throw new Error("Nominal cicilan harus lebih dari Rp0.");
-
-      if (isCardInstallment) {
-        if (!selectedCcWallet) {
-          throw new Error(
-            "Tambahkan dompet Kartu Kredit terlebih dahulu sebelum mencatat cicilan kartu kredit.",
-          );
-        }
-        const checkTotal = hasModifiedSchedule
-          ? scheduleRows.reduce((sum, r) => sum + (r.amount > 0 ? r.amount : installmentAmount), 0)
-          : installmentCount * installmentAmount;
-        if (checkTotal > selectedCcWallet.balance) {
-          throw new Error(
-            `Total cicilan (${formatRupiah(checkTotal)}) melebihi sisa limit ${selectedCcWallet.name} (${formatRupiah(selectedCcWallet.balance)}).`,
-          );
-        }
+      if (installmentAmount > MAX_IDR_AMOUNT) {
+        throw new Error(`Nominal cicilan maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
       }
 
-      if (!isCardInstallment && recordDisbursement && !disburseWalletId) {
-        throw new Error("Pilih dompet untuk mutasi pencairan / pemotongan dana.");
-      }
-
-      let principalAmount: number | undefined;
-      let interestAmount: number | undefined;
-      if (splitPrincipalInterest) {
-        principalAmount = parsePositiveInt(principalInput);
-        interestAmount = parsePositiveInt(interestInput);
+      if (hasModifiedSchedule) {
+        const invalidRow = scheduleRows.find((r) => r.amount <= 0);
+        if (invalidRow) {
+          throw new Error(
+            `Nominal angsuran bulan ke-${invalidRow.monthIndex} harus lebih dari Rp0.`,
+          );
+        }
+        const overMaxRow = scheduleRows.find((r) => r.amount > MAX_IDR_AMOUNT);
+        if (overMaxRow) {
+          throw new Error(
+            `Nominal angsuran bulan ke-${overMaxRow.monthIndex} maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`,
+          );
+        }
       }
 
       const customSchedule = hasModifiedSchedule
@@ -281,13 +290,55 @@ export function AddDebtModal({
             monthIndex: r.monthIndex,
             period: r.period,
             dueDate: r.dueDate,
-            plannedAmount: r.amount > 0 ? r.amount : installmentAmount,
+            plannedAmount: r.amount,
           }))
         : undefined;
 
       const totalBalance = customSchedule
         ? customSchedule.reduce((sum, r) => sum + r.plannedAmount, 0)
         : installmentCount * installmentAmount;
+
+      if (totalBalance > MAX_IDR_AMOUNT) {
+        throw new Error(
+          `Total nilai ${direction === "receivable" ? "piutang" : "utang"} maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`,
+        );
+      }
+
+      if (isCardInstallment) {
+        if (!selectedCcWallet) {
+          throw new Error(
+            "Tambahkan dompet Kartu Kredit terlebih dahulu sebelum mencatat cicilan kartu kredit.",
+          );
+        }
+        if (totalBalance > selectedCcWallet.balance) {
+          throw new Error(
+            `Total cicilan (${formatRupiah(totalBalance)}) melebihi sisa limit ${selectedCcWallet.name} (${formatRupiah(selectedCcWallet.balance)}).`,
+          );
+        }
+      }
+
+      if (!isCardInstallment && recordDisbursement) {
+        if (!disburseWalletId || !selectedDisburseWallet) {
+          throw new Error("Pilih dompet untuk mutasi pencairan / pemotongan dana.");
+        }
+        if (direction === "receivable" && totalBalance > selectedDisburseWallet.balance) {
+          throw new Error(
+            `Saldo dompet ${selectedDisburseWallet.name} (${formatRupiah(selectedDisburseWallet.balance)}) tidak mencukupi untuk nominal piutang ${formatRupiah(totalBalance)}.`,
+          );
+        }
+      }
+
+      let principalAmount: number | undefined;
+      let interestAmount: number | undefined;
+      if (direction === "payable" && kind === "loan" && splitPrincipalInterest) {
+        principalAmount = parsePositiveInt(principalInput);
+        interestAmount = parsePositiveInt(interestInput);
+        if (principalAmount + interestAmount !== installmentAmount) {
+          throw new Error(
+            `Total pokok (${formatRupiah(principalAmount)}) + bunga (${formatRupiah(interestAmount)}) harus sama dengan nominal cicilan (${formatRupiah(installmentAmount)}).`,
+          );
+        }
+      }
 
       return api.createDebt({
         name: name.trim(),
@@ -302,7 +353,8 @@ export function AddDebtModal({
         firstDueDate,
         paymentMethod: paymentMethod.trim() || "Transfer",
         walletId: isCardInstallment ? selectedCcWallet?.id ?? null : null,
-        disburseWalletId: !isCardInstallment && recordDisbursement ? disburseWalletId : null,
+        disburseWalletId:
+          !isCardInstallment && recordDisbursement ? selectedDisburseWallet?.id ?? null : null,
         recordDisbursement: !isCardInstallment && recordDisbursement,
         customSchedule,
       });
@@ -313,6 +365,8 @@ export function AddDebtModal({
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
       await queryClient.invalidateQueries({ queryKey: ["transactions"] });
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       onSuccess(
         direction === "receivable"
           ? "Akun piutang dan jadwal tagihan berhasil ditambahkan"
@@ -356,7 +410,12 @@ export function AddDebtModal({
           <Button
             type="submit"
             form={formId}
-            disabled={mutation.isPending || missingCcWallet || isCardLimitExceeded}
+            disabled={
+              mutation.isPending ||
+              missingCcWallet ||
+              isCardLimitExceeded ||
+              isReceivableDisburseOverdraft
+            }
           >
             {mutation.isPending
               ? "Menyimpan..."
@@ -816,6 +875,16 @@ export function AddDebtModal({
                     ? "Transaksi ini akan menurunkan saldo dompet tanpa dihitung sebagai pengeluaran belanja (tidak memotong anggaran)."
                     : "Transaksi ini akan menambah saldo dompet tanpa dihitung sebagai income gaji."}
                 </p>
+                {isReceivableDisburseOverdraft && selectedDisburseWallet && (
+                  <div className="flex items-start gap-2 rounded-[12px] border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-2.5 text-xs text-rose-800 dark:text-rose-200">
+                    <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+                    <span>
+                      Saldo {selectedDisburseWallet.name} saat ini{" "}
+                      {formatRupiah(selectedDisburseWallet.balance)}, tidak mencukupi untuk nominal
+                      piutang {formatRupiah(totalCalculated)}.
+                    </span>
+                  </div>
+                )}
               </div>
             )}
           </div>

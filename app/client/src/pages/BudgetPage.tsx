@@ -17,6 +17,7 @@ import {
   formatMonthTitle,
   formatPeriodRangeLabel,
   formatRupiah,
+  MAX_IDR_AMOUNT,
   parsePositiveInt,
   shiftMonth,
 } from "../lib/format";
@@ -68,6 +69,11 @@ export function BudgetPage({
   const [editingBucket, setEditingBucket] = useState<CategoryBucket | null>(null);
   const [bucketLimitInput, setBucketLimitInput] = useState("");
   const [formError, setFormError] = useState("");
+
+  // Quick inline category budget edit state
+  const [editingCategoryBudgetId, setEditingCategoryBudgetId] = useState<number | null>(null);
+  const [categoryBudgetInput, setCategoryBudgetInput] = useState("");
+  const [categoryBudgetError, setCategoryBudgetError] = useState("");
 
   // Modal Category Add/Edit state
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
@@ -144,6 +150,22 @@ export function BudgetPage({
     onError: (err) => {
       const msg = err instanceof ApiError ? err.message : "Gagal menyimpan batas anggaran.";
       setFormError(msg);
+      onToast(msg);
+    },
+  });
+
+  const copyPreviousMutation = useMutation({
+    mutationFn: () => api.copyPreviousBudgets(period),
+    onSuccess: async (res) => {
+      await invalidateCategoryQueries();
+      if (res.copiedCount > 0) {
+        onToast(`${res.copiedCount} budget kategori disalin dari siklus sebelumnya`);
+      } else {
+        onToast("Belum ada budget kategori di siklus sebelumnya");
+      }
+    },
+    onError: (err) => {
+      const msg = err instanceof ApiError ? err.message : "Gagal menyalin budget siklus lalu.";
       onToast(msg);
     },
   });
@@ -393,6 +415,10 @@ export function BudgetPage({
     }
 
     const limitAmount = modalLimit ? parsePositiveInt(modalLimit) : 0;
+    if (limitAmount > MAX_IDR_AMOUNT) {
+      setModalError(`Nominal pagu maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
+      return;
+    }
 
     if (editingCategory) {
       updateCategoryMutation.mutate({
@@ -439,12 +465,72 @@ export function BudgetPage({
       return;
     }
     const targetLimitAmount = isCurrentPeriod ? parsed + spent : parsed;
+    if (targetLimitAmount > MAX_IDR_AMOUNT) {
+      setFormError(`Total jatah anggaran maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
+      return;
+    }
     saveBudgetMutation.mutate({
       category: `bucket:${bucketKey}`,
       limitAmount: targetLimitAmount,
     });
     setEditingBucket(null);
     setBucketLimitInput("");
+  };
+
+  const handleStartCategoryBudgetEdit = (cat: BudgetCategorySummary) => {
+    setEditingCategoryBudgetId(cat.categoryId);
+    setCategoryBudgetInput(cat.budgetLimit > 0 ? cat.budgetLimit.toLocaleString("id-ID") : "");
+    setCategoryBudgetError("");
+  };
+
+  const handleSaveCategoryBudgetEdit = (cat: BudgetCategorySummary) => {
+    const trimmed = categoryBudgetInput.trim();
+    const parsed = trimmed ? parsePositiveInt(trimmed) : 0;
+    if (trimmed && parsed < 0) {
+      setCategoryBudgetError("Nominal budget tidak valid.");
+      return;
+    }
+    if (parsed > MAX_IDR_AMOUNT) {
+      setCategoryBudgetError(`Nominal budget maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
+      return;
+    }
+    if (parsed <= 0) {
+      updateCategoryMutation.mutate(
+        {
+          id: cat.categoryId,
+          payload: { budgetLimit: 0, period },
+        },
+        {
+          onSuccess: () => {
+            setEditingCategoryBudgetId(null);
+            setCategoryBudgetInput("");
+            setCategoryBudgetError("");
+          },
+          onError: (err) => {
+            const msg = err instanceof ApiError ? err.message : "Gagal mengosongkan budget kategori.";
+            setCategoryBudgetError(msg);
+          },
+        },
+      );
+      return;
+    }
+    saveBudgetMutation.mutate(
+      {
+        category: cat.categoryName,
+        limitAmount: parsed,
+      },
+      {
+        onSuccess: () => {
+          setEditingCategoryBudgetId(null);
+          setCategoryBudgetInput("");
+          setCategoryBudgetError("");
+        },
+        onError: (err) => {
+          const msg = err instanceof ApiError ? err.message : "Gagal menyimpan budget kategori.";
+          setCategoryBudgetError(msg);
+        },
+      },
+    );
   };
 
   const periodRangeLabel =
@@ -457,6 +543,8 @@ export function BudgetPage({
     bucketKey: CategoryBucket,
     bucketData: {
       allocated: number;
+      categoryAllocatedTotal: number;
+      allocationSource: "manual" | "categories" | "none";
       remaining?: number;
       allocatedPercent: number;
       spent: number;
@@ -464,7 +552,8 @@ export function BudgetPage({
     },
     accentColor: string,
   ) => {
-    const { allocated, allocatedPercent, spent, categories } = bucketData;
+    const { allocated, categoryAllocatedTotal, allocationSource, allocatedPercent, spent, categories } =
+      bucketData;
     const envelopeRemaining =
       bucketData.remaining ?? (allocated > 0 ? Math.max(0, allocated - spent) : 0);
     const isEditingThisBucket = editingBucket === bucketKey;
@@ -512,6 +601,29 @@ export function BudgetPage({
                   </span>
                 )}
               </div>
+              {((isCurrentPeriod && spent > 0) ||
+                (allocationSource === "manual" &&
+                  categoryAllocatedTotal > 0 &&
+                  allocated > categoryAllocatedTotal)) && (
+                <div className="space-y-1 text-xs text-[var(--muted-foreground)]">
+                  {isCurrentPeriod && spent > 0 && (
+                    <p>
+                      Nominal yang dimasukkan adalah sisa amplop mulai saat ini. Total budget
+                      siklus otomatis dihitung sebagai input Anda + terpakai (
+                      {formatRupiah(spent, isMasked)}).
+                    </p>
+                  )}
+                  {allocationSource === "manual" && categoryAllocatedTotal > 0 && (
+                    <p>
+                      Total budget kategori di kelompok ini:{" "}
+                      <strong className="text-[var(--foreground)]">
+                        {formatRupiah(categoryAllocatedTotal, isMasked)}
+                      </strong>
+                      . Total budget kelompok minimal sebesar total kategori tersebut.
+                    </p>
+                  )}
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative flex-1 min-w-[200px]">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-[var(--muted-foreground)]">
@@ -567,7 +679,7 @@ export function BudgetPage({
                       const currentVal = parsePositiveInt(bucketLimitInput);
                       setBucketLimitInput((currentVal + unallocated).toLocaleString("id-ID"));
                     }}
-                    className="text-xs font-bold text-[var(--primary)] hover:underline"
+                    className="min-h-[44px] inline-flex items-center text-xs font-bold text-[var(--primary)] hover:underline"
                   >
                     + Tambahkan seluruh sisa dana belum dialokasikan ({formatRupiah(unallocated, isMasked)})
                   </button>
@@ -583,7 +695,7 @@ export function BudgetPage({
                       ? "Sisa Amplop Tersedia (Dari Dana Likuid)"
                       : "Jatah Anggaran Siklus Ini"}
                   </span>
-                  <div className="flex items-baseline gap-2.5 mt-0.5">
+                  <div className="flex flex-wrap items-baseline gap-2.5 mt-0.5">
                     <span className="font-mono text-2xl sm:text-3xl font-black text-[var(--foreground)] tabular-nums">
                       {allocated > 0 ? formatRupiah(headlineAmount, isMasked) : "Belum Diatur"}
                     </span>
@@ -591,6 +703,25 @@ export function BudgetPage({
                       ({allocatedPercent}% dari dana likuid)
                     </span>
                   </div>
+                  {allocationSource === "categories" && (
+                    <div className="mt-1.5">
+                      <Badge tone="info" className="text-[11px] font-semibold">
+                        Dihitung otomatis dari total budget kategori
+                      </Badge>
+                    </div>
+                  )}
+                  {allocationSource === "manual" && (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                      <Badge tone="neutral" className="text-[11px] font-semibold">
+                        Jatah manual
+                      </Badge>
+                      {categoryAllocatedTotal > 0 && allocated > categoryAllocatedTotal && (
+                        <span className="text-[11px] text-[var(--muted-foreground)]">
+                          Total budget kategori {formatRupiah(categoryAllocatedTotal, isMasked)}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -615,7 +746,7 @@ export function BudgetPage({
                   <Button
                     variant="secondary"
                     onClick={() => handleStartBucketEdit(bucketKey, allocated, envelopeRemaining)}
-                    className="min-h-[38px] text-xs px-3 font-semibold"
+                    className="min-h-[44px] text-xs px-3 font-semibold"
                   >
                     {allocated > 0 ? "Ubah Jatah" : "Atur Jatah"}
                   </Button>
@@ -640,7 +771,7 @@ export function BudgetPage({
                   <div className="flex flex-wrap justify-between gap-2 text-xs font-medium text-[var(--muted-foreground)] font-mono">
                     <span>Terpakai siklus ini: {formatRupiah(spent, isMasked)}</span>
                     <span>
-                      Total pagu siklus: {formatRupiah(allocated, isMasked)}
+                      Total budget siklus: {formatRupiah(allocated, isMasked)}
                     </span>
                   </div>
                 </div>
@@ -674,87 +805,210 @@ export function BudgetPage({
               {displayedCategories.length === 0 ? (
                 <div className="rounded-[12px] border border-dashed border-[var(--border)] bg-[var(--surface)]/50 px-4 py-3 text-xs text-[var(--muted-foreground)]">
                   Semua kategori ({unconfiguredCategories.length}) pada kelompok ini belum memiliki
-                  pagu atau pengeluaran (Rp 0).
+                  budget atau pengeluaran (Rp 0).
                 </div>
               ) : (
                 <div className="divide-y divide-[var(--border)]">
                   {displayedCategories.map((c) => {
                     const sharePercent = spent > 0 ? Math.round((c.actualSpent / spent) * 100) : 0;
                     const isMandatory = categoryMandatoryMap.get(c.categoryId) ?? false;
+                    const hasBudget = c.budgetLimit > 0;
+                    const isEditingRowBudget = editingCategoryBudgetId === c.categoryId;
+                    const barColor =
+                      c.percentUsed >= 100
+                        ? "var(--destructive)"
+                        : c.percentUsed >= 80
+                          ? "#f59e0b"
+                          : c.color || accentColor;
+
                     return (
-                      <div
-                        key={c.categoryId}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 py-3"
-                      >
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span
-                              className="h-3 w-3 rounded-full shrink-0 shadow-xs"
-                              style={{ backgroundColor: c.color }}
-                              aria-hidden="true"
-                            />
-                            <strong className="text-sm font-bold text-[var(--foreground)] truncate">
-                              {c.categoryName}
-                            </strong>
-                            {isMandatory && (
-                              <Badge tone="highlight" className="text-[10px]">
-                                Wajib
-                              </Badge>
-                            )}
-                            {c.actualSpent > 0 && (
-                              <span className="rounded-md bg-[var(--surface)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--muted-foreground)] border border-[var(--border)]">
-                                {sharePercent}% dari {title.split(" ")[0]}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Mini Share Distribution Bar */}
-                          {spent > 0 && (
-                            <div className="space-y-0.5 max-w-sm">
-                              <div className="h-1.5 w-full rounded-full bg-[var(--surface)] overflow-hidden">
-                                <div
-                                  className="h-full rounded-full transition-all"
-                                  style={{
-                                    width: `${sharePercent}%`,
-                                    backgroundColor: c.color || accentColor,
-                                  }}
-                                />
-                              </div>
+                      <div key={c.categoryId} className="py-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                          <div className="min-w-0 flex-1 space-y-1.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className="h-3 w-3 rounded-full shrink-0 shadow-xs"
+                                style={{ backgroundColor: c.color }}
+                                aria-hidden="true"
+                              />
+                              <strong className="text-sm font-bold text-[var(--foreground)] truncate">
+                                {c.categoryName}
+                              </strong>
+                              {isMandatory && (
+                                <Badge tone="highlight" className="text-[10px]">
+                                  Wajib
+                                </Badge>
+                              )}
+                              {c.actualSpent > 0 && (
+                                <span className="rounded-md bg-[var(--surface)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--muted-foreground)] border border-[var(--border)]">
+                                  {sharePercent}% dari {title.split(" ")[0]}
+                                </span>
+                              )}
+                              {!hasBudget && (
+                                <span className="rounded-md bg-[var(--surface)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--muted-foreground)] border border-[var(--border)]">
+                                  Belum dibudgetkan
+                                </span>
+                              )}
                             </div>
-                          )}
-                        </div>
 
-                        <div className="flex items-center gap-3 self-end sm:self-center">
-                          <div className="text-right">
-                            <span className="text-[10px] uppercase font-bold text-[var(--muted-foreground)] block">
-                              Terpakai
-                            </span>
-                            <span className="font-mono text-sm font-extrabold text-[var(--foreground)] tabular-nums">
-                              {formatRupiah(c.actualSpent, isMasked)}
-                            </span>
+                            {hasBudget ? (
+                              <div className="space-y-1 max-w-md">
+                                <div className="h-1.5 w-full rounded-full bg-[var(--surface)] overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full transition-all"
+                                    style={{
+                                      width: `${Math.min(100, c.percentUsed)}%`,
+                                      backgroundColor: barColor,
+                                    }}
+                                  />
+                                </div>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] font-mono tabular-nums">
+                                  <span className="text-[var(--muted-foreground)]">
+                                    Terpakai{" "}
+                                    <strong className="text-[var(--foreground)]">
+                                      {formatRupiah(c.actualSpent, isMasked)}
+                                    </strong>
+                                  </span>
+                                  <span className="text-[var(--muted-foreground)]">
+                                    Budget{" "}
+                                    <strong className="text-[var(--foreground)]">
+                                      {formatRupiah(c.budgetLimit, isMasked)}
+                                    </strong>
+                                  </span>
+                                  <span
+                                    className={
+                                      c.remaining < 0
+                                        ? "font-bold text-[var(--destructive)]"
+                                        : "font-bold text-[var(--chart-income)]"
+                                    }
+                                  >
+                                    {c.remaining >= 0
+                                      ? `Sisa ${formatRupiah(c.remaining, isMasked)}`
+                                      : `Lebih ${formatRupiah(Math.abs(c.remaining), isMasked)}`}
+                                  </span>
+                                </div>
+                              </div>
+                            ) : (
+                              spent > 0 && (
+                                <div className="space-y-0.5 max-w-sm">
+                                  <div className="h-1.5 w-full rounded-full bg-[var(--surface)] overflow-hidden">
+                                    <div
+                                      className="h-full rounded-full transition-all"
+                                      style={{
+                                        width: `${sharePercent}%`,
+                                        backgroundColor: c.color || accentColor,
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              )
+                            )}
                           </div>
 
-                          <div className="flex items-center gap-1">
+                          <div className="flex flex-wrap items-center gap-2 self-end sm:self-center">
+                            <div className="text-right mr-1">
+                              <span className="text-[10px] uppercase font-bold text-[var(--muted-foreground)] block">
+                                Terpakai
+                              </span>
+                              <span className="font-mono text-sm font-extrabold text-[var(--foreground)] tabular-nums">
+                                {formatRupiah(c.actualSpent, isMasked)}
+                              </span>
+                            </div>
+
                             <button
                               type="button"
-                              onClick={() => openEditModal(c)}
-                              title="Edit nama / kelompok / warna kategori"
-                              aria-label={`Edit kategori ${c.categoryName}`}
-                              className="inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)] transition-colors"
+                              onClick={() =>
+                                isEditingRowBudget
+                                  ? setEditingCategoryBudgetId(null)
+                                  : handleStartCategoryBudgetEdit(c)
+                              }
+                              className="inline-flex min-h-[44px] items-center rounded-[10px] border border-[var(--border)] bg-[var(--surface)] px-2.5 text-xs font-semibold text-[var(--foreground)] hover:border-[var(--primary)] hover:text-[var(--primary)] transition-colors"
                             >
-                              <EditIcon className="w-4 h-4" />
+                              {hasBudget ? "Ubah Budget" : "Atur Budget"}
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => setDeletingCategory(c)}
-                              title="Hapus kategori ini"
-                              aria-label={`Hapus kategori ${c.categoryName}`}
-                              className="inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-[var(--muted-foreground)] hover:bg-rose-50 hover:text-[var(--destructive)] dark:hover:bg-rose-950/30 transition-colors"
-                            >
-                              <TrashIcon className="w-4 h-4" />
-                            </button>
+
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => openEditModal(c)}
+                                title="Edit nama / kelompok / warna kategori"
+                                aria-label={`Edit kategori ${c.categoryName}`}
+                                className="inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)] transition-colors"
+                              >
+                                <EditIcon className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDeletingCategory(c)}
+                                title="Hapus kategori ini"
+                                aria-label={`Hapus kategori ${c.categoryName}`}
+                                className="inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-[var(--muted-foreground)] hover:bg-rose-50 hover:text-[var(--destructive)] dark:hover:bg-rose-950/30 transition-colors"
+                              >
+                                <TrashIcon className="w-4 h-4" />
+                              </button>
+                            </div>
                           </div>
                         </div>
+
+                        {isEditingRowBudget && (
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              handleSaveCategoryBudgetEdit(c);
+                            }}
+                            className="mt-2.5 flex flex-col gap-2 rounded-[12px] border border-[var(--border)] bg-[var(--surface)] p-3 sm:flex-row sm:items-center"
+                          >
+                            <div className="relative flex-1 min-w-[180px]">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-[var(--muted-foreground)]">
+                                Rp
+                              </span>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                aria-label={`Budget kategori ${c.categoryName}`}
+                                value={categoryBudgetInput}
+                                onChange={(e) => {
+                                  setCategoryBudgetInput(formatDigitsInput(e.target.value));
+                                  setCategoryBudgetError("");
+                                }}
+                                placeholder="0 untuk kosongkan"
+                                className="tabular-nums min-h-[44px] w-full rounded-[10px] border border-[var(--primary)] bg-[var(--card)] pl-9 pr-3 text-sm font-bold text-[var(--foreground)]"
+                              />
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                type="submit"
+                                disabled={
+                                  saveBudgetMutation.isPending || updateCategoryMutation.isPending
+                                }
+                                className="min-h-[44px] text-xs px-3.5"
+                              >
+                                {saveBudgetMutation.isPending || updateCategoryMutation.isPending
+                                  ? "Menyimpan..."
+                                  : "Simpan"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                onClick={() => {
+                                  setEditingCategoryBudgetId(null);
+                                  setCategoryBudgetError("");
+                                }}
+                                className="min-h-[44px] text-xs px-3"
+                              >
+                                Batal
+                              </Button>
+                            </div>
+                            {categoryBudgetError && (
+                              <p
+                                role="alert"
+                                className="text-xs font-semibold text-[var(--destructive)] sm:w-full"
+                              >
+                                {categoryBudgetError}
+                              </p>
+                            )}
+                          </form>
+                        )}
                       </div>
                     );
                   })}
@@ -923,7 +1177,7 @@ export function BudgetPage({
                     : unallocated === 0
                       ? "text-[var(--chart-income)]"
                       : unallocated > 0
-                        ? "text-sky-700 dark:text-sky-300"
+                        ? "text-slate-600 dark:text-slate-300"
                         : "text-[var(--destructive)]"
                 }`}
               >
@@ -959,7 +1213,7 @@ export function BudgetPage({
             )}
             {unallocated > 0 && (
               <div
-                className="bg-sky-400/70 dark:bg-sky-500/60 rounded-full transition-all duration-500"
+                className="bg-slate-300 dark:bg-slate-600 rounded-full transition-all duration-500"
                 style={{ width: `${Math.min(100, unallocatedPercent)}%` }}
                 title={`Belum Dialokasikan: ${unallocatedPercent}% (${formatRupiah(unallocated, isMasked)})`}
               />
@@ -1011,8 +1265,8 @@ export function BudgetPage({
             {unallocated > 0 ? (
               <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="w-2.5 h-2.5 rounded-full bg-sky-500 shrink-0" />
-                  <span className="text-sky-700 dark:text-sky-300 font-bold">
+                  <span className="w-2.5 h-2.5 rounded-full bg-slate-400 dark:bg-slate-500 shrink-0" />
+                  <span className="text-slate-600 dark:text-slate-300 font-bold">
                     Belum Dialokasikan:
                   </span>
                   <span className="font-mono font-bold text-[var(--hero-card-foreground)] tabular-nums">
@@ -1048,7 +1302,6 @@ export function BudgetPage({
         </div>
       </div>
 
-      {/* Strip Ringkasan 3 Pos Sejajar (50/30/20 Comparison) */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {summaryPillars.map((pillar) => {
           const pctUsed =
@@ -1095,30 +1348,41 @@ export function BudgetPage({
       </div>
 
       {/* Tab Filter Pos (Semua | Kebutuhan | Keinginan | Tabungan) */}
-      <div
-        role="tablist"
-        aria-label="Filter kelompok anggaran"
-        className="grid grid-cols-4 gap-1 border-b border-[var(--border)] pb-3 sm:flex sm:flex-wrap sm:items-center sm:gap-2"
-      >
-        {bucketFilterTabs.map((tabItem) => {
-          const isActive = activeBucketTab === tabItem.id;
-          return (
-            <button
-              key={tabItem.id}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              onClick={() => setActiveBucketTab(tabItem.id)}
-              className={`min-h-[42px] whitespace-nowrap rounded-[12px] px-2 text-center text-xs font-bold transition-all sm:px-4 sm:text-sm ${
-                isActive
-                  ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-sm"
-                  : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
-              }`}
-            >
-              {tabItem.label}
-            </button>
-          );
-        })}
+      <div className="flex flex-col gap-2 border-b border-[var(--border)] pb-3 sm:flex-row sm:items-center sm:justify-between">
+        <div
+          role="tablist"
+          aria-label="Filter kelompok anggaran"
+          className="grid grid-cols-4 gap-1 sm:flex sm:flex-wrap sm:items-center sm:gap-2"
+        >
+          {bucketFilterTabs.map((tabItem) => {
+            const isActive = activeBucketTab === tabItem.id;
+            return (
+              <button
+                key={tabItem.id}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => setActiveBucketTab(tabItem.id)}
+                className={`min-h-[44px] whitespace-nowrap rounded-[12px] px-2 text-center text-xs font-bold transition-all sm:px-4 sm:text-sm ${
+                  isActive
+                    ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-sm"
+                    : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
+                }`}
+              >
+                {tabItem.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <Button
+          variant="secondary"
+          disabled={copyPreviousMutation.isPending}
+          onClick={() => copyPreviousMutation.mutate()}
+          className="min-h-[44px] text-xs px-3.5 shrink-0"
+        >
+          {copyPreviousMutation.isPending ? "Menyalin..." : "Salin dari Siklus Lalu"}
+        </Button>
       </div>
 
       {formError && (

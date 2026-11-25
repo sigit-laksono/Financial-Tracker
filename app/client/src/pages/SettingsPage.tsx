@@ -52,6 +52,7 @@ export function SettingsPage({
   onReconcileWallet: _onReconcileWallet,
   onOpenWallets: _onOpenWallets,
   onAuthChanged,
+  onDataRestored,
   onToast,
 }: {
   data: DashboardDto;
@@ -61,6 +62,7 @@ export function SettingsPage({
   onReconcileWallet?: (wallet: WalletDto) => void;
   onOpenWallets?: () => void;
   onAuthChanged: () => void;
+  onDataRestored?: () => void;
   onToast: (msg: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>("security");
@@ -112,7 +114,9 @@ export function SettingsPage({
 
         {activeTab === "cycle" && <CycleBudgetTab data={data} onToast={onToast} />}
 
-        {activeTab === "backup" && <DataBackupTab data={data} onToast={onToast} />}
+        {activeTab === "backup" && (
+          <DataBackupTab data={data} onDataRestored={onDataRestored} onToast={onToast} />
+        )}
 
         {activeTab === "audit" && <AuditLogsTab />}
       </div>

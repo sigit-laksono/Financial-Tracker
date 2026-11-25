@@ -87,6 +87,11 @@ export function periodForDate(
     : gajianPeriodForDate(dateValue, gajianStartDay);
 }
 
+function clampDayForMonth(day: number, year: number, month1Based: number): number {
+  const daysInMonth = new Date(Date.UTC(year, month1Based, 0)).getUTCDate();
+  return Math.min(Math.max(1, Math.trunc(day)), daysInMonth);
+}
+
 export function periodBounds(
   period: string,
   cycle: CycleMode,
@@ -100,13 +105,19 @@ export function periodBounds(
   if (cycle === "cc") {
     const prevMonth = shiftMonth(period, -1);
     const [pYear = "1970", pMonth = "01"] = prevMonth.split("-");
-    const start = `${pYear}-${pMonth}-${String(cardCutoffDay).padStart(2, "0")}`;
-    const endDate = new Date(Date.UTC(year, month - 1, cardCutoffDay - 1));
+    const startDay = clampDayForMonth(cardCutoffDay, Number(pYear), Number(pMonth));
+    const endCutoffDay = clampDayForMonth(cardCutoffDay, year, month);
+    const start = `${pYear}-${pMonth}-${String(startDay).padStart(2, "0")}`;
+    const endDate = new Date(Date.UTC(year, month - 1, endCutoffDay - 1));
     return { start, end: endDate.toISOString().slice(0, 10) };
   }
 
-  const start = `${period}-${String(gajianStartDay).padStart(2, "0")}`;
-  const endDate = new Date(Date.UTC(year, month, gajianStartDay - 1));
+  const startDay = clampDayForMonth(gajianStartDay, year, month);
+  const nextMonth = shiftMonth(period, 1);
+  const [nYear = "1970", nMonth = "01"] = nextMonth.split("-");
+  const nextStartDay = clampDayForMonth(gajianStartDay, Number(nYear), Number(nMonth));
+  const start = `${period}-${String(startDay).padStart(2, "0")}`;
+  const endDate = new Date(Date.UTC(Number(nYear), Number(nMonth) - 1, nextStartDay - 1));
   return { start, end: endDate.toISOString().slice(0, 10) };
 }
 

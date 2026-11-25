@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type GoalDto } from "../lib/api";
+import { api, ApiError, type GoalDto, type WalletDto } from "../lib/api";
 import {
   formatCompactRupiah,
   formatDigitsInput,
   formatRupiah,
   parsePositiveInt,
 } from "../lib/format";
+import { budgetKeys } from "../lib/queryKeys";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
 import {
   AlertIcon,
@@ -342,7 +343,7 @@ function GoalFormModal({
   open: boolean;
   onClose: () => void;
   goal: GoalDto | null;
-  wallets: Array<{ id: number; name: string }>;
+  wallets: WalletDto[];
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -357,6 +358,10 @@ function GoalFormModal({
   const [error, setError] = useState("");
 
   const isEditing = Boolean(goal);
+  const liquidWallets = useMemo(
+    () => wallets.filter((w) => w.type !== "credit_card"),
+    [wallets],
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -368,7 +373,11 @@ function GoalFormModal({
       setCurrentAmount(goal.currentAmount.toLocaleString("id-ID"));
       setTargetDate(goal.targetDate ?? "");
       setIsEmergencyFund(goal.isEmergencyFund);
-      setWalletId(goal.walletId ?? undefined);
+      setWalletId(
+        goal.walletId && liquidWallets.some((w) => w.id === goal.walletId)
+          ? goal.walletId
+          : undefined,
+      );
       setNotes(goal.notes ?? "");
     } else {
       setName("");
@@ -380,12 +389,16 @@ function GoalFormModal({
       setWalletId(undefined);
       setNotes("");
     }
-  }, [goal, open]);
+  }, [goal, open, liquidWallets]);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       const parsedTarget = parsePositiveInt(targetAmount);
+      const parsedCurrent = parsePositiveInt(currentAmount);
       if (parsedTarget <= 0) throw new Error("Target nominal harus lebih dari Rp 0.");
+      if (parsedTarget > 2_147_483_647 || parsedCurrent > 2_147_483_647) {
+        throw new Error("Nominal maksimal Rp 2.147.483.647.");
+      }
       if (!name.trim()) throw new Error("Nama target tabungan wajib diisi.");
 
       if (isEditing && goal) {
@@ -393,7 +406,7 @@ function GoalFormModal({
           name: name.trim(),
           emoji,
           targetAmount: parsedTarget,
-          currentAmount: parsePositiveInt(currentAmount),
+          currentAmount: parsedCurrent,
           targetDate: targetDate.trim() || null,
           isEmergencyFund,
           walletId: walletId || null,
@@ -405,7 +418,7 @@ function GoalFormModal({
         name: name.trim(),
         emoji,
         targetAmount: parsedTarget,
-        currentAmount: parsePositiveInt(currentAmount),
+        currentAmount: parsedCurrent,
         targetDate: targetDate.trim() || null,
         isEmergencyFund,
         walletId: walletId || null,
@@ -581,7 +594,7 @@ function GoalFormModal({
               className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             >
               <option value="">Semua Dompet / Saldo Bersama</option>
-              {wallets.map((w) => (
+              {liquidWallets.map((w) => (
                 <option key={w.id} value={w.id}>
                   {w.name}
                 </option>
@@ -622,25 +635,55 @@ function ContributeModal({
   open: boolean;
   onClose: () => void;
   goal: GoalDto | null;
-  wallets: Array<{ id: number; name: string }>;
+  wallets: WalletDto[];
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const liquidWallets = useMemo(
+    () => wallets.filter((w) => w.type !== "credit_card"),
+    [wallets],
+  );
   const [amount, setAmount] = useState("");
-  const [walletId, setWalletId] = useState<number>(wallets[0]?.id ?? 1);
+  const [walletId, setWalletId] = useState<number>(liquidWallets[0]?.id ?? 0);
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setAmount("");
+    setNote("");
+    setError("");
+    const preferredWallet =
+      goal?.walletId && liquidWallets.some((w) => w.id === goal.walletId)
+        ? goal.walletId
+        : (liquidWallets[0]?.id ?? 0);
+    setWalletId(preferredWallet);
+  }, [open, goal, liquidWallets]);
+
+  const parsedAmount = parsePositiveInt(amount);
+  const selectedWallet = liquidWallets.find((w) => w.id === walletId);
+  const isOverdraft =
+    Boolean(selectedWallet) && parsedAmount > 0 && parsedAmount > (selectedWallet?.balance ?? 0);
 
   const contributeMutation = useMutation({
     mutationFn: async () => {
       if (!goal) return;
-      const parsedAmount = parsePositiveInt(amount);
       if (parsedAmount <= 0) throw new Error("Nominal setoran harus lebih dari Rp 0.");
+      if (parsedAmount > 2_147_483_647) {
+        throw new Error("Nominal setoran maksimal Rp 2.147.483.647.");
+      }
+      if (!selectedWallet) throw new Error("Pilih dompet sumber dana yang valid.");
+      if (parsedAmount > selectedWallet.balance) {
+        throw new Error(
+          `Saldo ${selectedWallet.name} tidak mencukupi (${formatRupiah(selectedWallet.balance)}).`,
+        );
+      }
 
       return api.contributeGoal(goal.id, {
         amount: parsedAmount,
-        walletId,
+        walletId: selectedWallet.id,
         note: note.trim() || undefined,
+        preventOverdraft: true,
       });
     },
     onSuccess: async () => {
@@ -648,6 +691,9 @@ function ContributeModal({
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       await queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       onSuccess(`Berhasil menyetor ${amount} ke target ${goal?.name}`);
       onClose();
     },
@@ -667,7 +713,13 @@ function ContributeModal({
           <Button variant="ghost" onClick={onClose} disabled={contributeMutation.isPending}>
             Batal
           </Button>
-          <Button type="submit" form="goal-contribute-form" disabled={contributeMutation.isPending}>
+          <Button
+            type="submit"
+            form="goal-contribute-form"
+            disabled={
+              contributeMutation.isPending || liquidWallets.length === 0 || isOverdraft
+            }
+          >
             {contributeMutation.isPending ? "Menyetor..." : "Konfirmasi Setor"}
           </Button>
         </div>
@@ -713,6 +765,11 @@ function ContributeModal({
               className="tabular-nums h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] pl-11 pr-3.5 text-sm font-bold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
             />
           </div>
+          {isOverdraft && selectedWallet && (
+            <p role="alert" className="text-xs font-semibold text-[var(--destructive)]">
+              Nominal melebihi saldo {selectedWallet.name} ({formatRupiah(selectedWallet.balance)}).
+            </p>
+          )}
         </div>
 
         <div className="space-y-1.5">
@@ -728,11 +785,15 @@ function ContributeModal({
             onChange={(e) => setWalletId(Number(e.target.value))}
             className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
           >
-            {wallets.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
+            {liquidWallets.length === 0 ? (
+              <option value={0}>Belum ada dompet likuid aktif</option>
+            ) : (
+              liquidWallets.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name} · Saldo: {formatRupiah(w.balance)}
+                </option>
+              ))
+            )}
           </select>
         </div>
 

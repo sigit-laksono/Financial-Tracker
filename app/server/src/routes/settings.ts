@@ -1,4 +1,4 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { updateSettingsSchema } from "../../../shared/src/schemas";
 import type { AppDb } from "../db";
@@ -47,6 +47,20 @@ export function createSettingsRoutes(db: AppDb) {
     const parsed = updateSettingsSchema.safeParse(body);
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? "Pengaturan tidak valid." }, 400);
+    }
+
+    if (parsed.data.defaultSalaryWalletId != null) {
+      const [salaryWallet] = await db
+        .select({ id: wallets.id, type: wallets.type })
+        .from(wallets)
+        .where(eq(wallets.id, parsed.data.defaultSalaryWalletId))
+        .limit(1);
+      if (!salaryWallet) {
+        return c.json({ error: "Dompet gaji default tidak ditemukan." }, 404);
+      }
+      if (salaryWallet.type === "credit_card") {
+        return c.json({ error: "Dompet gaji default tidak boleh berupa kartu kredit." }, 400);
+      }
     }
 
     const beforeSettings = await getSettings(db);
@@ -102,8 +116,12 @@ export function createSettingsRoutes(db: AppDb) {
   });
 
   router.get("/audit-logs", async (c) => {
-    const limit = Math.min(Math.max(1, Number(c.req.query("limit") || 50)), 100);
-    const offset = Math.max(0, Number(c.req.query("offset") || 0));
+    const limitParam = c.req.query("limit");
+    const offsetParam = c.req.query("offset");
+    const parsedLimit = limitParam && limitParam.trim() !== "" ? Number(limitParam) : Number.NaN;
+    const parsedOffset = offsetParam && offsetParam.trim() !== "" ? Number(offsetParam) : Number.NaN;
+    const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(1, Math.trunc(parsedLimit)), 200) : 50;
+    const offset = Number.isFinite(parsedOffset) ? Math.max(0, Math.trunc(parsedOffset)) : 0;
     const entityType = c.req.query("entityType")?.trim();
 
     let query = db.select().from(auditLogs);
@@ -132,7 +150,7 @@ export function createSettingsRoutes(db: AppDb) {
       body?.mode === "all" || body?.confirmation === "RESET_ALL_CONFIRMED" ? "all" : "transactions";
 
     if (mode === "all") {
-      if (body?.confirmation !== "RESET_ALL_CONFIRMED" && body?.confirmation !== "RESET_CONFIRMED") {
+      if (body?.confirmation !== "RESET_ALL_CONFIRMED") {
         return c.json(
           {
             error:
@@ -143,7 +161,6 @@ export function createSettingsRoutes(db: AppDb) {
       }
 
       await db.transaction(async (tx) => {
-        // 1. Reset appSettings (gaji, potongan, default wallet, limit kartu ke nilai awal)
         await tx
           .update(appSettings)
           .set({
@@ -152,26 +169,21 @@ export function createSettingsRoutes(db: AppDb) {
             payrollDeduction: 0,
             defaultSalaryWalletId: null,
             cardLimit: 0,
+            legacySettledBeforeCycle: null,
+            lastAutoSyncDate: null,
             updatedAt: new Date(),
           })
           .where(eq(appSettings.id, 1));
 
-        // 2. Hapus alokasi pelunasan & transaksi
         await tx.delete(settlementAllocations);
         await tx.delete(transactionSplits);
         await tx.delete(transactions);
-
-        // 3. Hapus cicilan dan akun hutang/pinjaman
         await tx.delete(installments);
         await tx.delete(debtAccounts);
-
-        // 4. Hapus anggaran, celengan target, aset & aturan berulang
         await tx.delete(budgets);
         await tx.delete(goals);
         await tx.delete(assets);
         await tx.delete(recurringRules);
-
-        // 5. Hapus biaya rutin dompet & seluruh dompet
         await tx.delete(walletRecurringFees);
         await tx.delete(wallets);
       });
@@ -201,6 +213,35 @@ export function createSettingsRoutes(db: AppDb) {
       await tx.delete(settlementAllocations);
       await tx.delete(transactionSplits);
       await tx.delete(transactions);
+
+      const splitPayAccounts = await tx
+        .select({ id: debtAccounts.id })
+        .from(debtAccounts)
+        .where(isNotNull(debtAccounts.sourceTransactionId));
+      const splitPayIds = splitPayAccounts.map((a) => a.id);
+      if (splitPayIds.length > 0) {
+        await tx.delete(installments).where(inArray(installments.accountId, splitPayIds));
+        await tx.delete(debtAccounts).where(inArray(debtAccounts.id, splitPayIds));
+      }
+
+      await tx.update(installments).set({
+        status: "upcoming",
+        actualAmount: null,
+        paidAt: null,
+        settlementTransactionId: null,
+      });
+
+      await tx.update(debtAccounts).set({
+        closedAt: null,
+        disbursedAt: null,
+      });
+
+      await tx.update(recurringRules).set({ lastPaidPeriod: null });
+
+      await tx
+        .update(appSettings)
+        .set({ lastAutoSyncDate: null, updatedAt: new Date() })
+        .where(eq(appSettings.id, 1));
     });
 
     await recordAuditLog(db, {

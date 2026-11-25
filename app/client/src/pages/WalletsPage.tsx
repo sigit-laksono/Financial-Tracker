@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type WalletDto } from "../lib/api";
 import {
+  MAX_IDR_AMOUNT,
   formatCompactRupiah,
   formatDigitsInput,
   formatRupiah,
@@ -41,6 +42,8 @@ function CreditCardRecurringFeesModal({
     await queryClient.invalidateQueries({ queryKey: ["wallet-recurring-fees", walletId] });
     await queryClient.invalidateQueries({ queryKey: ["debts"] });
     await queryClient.invalidateQueries({ queryKey: ["wallets"] });
+    await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
   };
 
   const addMutation = useMutation({
@@ -161,8 +164,13 @@ function CreditCardRecurringFeesModal({
               setFormError("Nama biaya wajib diisi.");
               return;
             }
-            if (parsePositiveInt(feeAmount) <= 0) {
+            const parsedFeeAmount = parsePositiveInt(feeAmount);
+            if (parsedFeeAmount <= 0) {
               setFormError("Nominal biaya harus lebih dari Rp0.");
+              return;
+            }
+            if (parsedFeeAmount > MAX_IDR_AMOUNT) {
+              setFormError("Nominal biaya maksimal Rp 2.147.483.647.");
               return;
             }
             setFormError("");
@@ -221,7 +229,7 @@ export function WalletsPage({
   onOpenQuickAdd,
 }: {
   onToast: (msg: string) => void;
-  onOpenQuickAdd?: (mode: "expense" | "transfer") => void;
+  onOpenQuickAdd?: (mode: "expense" | "transfer", initialWalletId?: number) => void;
 }) {
   const { isMasked } = usePrivacyMode();
   const [walletModalOpen, setWalletModalOpen] = useState(false);
@@ -401,7 +409,7 @@ export function WalletsPage({
               </div>
               {(w.cutoffDay || w.paymentDay) && (
                 <p className="text-[11px] text-[var(--muted-foreground)]">
-                  Tutup Buku {w.cutoffDay ?? "—"} | Jatuh tempo Tgl {w.paymentDay ?? "—"}
+                  Tutup Buku {w.cutoffDay ?? "-"} | Jatuh tempo Tgl {w.paymentDay ?? "-"}
                 </p>
               )}
               <div className="pt-1 flex items-center justify-between gap-2 border-t border-[var(--border)]">
@@ -416,7 +424,7 @@ export function WalletsPage({
                 {onOpenQuickAdd && (
                   <button
                     type="button"
-                    onClick={() => onOpenQuickAdd("expense")}
+                    onClick={() => onOpenQuickAdd("expense", w.id)}
                     className="inline-flex min-h-[44px] items-center px-2 text-xs font-semibold text-[var(--primary)] hover:underline"
                   >
                     Catat Belanja
@@ -425,7 +433,7 @@ export function WalletsPage({
               </div>
             </div>
           ) : (
-            <div className="pt-2 flex items-center justify-between gap-2">
+            <div className="pt-2 flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
                 onClick={() => setReconcileWallet(w)}
@@ -434,13 +442,22 @@ export function WalletsPage({
                 <span>Cocokkan Saldo</span>
               </button>
               {onOpenQuickAdd && (
-                <button
-                  type="button"
-                  onClick={() => onOpenQuickAdd("transfer")}
-                  className="inline-flex min-h-[44px] items-center px-2 text-xs font-semibold text-[var(--primary)] hover:underline"
-                >
-                  Transfer
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onOpenQuickAdd("expense", w.id)}
+                    className="inline-flex min-h-[44px] items-center px-2 text-xs font-semibold text-[var(--primary)] hover:underline"
+                  >
+                    Catat Belanja
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenQuickAdd("transfer", w.id)}
+                    className="inline-flex min-h-[44px] items-center px-2 text-xs font-semibold text-[var(--primary)] hover:underline"
+                  >
+                    Transfer
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -624,6 +641,7 @@ export function WalletsPage({
         onClose={() => setWalletModalOpen(false)}
         wallet={editingWallet}
         onSuccess={(msg) => onToast(msg)}
+        onOpenReconcile={(w) => setReconcileWallet(w)}
       />
 
       <ReconcileModal

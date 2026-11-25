@@ -8,7 +8,9 @@ import {
 import type { AppDb } from "../db";
 import { categories, recurringRules, transactions, wallets } from "../db/schema";
 import { recordAuditLog } from "../lib/auditService";
-import { jakartaToday, periodForDate } from "../lib/dates";
+import { getCreditCardLimitStatus } from "../lib/ccLimit";
+import { ccCycleForDate, jakartaToday, periodForDate } from "../lib/dates";
+import { ValidationError } from "../lib/errors";
 import { getSettings } from "../lib/settingsService";
 
 export function createRecurringRoutes(db: AppDb) {
@@ -222,6 +224,9 @@ export function createRecurringRoutes(db: AppDb) {
 
     const [rule] = await db.select().from(recurringRules).where(eq(recurringRules.id, id)).limit(1);
     if (!rule) return c.json({ error: "Aturan tagihan rutin tidak ditemukan." }, 404);
+    if (!rule.isActive) {
+      return c.json({ error: "Aturan tagihan rutin sudah dinonaktifkan." }, 400);
+    }
 
     const today = jakartaToday();
     const settings = await getSettings(db);
@@ -230,38 +235,40 @@ export function createRecurringRoutes(db: AppDb) {
       periodForDate(today, "gajian", settings.gajianStartDay, settings.cardCutoffDay);
 
     const sourceRef = `recurring-${rule.id}-${targetPeriod}`;
-
-    // Check idempotency: if already paid in this period
-    const [existingTx] = await db
-      .select({ id: transactions.id })
-      .from(transactions)
-      .where(eq(transactions.sourceRef, sourceRef))
-      .limit(1);
-
-    if (existingTx) {
-      return c.json({
-        ok: true,
-        alreadyPaid: true,
-        transactionId: existingTx.id,
-        period: targetPeriod,
-      });
-    }
-
     const payWalletId = parsed.data.walletId ?? rule.walletId;
     const [wallet] = await db.select().from(wallets).where(eq(wallets.id, payWalletId)).limit(1);
     if (!wallet) return c.json({ error: "Dompet pembayaran tidak ditemukan." }, 404);
+    if (!wallet.isActive) {
+      return c.json({ error: "Dompet pembayaran sedang tidak aktif." }, 400);
+    }
 
     const txDate = parsed.data.transactionDate ?? today;
     const payAmount = parsed.data.amount ?? rule.amount;
+    const ccCycleKey =
+      wallet.type === "credit_card"
+        ? ccCycleForDate(txDate, wallet.cutoffDay ?? settings.cardCutoffDay)
+        : null;
 
     const result = await db.transaction(async (tx) => {
-      // 1. Mark rule as paid for target period
-      await tx
-        .update(recurringRules)
-        .set({ lastPaidPeriod: targetPeriod })
-        .where(eq(recurringRules.id, id));
+      const [existingTx] = await tx
+        .select({ id: transactions.id })
+        .from(transactions)
+        .where(eq(transactions.sourceRef, sourceRef))
+        .limit(1);
 
-      // 2. Insert expense transaction
+      if (existingTx) {
+        return { alreadyPaid: true as const, transactionId: existingTx.id };
+      }
+
+      if (wallet.type === "credit_card") {
+        const limitStatus = await getCreditCardLimitStatus(tx, wallet.id);
+        if (payAmount > limitStatus.availableLimit) {
+          throw new ValidationError(
+            `Tagihan melebihi sisa limit ${limitStatus.walletName} (Sisa limit: Rp${limitStatus.availableLimit.toLocaleString("id-ID")}).`,
+          );
+        }
+      }
+
       const [insertedTx] = await tx
         .insert(transactions)
         .values({
@@ -272,14 +279,39 @@ export function createRecurringRoutes(db: AppDb) {
           category: rule.category,
           categoryId: rule.categoryId,
           walletId: wallet.id,
+          ccCycleKey,
           note: parsed.data.note?.trim() || `Pembayaran tagihan rutin periode ${targetPeriod}`,
           source: "system",
           sourceRef,
         })
+        .onConflictDoNothing({ target: transactions.sourceRef })
         .returning({ id: transactions.id });
 
-      return { transactionId: insertedTx!.id };
+      if (!insertedTx) {
+        const [conflictTx] = await tx
+          .select({ id: transactions.id })
+          .from(transactions)
+          .where(eq(transactions.sourceRef, sourceRef))
+          .limit(1);
+        return { alreadyPaid: true as const, transactionId: conflictTx!.id };
+      }
+
+      await tx
+        .update(recurringRules)
+        .set({ lastPaidPeriod: targetPeriod })
+        .where(eq(recurringRules.id, id));
+
+      return { alreadyPaid: false as const, transactionId: insertedTx.id };
     });
+
+    if (result.alreadyPaid) {
+      return c.json({
+        ok: true,
+        alreadyPaid: true,
+        transactionId: result.transactionId,
+        period: targetPeriod,
+      });
+    }
 
     return c.json(
       {

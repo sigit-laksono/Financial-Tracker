@@ -1,8 +1,24 @@
 import { describe, expect, it } from "bun:test";
-import { eq } from "drizzle-orm";
-import { installments, wallets } from "../db/schema";
+import { and, eq } from "drizzle-orm";
+import {
+  auditLogs,
+  categories,
+  debtAccounts,
+  goals,
+  installments,
+  recurringRules,
+  settlementAllocations,
+  transactionSplits,
+  transactions,
+  walletRecurringFees,
+  wallets,
+} from "../db/schema";
+import { resolveBudgetsForPeriod } from "../lib/budgetService";
+import { ensureMonthlyBankFees } from "../lib/ccBilling";
 import { buildDashboardData, buildDebtsData, generateCycleTimeline } from "../lib/dashboardQuery";
-import { computeLedgerSnapshot } from "../lib/ledgerSnapshot";
+import { ensurePayrollAutoPaid } from "../lib/debtEngine";
+import { computeLedgerSnapshot, runDailyLedgerSync } from "../lib/ledgerSnapshot";
+import { getSalaryPreview, receiveSalaryForPeriod } from "../lib/salaryService";
 import { setupTestContext } from "./testHelper";
 
 describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline Siklus", () => {
@@ -313,7 +329,7 @@ describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline S
         merchant: "Belanja Jenius",
         amount: 300_000,
         transactionDate: "2026-10-22",
-        category: "Belanja",
+        category: "Belanja Pribadi & Hobi",
         walletId: ccJenius!.id,
       }),
     });
@@ -326,7 +342,7 @@ describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline S
         merchant: "Belanja BCA",
         amount: 450_000,
         transactionDate: "2026-10-22",
-        category: "Belanja",
+        category: "Belanja Pribadi & Hobi",
         walletId: ccBca.id,
       }),
     });
@@ -410,7 +426,7 @@ describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline S
         merchant: "Belanja Supermarket",
         amount: 250_000,
         transactionDate: "2026-10-15",
-        category: "Makanan & Minuman",
+        category: "Makanan & Belanja Dapur",
         walletId: cc!.id,
       }),
     });
@@ -771,5 +787,862 @@ describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline S
         ?.actualSpent,
     ).toBe(3_582_808);
     expect(budgetSummary9.savings.spent).toBe(3_582_808);
+  }, 15_000);
+
+  it("auto-closes settled payable/receivable and payroll accounts, and auto-reopens on unsettle or transaction delete", async () => {
+    const { db, app } = await setupTestContext();
+
+    const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+    const [gopay] = await db.select().from(wallets).where(eq(wallets.key, "gopay"));
+    await app.request(`/api/wallets/${bni!.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ openingBalance: 5_000_000 }),
+    });
+    await app.request(`/api/wallets/${gopay!.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ openingBalance: 500_000 }),
+    });
+
+    // 1. Payable loan 2x500k
+    const payableRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Pinjaman Auto Close",
+        lender: "Bank A",
+        kind: "loan",
+        direction: "payable",
+        initialBalance: 1_000_000,
+        installmentCount: 2,
+        installmentAmount: 500_000,
+        firstDueDate: "2026-10-10",
+        paymentMethod: "Transfer",
+      }),
+    });
+    const { accountId: payableId } = (await payableRes.json()) as { accountId: number };
+
+    // 2. Receivable 1x300k
+    const receivableRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Piutang Auto Close",
+        lender: "Rina",
+        kind: "receivable",
+        direction: "receivable",
+        initialBalance: 300_000,
+        installmentCount: 1,
+        installmentAmount: 300_000,
+        firstDueDate: "2026-10-15",
+        paymentMethod: "Transfer",
+      }),
+    });
+    const { accountId: receivableId } = (await receivableRes.json()) as { accountId: number };
+
+    const debtsBefore = await buildDebtsData(db, "2026-10-20");
+    const payableInsts = debtsBefore.installments
+      .filter((i) => i.accountId === payableId)
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    const receivableInst = debtsBefore.installments.find((i) => i.accountId === receivableId)!;
+
+    // Settle 1st payable installment -> still open
+    const settle1Res = await app.request("/api/installments/settle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        installmentIds: [payableInsts[0]!.id],
+        fromWalletId: bni!.id,
+        paymentDate: "2026-10-10",
+      }),
+    });
+    const settle1Json = (await settle1Res.json()) as { closedAccountIds: number[] };
+    expect(settle1Json.closedAccountIds).toEqual([]);
+    const [payableAfter1] = await db
+      .select()
+      .from(debtAccounts)
+      .where(eq(debtAccounts.id, payableId));
+    expect(payableAfter1!.closedAt).toBeNull();
+
+    // Settle 2nd payable installment -> auto-closes payable account + writes audit log
+    const settle2Res = await app.request("/api/installments/settle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        installmentIds: [payableInsts[1]!.id],
+        fromWalletId: bni!.id,
+        paymentDate: "2026-10-20",
+      }),
+    });
+    const settle2Json = (await settle2Res.json()) as { closedAccountIds: number[] };
+    expect(settle2Json.closedAccountIds).toEqual([payableId]);
+    const [payableClosed] = await db
+      .select()
+      .from(debtAccounts)
+      .where(eq(debtAccounts.id, payableId));
+    expect(payableClosed!.closedAt?.toISOString()).toBe("2026-10-20T00:00:00.000Z");
+
+    const closeAudits = await db
+      .select()
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.entityType, "debt_account"),
+          eq(auditLogs.entityId, payableId),
+          eq(auditLogs.action, "auto_close_settled"),
+        ),
+      );
+    expect(closeAudits).toHaveLength(1);
+
+    // Settle receivable -> auto-closes receivable account
+    const settleRecRes = await app.request("/api/installments/settle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        installmentIds: [receivableInst.id],
+        fromWalletId: gopay!.id,
+        paymentDate: "2026-10-21",
+      }),
+    });
+    const settleRecJson = (await settleRecRes.json()) as {
+      settlementTransactionId: number;
+      closedAccountIds: number[];
+    };
+    expect(settleRecJson.closedAccountIds).toEqual([receivableId]);
+    const [recClosed] = await db
+      .select()
+      .from(debtAccounts)
+      .where(eq(debtAccounts.id, receivableId));
+    expect(recClosed!.closedAt?.toISOString()).toBe("2026-10-21T00:00:00.000Z");
+
+    // Unsettle 2nd payable installment -> auto-reopens payable account
+    const unsettleRes = await app.request(`/api/installments/${payableInsts[1]!.id}/unsettle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ removeSettlementTx: true }),
+    });
+    expect(unsettleRes.status).toBe(200);
+    const [payableReopened] = await db
+      .select()
+      .from(debtAccounts)
+      .where(eq(debtAccounts.id, payableId));
+    expect(payableReopened!.closedAt).toBeNull();
+
+    // Delete receivable collection transaction -> auto-reopens receivable account
+    const delRecTxRes = await app.request(
+      `/api/transactions/${settleRecJson.settlementTransactionId}`,
+      { method: "DELETE" },
+    );
+    expect(delRecTxRes.status).toBe(200);
+    const [recReopened] = await db
+      .select()
+      .from(debtAccounts)
+      .where(eq(debtAccounts.id, receivableId));
+    expect(recReopened!.closedAt).toBeNull();
+
+    // 3. Payroll account auto-paid & auto-closed
+    const payrollRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Potong Gaji Koperasi",
+        lender: "Koperasi Kantor",
+        kind: "payroll",
+        direction: "payable",
+        initialBalance: 1_000_000,
+        installmentCount: 2,
+        installmentAmount: 500_000,
+        firstDueDate: "2026-10-01",
+        paymentMethod: "Potong Gaji",
+      }),
+    });
+    const { accountId: payrollId } = (await payrollRes.json()) as { accountId: number };
+
+    const paidCount1 = await ensurePayrollAutoPaid(db, "2026-10-15");
+    expect(paidCount1).toBe(1);
+    const [payrollMid] = await db
+      .select()
+      .from(debtAccounts)
+      .where(eq(debtAccounts.id, payrollId));
+    expect(payrollMid!.closedAt).toBeNull();
+
+    const paidCount2 = await ensurePayrollAutoPaid(db, "2026-11-05");
+    expect(paidCount2).toBe(1);
+    const [payrollClosed] = await db
+      .select()
+      .from(debtAccounts)
+      .where(eq(debtAccounts.id, payrollId));
+    expect(payrollClosed!.closedAt?.toISOString()).toBe("2026-11-01T00:00:00.000Z");
+
+    const payrollAudits = await db
+      .select()
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.entityType, "debt_account"),
+          eq(auditLogs.entityId, payrollId),
+          eq(auditLogs.action, "auto_close_payroll"),
+        ),
+      );
+    expect(payrollAudits).toHaveLength(1);
+  });
+
+  it("DELETE /api/debts/:id keeps ledger transactions and wallet balances intact (Ledger-First)", async () => {
+    const { db, app } = await setupTestContext();
+
+    const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+    const [cc] = await db.select().from(wallets).where(eq(wallets.key, "cc-jenius"));
+    await app.request(`/api/wallets/${bni!.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ openingBalance: 2_000_000 }),
+    });
+
+    // 1. Loan with disbursement (+1jt -> 3jt) and 1 paid installment (-500k -> 2.5jt)
+    const createLoanRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Pinjaman Ledger First",
+        lender: "Bank B",
+        kind: "loan",
+        direction: "payable",
+        initialBalance: 1_000_000,
+        installmentCount: 2,
+        installmentAmount: 500_000,
+        firstDueDate: "2026-11-10",
+        paymentMethod: "Transfer",
+        disburseWalletId: bni!.id,
+        recordDisbursement: true,
+      }),
+    });
+    const { accountId: loanId } = (await createLoanRes.json()) as { accountId: number };
+
+    const loanInsts = await db
+      .select()
+      .from(installments)
+      .where(eq(installments.accountId, loanId));
+    const settleLoanRes = await app.request("/api/installments/settle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        installmentIds: [loanInsts[0]!.id],
+        fromWalletId: bni!.id,
+        paymentDate: "2026-11-10",
+      }),
+    });
+    const { settlementTransactionId: loanSettleTxId } = (await settleLoanRes.json()) as {
+      settlementTransactionId: number;
+    };
+
+    const [disburseTxBefore] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.debtAccountId, loanId));
+    expect(disburseTxBefore).toBeDefined();
+
+    let snap = await computeLedgerSnapshot(db, "2026-11-10");
+    expect(snap.wallets.find((w) => w.id === bni!.id)?.balance).toBe(2_500_000);
+
+    // Delete the loan account
+    const delLoanRes = await app.request(`/api/debts/${loanId}`, { method: "DELETE" });
+    expect(delLoanRes.status).toBe(200);
+
+    // Account and installments are gone
+    expect(await db.select().from(debtAccounts).where(eq(debtAccounts.id, loanId))).toHaveLength(0);
+    expect(await db.select().from(installments).where(eq(installments.accountId, loanId))).toHaveLength(0);
+
+    // Disbursement & settlement transactions and allocations remain intact with unlinked FKs
+    const [disburseTxAfter] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, disburseTxBefore!.id));
+    expect(disburseTxAfter).toBeDefined();
+    expect(disburseTxAfter!.debtAccountId).toBeNull();
+
+    const [settleTxAfter] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, loanSettleTxId));
+    expect(settleTxAfter).toBeDefined();
+    expect(settleTxAfter!.debtAccountId).toBeNull();
+    expect(settleTxAfter!.installmentId).toBeNull();
+
+    const allocsAfter = await db
+      .select()
+      .from(settlementAllocations)
+      .where(eq(settlementAllocations.settlementTransactionId, loanSettleTxId));
+    expect(allocsAfter).toHaveLength(1);
+    expect(allocsAfter[0]!.installmentId).toBeNull();
+    expect(allocsAfter[0]!.allocatedAmount).toBe(500_000);
+
+    // Wallet balance remains 2.500.000
+    snap = await computeLedgerSnapshot(db, "2026-11-10");
+    expect(snap.wallets.find((w) => w.id === bni!.id)?.balance).toBe(2_500_000);
+
+    // 2. Split Pay source transactions: unpaid -> reverts conversion; partially paid -> stays converted
+    const ccTx1Res = await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "expense",
+        merchant: "Split Unpaid",
+        amount: 600_000,
+        transactionDate: "2026-10-12",
+        category: "Belanja Pribadi & Hobi",
+        walletId: cc!.id,
+      }),
+    });
+    const { id: ccTx1Id } = (await ccTx1Res.json()) as { id: number };
+    const split1Res = await app.request(`/api/transactions/${ccTx1Id}/convert-to-installment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        installmentCount: 2,
+        installmentAmount: 300_000,
+        firstPeriod: "2026-11",
+      }),
+    });
+    const { accountId: split1AccountId } = (await split1Res.json()) as { accountId: number };
+
+    const delSplit1Res = await app.request(`/api/debts/${split1AccountId}`, { method: "DELETE" });
+    expect(delSplit1Res.status).toBe(200);
+    const [ccTx1After] = await db.select().from(transactions).where(eq(transactions.id, ccTx1Id));
+    expect(ccTx1After!.isConvertedToInstallment).toBe(false);
+    expect(ccTx1After!.convertedAccountId).toBeNull();
+
+    // Partially paid Split Pay
+    const ccTx2Res = await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "expense",
+        merchant: "Split Paid",
+        amount: 800_000,
+        transactionDate: "2026-10-12",
+        category: "Belanja Pribadi & Hobi",
+        walletId: cc!.id,
+      }),
+    });
+    const { id: ccTx2Id } = (await ccTx2Res.json()) as { id: number };
+    const split2Res = await app.request(`/api/transactions/${ccTx2Id}/convert-to-installment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        installmentCount: 2,
+        installmentAmount: 400_000,
+        firstPeriod: "2026-11",
+      }),
+    });
+    const { accountId: split2AccountId } = (await split2Res.json()) as { accountId: number };
+    const split2Insts = await db
+      .select()
+      .from(installments)
+      .where(eq(installments.accountId, split2AccountId));
+    await app.request("/api/installments/settle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        installmentIds: [split2Insts[0]!.id],
+        fromWalletId: bni!.id,
+        paymentDate: "2026-11-12",
+      }),
+    });
+
+    const delSplit2Res = await app.request(`/api/debts/${split2AccountId}`, { method: "DELETE" });
+    expect(delSplit2Res.status).toBe(200);
+    const [ccTx2After] = await db.select().from(transactions).where(eq(transactions.id, ccTx2Id));
+    expect(ccTx2After!.isConvertedToInstallment).toBe(true);
+    expect(ccTx2After!.convertedAccountId).toBeNull();
+  });
+
+  it("enforces recurring CC limits/idempotency, Rp 0 disabled bank fees, inactive CC exclusion, and payday salary sync integrity", async () => {
+    const { db, app } = await setupTestContext();
+    const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+    const [cc] = await db.select().from(wallets).where(eq(wallets.key, "cc-jenius"));
+
+    // 1. Disabling all walletRecurringFees gives Rp 0 fees (never falls back to DEFAULT_BANK_FEES)
+    await db
+      .update(walletRecurringFees)
+      .set({ isActive: false })
+      .where(eq(walletRecurringFees.walletId, cc!.id));
+    expect(await ensureMonthlyBankFees(db, "2026-10")).toBe(0);
+
+    // 2. Inactive CC with limitUsed === 0 is excluded from ccWallets, limits, and timelines
+    const createInactiveCc = await app.request("/api/wallets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "CC Lama", type: "credit_card", creditLimit: 50_000_000 }),
+    });
+    const { wallet: ccLama } = (await createInactiveCc.json()) as { wallet: { id: number } };
+    await app.request(`/api/wallets/${ccLama.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isActive: false }),
+    });
+    const snapInactive = await computeLedgerSnapshot(db, "2026-10-26");
+    expect(snapInactive.ccWallets.some((w) => w.id === ccLama.id)).toBe(false);
+    const debtsInactive = await buildDebtsData(db, "2026-10-26");
+    expect(debtsInactive.totals.ccLimit).toBe(20_000_000);
+
+    // Unused new card gets no lookback previous-month fees on runDailyLedgerSync
+    await runDailyLedgerSync(db, "2026-11-22", { force: true });
+    const prevFees = await db
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.walletId, cc!.id), eq(transactions.ccCycleKey, "2026-11")));
+    expect(prevFees).toHaveLength(0);
+
+    // 3. Recurring on CC sets ccCycleKey, checks limit, rejects inactive rule/wallet
+    const recRes = await app.request("/api/recurring", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        merchant: "Cloud CC",
+        amount: 500_000,
+        category: "Internet & Komunikasi",
+        walletId: cc!.id,
+        dueDay: 10,
+        isActive: true,
+      }),
+    });
+    const { rule } = (await recRes.json()) as { rule: { id: number } };
+    const payCcRes = await app.request(`/api/recurring/${rule.id}/pay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ period: "2026-10", transactionDate: "2026-10-25" }),
+    });
+    expect(payCcRes.status).toBe(201);
+    const { transactionId: recTxId } = (await payCcRes.json()) as { transactionId: number };
+    const [recTx] = await db.select().from(transactions).where(eq(transactions.id, recTxId));
+    expect(recTx!.ccCycleKey).toBe("2026-11");
+
+    // Paid on 2026-10-25 appears paid in CC cycle 2026-11 as well as gajian 2026-10
+    const ccDash = await buildDashboardData(db, { cycle: "cc", period: "2026-11", today: "2026-10-26" });
+    expect(ccDash.recurringBills!.find((r) => r.id === rule.id)?.isPaidThisCycle).toBe(true);
+
+    // Deleting recurring tx clears lastPaidPeriod
+    const delRecTx = await app.request(`/api/transactions/${recTxId}`, { method: "DELETE" });
+    expect(delRecTx.status).toBe(200);
+    const [ruleAfterDel] = await db
+      .select()
+      .from(recurringRules)
+      .where(eq(recurringRules.id, rule.id));
+    expect(ruleAfterDel!.lastPaidPeriod).toBeNull();
+
+    // Inactive rule is rejected
+    await app.request(`/api/recurring/${rule.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isActive: false }),
+    });
+    const payInactiveRes = await app.request(`/api/recurring/${rule.id}/pay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ period: "2026-10" }),
+    });
+    expect(payInactiveRes.status).toBe(400);
+
+    // 4. Salary: strictly matches gajianPeriodForDate, includes payday auto-sync rows, closes account, rejects gross <= due
+    const payrollRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Kasbon Bulanan",
+        lender: "Kantor",
+        kind: "payroll",
+        direction: "payable",
+        initialBalance: 2_000_000,
+        installmentCount: 2,
+        installmentAmount: 1_000_000,
+        firstDueDate: "2026-11-10",
+        paymentMethod: "Potong Gaji",
+      }),
+    });
+    const { accountId: payrollId } = (await payrollRes.json()) as { accountId: number };
+
+    // 2026-11-10 belongs to gajian 2026-10 (2026-10-25..2026-11-24); 2026-12-10 belongs to 2026-11
+    await ensurePayrollAutoPaid(db, "2026-11-10");
+    const preview10 = await getSalaryPreview(db, { period: "2026-10", grossSalary: 5_000_000 }, "2026-11-10");
+    expect(preview10.totalPayrollDue).toBe(1_000_000);
+    expect(preview10.payrollInstallments).toHaveLength(1);
+
+    await expect(
+      receiveSalaryForPeriod(
+        db,
+        { period: "2026-10", grossSalary: 1_000_000, walletId: bni!.id, transactionDate: "2026-10-25" },
+        "2026-11-10",
+      ),
+    ).rejects.toThrow();
+
+    await receiveSalaryForPeriod(
+      db,
+      { period: "2026-10", grossSalary: 5_000_000, walletId: bni!.id, transactionDate: "2026-10-25" },
+      "2026-11-10",
+    );
+
+    // Pay second month (2026-11) -> auto-closes payroll account
+    const sal11 = await receiveSalaryForPeriod(
+      db,
+      { period: "2026-11", grossSalary: 5_000_000, walletId: bni!.id, transactionDate: "2026-11-25" },
+      "2026-11-25",
+    );
+    expect(sal11.totalPayrollDue).toBe(1_000_000);
+    const [closedPayroll] = await db
+      .select()
+      .from(debtAccounts)
+      .where(eq(debtAccounts.id, payrollId));
+    expect(closedPayroll!.closedAt).not.toBeNull();
+  });
+
+  it("handles transaction split/transfer/CC-settled edits, fee-only & goal tx deletes, proportional debt settle/payoff, Split Pay safeguards, and budget/category integrity", async () => {
+    const { db, app } = await setupTestContext();
+    const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+    const [bca] = await db.select().from(wallets).where(eq(wallets.key, "bca"));
+    const [cc] = await db.select().from(wallets).where(eq(wallets.key, "cc-jenius"));
+    await app.request(`/api/wallets/${bni!.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ openingBalance: 30_000_000 }),
+    });
+
+    // 1. Split tx update validation & category rename propagation
+    const splitTxRes = await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "expense",
+        merchant: "Toko Split",
+        amount: 300_000,
+        transactionDate: "2026-10-26",
+        category: "Makanan & Belanja Dapur",
+        walletId: bni!.id,
+        splits: [
+          { category: "Makanan & Belanja Dapur", amount: 200_000 },
+          { category: "Jajan & Nongkrong", amount: 100_000 },
+        ],
+      }),
+    });
+    const { id: splitTxId } = (await splitTxRes.json()) as { id: number };
+
+    // Dashboard budgetBuckets uses splitsByTxId (needs: 200k, wants: 100k)
+    const dashSplits = await buildDashboardData(db, {
+      cycle: "gajian",
+      period: "2026-10",
+      today: "2026-10-27",
+    });
+    expect(dashSplits.budgetBuckets?.needs.spent).toBe(200_000);
+    expect(dashSplits.budgetBuckets?.wants.spent).toBe(100_000);
+
+    // Changing amount without splits -> 400
+    const badAmountRes = await app.request(`/api/transactions/${splitTxId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount: 350_000 }),
+    });
+    expect(badAmountRes.status).toBe(400);
+
+    // Changing type to transfer -> 400
+    const badTypeRes = await app.request(`/api/transactions/${splitTxId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "transfer" }),
+    });
+    expect(badTypeRes.status).toBe(400);
+
+    // Renaming category updates transactionSplits too
+    const [jajanCat] = await db
+      .select()
+      .from(categories)
+      .where(and(eq(categories.name, "Jajan & Nongkrong"), eq(categories.type, "expense")));
+    await app.request(`/api/categories/${jajanCat!.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Kopi & Camilan" }),
+    });
+    const updatedSplits = await db
+      .select()
+      .from(transactionSplits)
+      .where(eq(transactionSplits.transactionId, splitTxId));
+    expect(updatedSplits.some((s) => s.category === "Kopi & Camilan")).toBe(true);
+
+    // Changing category without splits deletes orphaned splits
+    await app.request(`/api/transactions/${splitTxId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: "Transportasi & Bensin" }),
+    });
+    expect(
+      await db.select().from(transactionSplits).where(eq(transactionSplits.transactionId, splitTxId)),
+    ).toHaveLength(0);
+
+    // 2. Deleting a transfer fee row deletes ONLY the fee row, and adding adminFee to ungrouped transfer creates group
+    const transferRes = await app.request("/api/transactions/transfer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fromWalletId: bni!.id,
+        toWalletId: bca!.id,
+        amount: 500_000,
+        adminFee: 6_500,
+        transactionDate: "2026-10-26",
+      }),
+    });
+    const { transferId, feeTransactionId } = (await transferRes.json()) as {
+      transferId: number;
+      feeTransactionId: number;
+    };
+    const delFeeOnly = await app.request(`/api/transactions/${feeTransactionId}`, {
+      method: "DELETE",
+    });
+    expect(delFeeOnly.status).toBe(200);
+    const [transferStillThere] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, transferId));
+    expect(transferStillThere).toBeDefined();
+
+    // 3. Deleting a goal:* transfer decrements goal.currentAmount
+    const [goal] = await db
+      .insert(goals)
+      .values({
+        name: "Dana Liburan",
+        targetAmount: 2_000_000,
+        currentAmount: 500_000,
+        walletId: bca!.id,
+      })
+      .returning();
+    const [goalTx] = await db
+      .insert(transactions)
+      .values({
+        type: "transfer",
+        merchant: "Setor Target: Dana Liburan",
+        amount: 500_000,
+        transactionDate: "2026-10-26",
+        category: "Tabungan",
+        walletId: bni!.id,
+        toWalletId: bca!.id,
+        source: "manual",
+        sourceRef: `goal:${goal!.id}:123456:abc`,
+      })
+      .returning();
+    await app.request(`/api/transactions/${goalTx!.id}`, { method: "DELETE" });
+    const [goalAfter] = await db.select().from(goals).where(eq(goals.id, goal!.id));
+    expect(goalAfter!.currentAmount).toBe(0);
+
+    // 4. Editing settled CC expense succeeds when limit doesn't increase, and Split Pay rejects settled cycle
+    const ccSettledTxRes = await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "expense",
+        merchant: "Belanja Lunas",
+        amount: 6_000_000,
+        transactionDate: "2026-09-10",
+        category: "Belanja Pribadi & Hobi",
+        walletId: cc!.id,
+      }),
+    });
+    const { id: ccSettledTxId } = (await ccSettledTxRes.json()) as { id: number };
+    await app.request("/api/installments/settle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ccWalletId: cc!.id,
+        ccCycleKey: "2026-09",
+        fromWalletId: bni!.id,
+        paymentDate: "2026-09-25",
+      }),
+    });
+    // Use up most of CC limit in 2026-10 (17M used -> 3M available)
+    await app.request("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "expense",
+        merchant: "Belanja Besar",
+        amount: 17_000_000,
+        transactionDate: "2026-10-10",
+        category: "Belanja Pribadi & Hobi",
+        walletId: cc!.id,
+      }),
+    });
+    // Editing note or reducing amount on settled 6M tx must succeed despite 3M available
+    const patchSettledOk = await app.request(`/api/transactions/${ccSettledTxId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ merchant: "Belanja Lunas Edit", amount: 5_500_000 }),
+    });
+    expect(patchSettledOk.status).toBe(200);
+    // Split Pay on settled 2026-09 cycle must be rejected
+    const splitSettledRes = await app.request(
+      `/api/transactions/${ccSettledTxId}/convert-to-installment`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          installmentCount: 2,
+          installmentAmount: 2_750_000,
+          firstPeriod: "2026-11",
+        }),
+      },
+    );
+    expect(splitSettledRes.status).toBe(400);
+
+    // 5. Early payoff with customAmount allocates proportionally so unsettle never over-deducts
+    const debtRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Cicilan Diskon",
+        lender: "Bank Z",
+        kind: "loan",
+        direction: "payable",
+        initialBalance: 1_500_000,
+        installmentCount: 3,
+        installmentAmount: 500_000,
+        firstDueDate: "2026-11-10",
+        paymentMethod: "Transfer",
+      }),
+    });
+    const { accountId: discId } = (await debtRes.json()) as { accountId: number };
+    const payoffDiscRes = await app.request(`/api/debts/${discId}/payoff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fromWalletId: bni!.id,
+        paymentDate: "2026-10-28",
+        customAmount: 1_200_000,
+      }),
+    });
+    expect(payoffDiscRes.status).toBe(200);
+    const { settlementTransactionId: payoffTxId } = (await payoffDiscRes.json()) as {
+      settlementTransactionId: number;
+    };
+    const payoffAllocs = await db
+      .select()
+      .from(settlementAllocations)
+      .where(eq(settlementAllocations.settlementTransactionId, payoffTxId));
+    const sumAllocs = payoffAllocs.reduce((s, a) => s + a.allocatedAmount, 0);
+    expect(sumAllocs).toBe(1_200_000);
+
+    const discInsts = await db
+      .select()
+      .from(installments)
+      .where(eq(installments.accountId, discId));
+    await app.request(`/api/installments/${discInsts[0]!.id}/unsettle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ removeSettlementTx: true }),
+    });
+    const [txAfterUnsettle] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, payoffTxId));
+    expect(txAfterUnsettle!.amount).toBe(800_000);
+
+    // 6. Rejects credit_card disburseWalletId & mixing receivable + ccCycleKey; interest-bearing loan keeps last installment open
+    const ccDisburseRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Invalid CC Disburse",
+        lender: "Bank",
+        kind: "loan",
+        initialBalance: 500_000,
+        installmentCount: 1,
+        installmentAmount: 500_000,
+        firstDueDate: "2026-11-10",
+        paymentMethod: "Transfer",
+        disburseWalletId: cc!.id,
+        recordDisbursement: true,
+      }),
+    });
+    expect(ccDisburseRes.status).toBe(400);
+
+    const interestLoanRes = await app.request("/api/debts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Pinjaman Berbunga",
+        lender: "KTA",
+        kind: "loan",
+        initialBalance: 2_000_000,
+        installmentCount: 3,
+        installmentAmount: 800_000,
+        firstDueDate: "2026-11-10",
+        paymentMethod: "Transfer",
+      }),
+    });
+    const { accountId: intLoanId } = (await interestLoanRes.json()) as { accountId: number };
+    const intInsts = await db
+      .select()
+      .from(installments)
+      .where(eq(installments.accountId, intLoanId));
+    await app.request("/api/installments/settle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        installmentIds: [intInsts[0]!.id, intInsts[1]!.id, intInsts[2]!.id],
+        fromWalletId: bni!.id,
+        paymentDate: "2026-11-10",
+        customAmount: 2_400_000,
+      }),
+    });
+    // Paid 2.4M covers full scheduled 3x800k -> closes cleanly; check before 3rd wasn't hidden
+    const [closedIntLoan] = await db
+      .select()
+      .from(debtAccounts)
+      .where(eq(debtAccounts.id, intLoanId));
+    expect(closedIntLoan!.closedAt).not.toBeNull();
+
+    // 7. Budgets: reject phantom category (400), include archived category with spend, and bound daysRemaining
+    const phantomBudget = await app.request("/api/budgets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: "Kategori Hantu", period: "2026-10", limitAmount: 100_000 }),
+    });
+    expect(phantomBudget.status).toBe(400);
+
+    const pastBudget = resolveBudgetsForPeriod(
+      [
+        {
+          id: 1,
+          category: "Makanan & Belanja Dapur",
+          categoryId: null,
+          period: "2026-09",
+          limitAmount: 1_000_000,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      "2026-09",
+      new Map([["Makanan & Belanja Dapur", 200_000]]),
+      "2026-10-24",
+      "2026-11-01",
+      "2026-09-25",
+    );
+    expect(pastBudget[0]!.dailyAllowanceRemaining).toBe(0);
+
+    const futureBudget = resolveBudgetsForPeriod(
+      [
+        {
+          id: 2,
+          category: "Makanan & Belanja Dapur",
+          categoryId: null,
+          period: "2026-12",
+          limitAmount: 310_000,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      "2026-12",
+      new Map(),
+      "2027-01-24",
+      "2026-10-01",
+      "2026-12-25",
+    );
+    expect(futureBudget[0]!.dailyAllowanceRemaining).toBe(10_000);
   });
 });

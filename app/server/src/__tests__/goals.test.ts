@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
-import { wallets } from "../db/schema";
+import { MAX_PG_INT } from "../../../shared/src/schemas";
+import { auditLogs, budgets, goals, transactions, wallets } from "../db/schema";
 import { computeWalletBalance } from "../lib/cashLedger";
+import { jakartaToday } from "../lib/dates";
 import { setupTestContext } from "./testHelper";
 
 describe("Milestone 10: Goals & Emergency Fund Runway", () => {
@@ -88,7 +90,7 @@ describe("Milestone 10: Goals & Emergency Fund Runway", () => {
     expect(bodyAfterDelete.goals).toHaveLength(0);
   });
 
-  it("calculates budget 50/30/20 summary and category allocations", async () => {
+  it("calculates custom budget bucket summary and category allocations", async () => {
     const { app } = await setupTestContext();
 
     const res = await app.request("/api/budgets/summary");
@@ -99,9 +101,11 @@ describe("Milestone 10: Goals & Emergency Fund Runway", () => {
     expect(body.needs).toBeDefined();
     expect(body.wants).toBeDefined();
     expect(body.savings).toBeDefined();
-    expect(body.needs.idealPercent).toBe(50);
-    expect(body.wants.idealPercent).toBe(30);
-    expect(body.savings.idealPercent).toBe(20);
+    expect(body.needs.idealPercent).toBeUndefined();
+    expect(body.wants.idealPercent).toBeUndefined();
+    expect(body.savings.idealPercent).toBeUndefined();
+    expect(body.needs.allocationSource).toBe("none");
+    expect(body.needs.categoryAllocatedTotal).toBe(0);
     expect(Array.isArray(body.needs.categories)).toBe(true);
     expect(Array.isArray(body.wants.categories)).toBe(true);
     expect(Array.isArray(body.savings.categories)).toBe(true);
@@ -115,7 +119,7 @@ describe("Milestone 10: Goals & Emergency Fund Runway", () => {
     }
   });
 
-  it("supports creating, updating, and deleting custom 50/30/20 categories dynamically", async () => {
+  it("supports creating, updating, and deleting custom budget categories dynamically", async () => {
     const { app } = await setupTestContext();
 
     // 1. Create a custom category in "wants"
@@ -327,5 +331,355 @@ describe("Milestone 10: Goals & Emergency Fund Runway", () => {
     ).json();
     expect(afterIncomeSummary.totalLiquidCash).toBe(6_300_000);
     expect(afterIncomeSummary.unallocated).toBe(1_500_000);
+  });
+
+  it("supports bottom-up category summation, clears default fallback on zeroing, and enforces manual ceiling", async () => {
+    const { app } = await setupTestContext();
+
+    const targetPeriod = "2026-11";
+    const catsRes = await app.request("/api/categories");
+    const { categories: catList } = (await catsRes.json()) as {
+      categories: Array<{ id: number; name: string; type: string; bucket: string }>;
+    };
+    const needsCats = catList.filter((c) => c.type === "expense" && c.bucket === "needs");
+    expect(needsCats.length).toBeGreaterThanOrEqual(2);
+
+    // 1. Set one category in "default" and another in targetPeriod -> both sum bottom-up
+    const catA = needsCats[0]!;
+    const catB = needsCats[1]!;
+
+    await app.request(`/api/categories/${catA.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ budgetLimit: 1_000_000, period: "default" }),
+    });
+    await app.request(`/api/categories/${catB.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ budgetLimit: 500_000, period: targetPeriod }),
+    });
+
+    const summary1 = await (
+      await app.request(`/api/budgets/summary?period=${targetPeriod}`)
+    ).json();
+    expect(summary1.needs.categoryAllocatedTotal).toBe(1_500_000);
+    expect(summary1.needs.allocated).toBe(1_500_000);
+    expect(summary1.needs.allocationSource).toBe("categories");
+
+    // 2. Clear catA budgetLimit to 0 -> must also remove "default" fallback
+    await app.request(`/api/categories/${catA.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ budgetLimit: 0, period: targetPeriod }),
+    });
+
+    const summary2 = await (
+      await app.request(`/api/budgets/summary?period=${targetPeriod}`)
+    ).json();
+    expect(summary2.needs.categoryAllocatedTotal).toBe(500_000);
+    expect(summary2.needs.allocated).toBe(500_000);
+    expect(summary2.needs.allocationSource).toBe("categories");
+
+    // 3. Set manual bucket:needs above subAllocated -> uses manual limit
+    await app.request("/api/budgets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: "bucket:needs", period: targetPeriod, limitAmount: 2_000_000 }),
+    });
+    const summary3 = await (
+      await app.request(`/api/budgets/summary?period=${targetPeriod}`)
+    ).json();
+    expect(summary3.needs.allocated).toBe(2_000_000);
+    expect(summary3.needs.categoryAllocatedTotal).toBe(500_000);
+    expect(summary3.needs.allocationSource).toBe("manual");
+
+    // 4. Set manual bucket:needs below subAllocated -> Math.max keeps subAllocated
+    await app.request("/api/budgets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: "bucket:needs", period: targetPeriod, limitAmount: 300_000 }),
+    });
+    const summary4 = await (
+      await app.request(`/api/budgets/summary?period=${targetPeriod}`)
+    ).json();
+    expect(summary4.needs.allocated).toBe(500_000);
+    expect(summary4.needs.allocationSource).toBe("manual");
+  });
+
+  it("prioritizes selectedPeriod over default and includes subAllocated in dashboard budgetBuckets", async () => {
+    const { db, app } = await setupTestContext();
+    const targetPeriod = "2026-11";
+
+    // Insert "default" first so a naive .find() would pick it over targetPeriod
+    await db.insert(budgets).values([
+      { category: "bucket:needs", period: "default", limitAmount: 1_000_000 },
+      { category: "bucket:needs", period: targetPeriod, limitAmount: 2_500_000 },
+    ]);
+
+    // Set a "wants" category budget without setting bucket:wants
+    const catsRes = await app.request("/api/categories");
+    const { categories: catList } = (await catsRes.json()) as {
+      categories: Array<{ id: number; name: string; type: string; bucket: string }>;
+    };
+    const wantsCat = catList.find((c) => c.type === "expense" && c.bucket === "wants");
+    expect(wantsCat).toBeDefined();
+    await app.request("/api/budgets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: wantsCat!.name, period: targetPeriod, limitAmount: 750_000 }),
+    });
+
+    const dashRes = await app.request(`/api/dashboard?cycle=gajian&period=${targetPeriod}`);
+    expect(dashRes.status).toBe(200);
+    const dash = await dashRes.json();
+
+    expect(dash.budget503020).toBeUndefined();
+    expect(dash.budgetBuckets.needs.limit).toBe(2_500_000);
+    expect(dash.budgetBuckets.needs.isConfigured).toBe(true);
+    expect(dash.budgetBuckets.wants.limit).toBe(750_000);
+    expect(dash.budgetBuckets.wants.isConfigured).toBe(true);
+  });
+
+  it("copies previous cycle category budgets without overwriting existing targets or copying bucket rows", async () => {
+    const { app } = await setupTestContext();
+
+    // Seed 2026-10 with two category budgets and a bucket:needs row
+    await app.request("/api/budgets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        category: "Makanan & Belanja Dapur",
+        period: "2026-10",
+        limitAmount: 1_200_000,
+      }),
+    });
+    await app.request("/api/budgets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        category: "Transportasi & Bensin",
+        period: "2026-10",
+        limitAmount: 600_000,
+      }),
+    });
+    await app.request("/api/budgets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        category: "bucket:needs",
+        period: "2026-10",
+        limitAmount: 3_000_000,
+      }),
+    });
+
+    // Pre-existing budget in 2026-11 for Makanan & Belanja Dapur must not be overwritten
+    await app.request("/api/budgets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        category: "Makanan & Belanja Dapur",
+        period: "2026-11",
+        limitAmount: 1_800_000,
+      }),
+    });
+
+    const copyRes = await app.request("/api/budgets/copy-previous", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetPeriod: "2026-11" }),
+    });
+    expect(copyRes.status).toBe(200);
+    const copyBody = (await copyRes.json()) as { ok: boolean; copiedCount: number };
+    expect(copyBody.ok).toBe(true);
+    expect(copyBody.copiedCount).toBe(1);
+
+    const summary = await (await app.request("/api/budgets/summary?period=2026-11")).json();
+    const makanan = summary.needs.categories.find(
+      (c: { categoryName: string }) => c.categoryName === "Makanan & Belanja Dapur",
+    );
+    const transport = summary.needs.categories.find(
+      (c: { categoryName: string }) => c.categoryName === "Transportasi & Bensin",
+    );
+    expect(makanan.budgetLimit).toBe(1_800_000);
+    expect(transport.budgetLimit).toBe(600_000);
+    expect(summary.needs.allocationSource).toBe("categories");
+  });
+
+  it("earmarks same-wallet/unlinked goal contributions without expense outflow and validates target wallets/dates", async () => {
+    const { db, app, cleanup } = await setupTestContext();
+    try {
+      const walletRows = await db.select().from(wallets);
+      const bca = walletRows.find((w) => w.key === "bca")!;
+      const cc = walletRows.find((w) => w.key === "cc-jenius")!;
+
+      await db.update(wallets).set({ openingBalance: 3_000_000 }).where(eq(wallets.id, bca.id));
+
+      // Reject invalid targetDate, credit_card walletId, and > MAX_PG_INT amount
+      expect(
+        (
+          await app.request("/api/goals", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "Bad Date",
+              targetAmount: 1_000_000,
+              targetDate: "2026-02-30",
+            }),
+          })
+        ).status,
+      ).toBe(400);
+
+      expect(
+        (
+          await app.request("/api/goals", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "CC Goal",
+              targetAmount: 1_000_000,
+              walletId: cc.id,
+            }),
+          })
+        ).status,
+      ).toBe(400);
+
+      expect(
+        (
+          await app.request("/api/goals", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "Overflow Goal",
+              targetAmount: MAX_PG_INT + 1,
+            }),
+          })
+        ).status,
+      ).toBe(400);
+
+      // Unlinked goal contribution earmarks without inserting an expense transaction
+      const createRes = await app.request("/api/goals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Dana Liburan",
+          targetAmount: 10_000_000,
+          targetDate: "2027-06-01",
+        }),
+      });
+      expect(createRes.status).toBe(201);
+      const { goal } = (await createRes.json()) as { goal: { id: number } };
+
+      const overdraftRes = await app.request(`/api/goals/${goal.id}/contribute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: 4_000_000,
+          walletId: bca.id,
+          preventOverdraft: true,
+        }),
+      });
+      expect(overdraftRes.status).toBe(400);
+
+      const earmarkRes = await app.request(`/api/goals/${goal.id}/contribute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: 1_500_000,
+          walletId: bca.id,
+          preventOverdraft: true,
+          note: "Sisihkan di BCA",
+        }),
+      });
+      expect(earmarkRes.status).toBe(200);
+      const earmarkBody = (await earmarkRes.json()) as {
+        ok: boolean;
+        transactionId: number | null;
+        goal: { currentAmount: number };
+      };
+      expect(earmarkBody.transactionId).toBeNull();
+      expect(earmarkBody.goal.currentAmount).toBe(1_500_000);
+
+      // Cash balance in BCA remains 3.000.000 (no phantom expense outflow)
+      expect(await computeWalletBalance(db, bca.id, 3_000_000)).toBe(3_000_000);
+      expect(await db.select().from(transactions)).toHaveLength(0);
+
+      const earmarkLogs = await db
+        .select()
+        .from(auditLogs)
+        .where(eq(auditLogs.action, "goal_contribute_earmark"));
+      expect(earmarkLogs).toHaveLength(1);
+
+      // Legacy goal with credit_card walletId is rejected on contribute
+      const [legacyCcGoal] = await db
+        .insert(goals)
+        .values({ name: "Legacy CC", targetAmount: 1_000_000, walletId: cc.id })
+        .returning();
+      const ccTargetRes = await app.request(`/api/goals/${legacyCcGoal!.id}/contribute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: 100_000, walletId: bca.id }),
+      });
+      expect(ccTargetRes.status).toBe(400);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("uses live savings wallet cash for emergency fund fallback and aggregates split needs expenses", async () => {
+    const { db, app, cleanup } = await setupTestContext();
+    try {
+      const today = jakartaToday();
+      const walletRows = await db.select().from(wallets);
+      const bca = walletRows.find((w) => w.key === "bca")!;
+      const bni = walletRows.find((w) => w.key === "bni")!;
+
+      await db.update(wallets).set({ openingBalance: 10_000_000 }).where(eq(wallets.id, bca.id));
+      await db
+        .update(wallets)
+        .set({ role: "savings", openingBalance: 0 })
+        .where(eq(wallets.id, bni.id));
+
+      // Transfer 6jt from BCA to savings wallet BNI (openingBalance is still 0, live cash is 6jt)
+      const transferRes = await app.request("/api/transactions/transfer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fromWalletId: bca.id,
+          toWalletId: bni.id,
+          amount: 6_000_000,
+          transactionDate: today,
+        }),
+      });
+      expect(transferRes.status).toBe(201);
+
+      // Record split expense: 2.100.000 needs + 900.000 wants (burn rate = 2.100.000 / 3 = 700.000)
+      const splitRes = await app.request("/api/transactions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "expense",
+          merchant: "Supermarket",
+          amount: 3_000_000,
+          transactionDate: today,
+          category: "Jajan & Nongkrong",
+          walletId: bca.id,
+          splits: [
+            { category: "Makanan & Belanja Dapur", amount: 2_100_000 },
+            { category: "Jajan & Nongkrong", amount: 900_000 },
+          ],
+        }),
+      });
+      expect(splitRes.status).toBe(201);
+
+      const goalsRes = await app.request("/api/goals");
+      expect(goalsRes.status).toBe(200);
+      const body = (await goalsRes.json()) as {
+        emergencyFund: { totalEmergencyFunds: number; monthlyNeedsBurnRate: number };
+      };
+      expect(body.emergencyFund.totalEmergencyFunds).toBe(6_000_000);
+      expect(body.emergencyFund.monthlyNeedsBurnRate).toBe(700_000);
+    } finally {
+      await cleanup();
+    }
   });
 });

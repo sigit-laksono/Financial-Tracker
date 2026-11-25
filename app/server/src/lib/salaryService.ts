@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { AppDb } from "../db";
 import {
   categories,
@@ -10,6 +10,7 @@ import {
 } from "../db/schema";
 import { recordAuditLog } from "./auditService";
 import { gajianPeriodForDate, jakartaToday, periodBounds } from "./dates";
+import { closeAccountsIfFullyPaid, filterActiveInstallmentIds } from "./debtEngine";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
 import { getSettings } from "./settingsService";
 
@@ -68,18 +69,25 @@ export async function getSalaryPreview(
       .select()
       .from(installments)
       .where(inArray(installments.accountId, payrollAccountIds));
+    const activeIds = filterActiveInstallmentIds(payrollAccounts, allPayrollInstallments);
 
     upcomingPayrollInstallments = allPayrollInstallments
-      .filter(
-        (inst) =>
-          inst.status === "upcoming" &&
-          (inst.period === targetPeriod ||
-            (inst.dueDate >= gajianBounds.start && inst.dueDate <= gajianBounds.end)),
-      )
+      .filter((inst) => {
+        if (!activeIds.has(inst.id)) return false;
+        const acc = payrollAccountMap.get(inst.accountId);
+        if (!acc) return false;
+        const instPeriod = gajianPeriodForDate(inst.dueDate, settings.gajianStartDay);
+        if (instPeriod !== targetPeriod) return false;
+        // Include rows auto-marked paid by payday sync (settlementTransactionId === null) so deductions are not skipped.
+        const isUnsettledUpcoming = inst.status === "upcoming" && acc.closedAt == null;
+        const isAutoSyncedUnlinked = inst.status === "paid" && inst.settlementTransactionId === null;
+        return isUnsettledUpcoming || isAutoSyncedUnlinked;
+      })
       .map((inst) => {
         const acc = payrollAccountMap.get(inst.accountId);
         return {
           ...inst,
+          plannedAmount: inst.actualAmount ?? inst.plannedAmount,
           accountName: acc?.name ?? "Utang Kantor",
           lender: acc?.lender ?? "Kantor",
         };
@@ -132,6 +140,11 @@ export async function receiveSalaryForPeriod(
   if (grossSalary <= 0) {
     throw new ValidationError("Gaji kotor harus lebih dari 0.");
   }
+  if (grossSalary <= preview.totalPayrollDue) {
+    throw new ValidationError(
+      `Gaji kotor (Rp${grossSalary.toLocaleString("id-ID")}) harus lebih besar dari total potongan cicilan kantor (Rp${preview.totalPayrollDue.toLocaleString("id-ID")}).`,
+    );
+  }
 
   const targetWalletId = input.walletId ?? preview.targetWalletId;
   if (!targetWalletId) {
@@ -152,7 +165,7 @@ export async function receiveSalaryForPeriod(
   }
 
   const transactionDate = input.transactionDate ?? preview.periodStart;
-  const netSalary = Math.max(0, grossSalary - preview.totalPayrollDue);
+  const netSalary = grossSalary - preview.totalPayrollDue;
   const sourceRef = `salary-${preview.period}`;
 
   const catRows = await db
@@ -182,10 +195,11 @@ export async function receiveSalaryForPeriod(
         sourceRef,
         note,
       })
+      .onConflictDoNothing({ target: transactions.sourceRef })
       .returning();
 
     if (!inserted) {
-      throw new Error("Gagal membuat transaksi penerimaan gaji.");
+      throw new ConflictError(`Gaji untuk periode ${preview.period} sudah dicatat.`);
     }
 
     for (const inst of preview.payrollInstallments) {
@@ -194,7 +208,7 @@ export async function receiveSalaryForPeriod(
         .set({
           status: "paid",
           actualAmount: inst.plannedAmount,
-          paidAt: new Date(),
+          paidAt: sql`COALESCE(${installments.paidAt}, NOW())`,
           settlementTransactionId: inserted.id,
         })
         .where(eq(installments.id, inst.id));
@@ -208,6 +222,20 @@ export async function receiveSalaryForPeriod(
           allocatedAmount: inst.plannedAmount,
         });
     }
+
+    const affectedAccountIds = [...new Set(preview.payrollInstallments.map((i) => i.accountId))];
+    await closeAccountsIfFullyPaid(tx, affectedAccountIds, {
+      action: "auto_close_payroll",
+      resolveClosedAt: (paidRows) => {
+        let latestPaidAt: Date | null = null;
+        for (const row of paidRows) {
+          if (row.paidAt && (!latestPaidAt || row.paidAt > latestPaidAt)) {
+            latestPaidAt = row.paidAt;
+          }
+        }
+        return latestPaidAt ?? new Date(`${transactionDate}T00:00:00.000Z`);
+      },
+    });
 
     await recordAuditLog(tx, {
       entityType: "salary",

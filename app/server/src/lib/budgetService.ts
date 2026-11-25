@@ -7,6 +7,7 @@ export function resolveBudgetsForPeriod(
   spentByCategory: Map<string, number>,
   periodEnd: string,
   today: string,
+  periodStart?: string,
 ): BudgetItemDto[] {
   const defaultMap = new Map<string, typeof budgets.$inferSelect>();
   const overrideMap = new Map<string, typeof budgets.$inferSelect>();
@@ -18,7 +19,16 @@ export function resolveBudgetsForPeriod(
   const allCats = new Set([...defaultMap.keys(), ...overrideMap.keys()]);
   const endMs = new Date(`${periodEnd}T00:00:00Z`).getTime();
   const todayMs = new Date(`${today}T00:00:00Z`).getTime();
-  const daysRemaining = Math.max(1, Math.floor((endMs - todayMs) / 86_400_000) + 1);
+
+  let daysRemaining: number;
+  if (today > periodEnd) {
+    daysRemaining = 0;
+  } else if (periodStart && today < periodStart) {
+    const startMs = new Date(`${periodStart}T00:00:00Z`).getTime();
+    daysRemaining = Math.max(1, Math.floor((endMs - startMs) / 86_400_000) + 1);
+  } else {
+    daysRemaining = Math.max(1, Math.floor((endMs - todayMs) / 86_400_000) + 1);
+  }
 
   return [...allCats]
     .map((category): BudgetItemDto | null => {
@@ -47,7 +57,7 @@ export function resolveBudgetsForPeriod(
         remainingAmount,
         percentUsed,
         dailyAllowanceRemaining:
-          remainingAmount > 0 ? Math.floor(remainingAmount / daysRemaining) : 0,
+          daysRemaining > 0 && remainingAmount > 0 ? Math.floor(remainingAmount / daysRemaining) : 0,
         status,
       };
     })

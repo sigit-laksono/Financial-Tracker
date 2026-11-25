@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { asc, eq } from "drizzle-orm";
+import { periodBounds } from "../../../shared/src/dates";
+import { MAX_PG_INT } from "../../../shared/src/schemas";
 import {
   appSettings,
   assets,
@@ -16,7 +18,7 @@ import {
   walletRecurringFees,
   wallets,
 } from "../db/schema";
-import { signSessionToken } from "../lib/auth";
+import { clientRateKey, LoginRateLimiter, signSessionToken } from "../lib/auth";
 import { createDebtAccountWithSchedule } from "../lib/ledger";
 import { setupTestContext } from "./testHelper";
 
@@ -396,6 +398,418 @@ describe("Export & Import Full Snapshot (v2)", () => {
       const walletsAfterFail = await ctx.db.select().from(wallets);
       expect(walletsAfterFail.length).toBeGreaterThan(0);
     } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it("preserves null creditLimit on export and validates unconstrained IDs and cycle day bounds on import", async () => {
+    const ctx = await setupTestContext();
+    try {
+      await ctx.db
+        .update(wallets)
+        .set({ creditLimit: null })
+        .where(eq(wallets.key, "cc-jenius"));
+
+      await ctx.app.request("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cardLimit: 15_000_000 }),
+      });
+
+      const exportRes = await ctx.app.request("/api/export?format=json&period=all");
+      expect(exportRes.status).toBe(200);
+      const validSnap = (await exportRes.json()) as {
+        wallets: Array<Record<string, unknown>>;
+        accounts: Array<Record<string, unknown>>;
+        installments: Array<Record<string, unknown>>;
+        transactions: Array<Record<string, unknown>>;
+      };
+
+      // cc-jenius has creditLimit: null in DB; export must not overwrite it with settings.cardLimit
+      const ccExport = validSnap.wallets.find((w) => w.key === "cc-jenius");
+      expect(ccExport).toBeDefined();
+      expect(ccExport!.creditLimit).toBeNull();
+      expect(ccExport!.balance).toBeUndefined();
+
+      // Reject invalid cycle day bounds in backupWalletRowSchema
+      const badDaySnap = {
+        ...validSnap,
+        wallets: validSnap.wallets.map((w, idx) => (idx === 0 ? { ...w, cutoffDay: 30 } : w)),
+      };
+      const badDayRes = await ctx.app.request("/api/export/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: "IMPORT_CONFIRMED", snapshot: badDaySnap }),
+      });
+      expect(badDayRes.status).toBe(400);
+
+      // Reject broken unconstrained ID references
+      const bni = validSnap.wallets.find((w) => w.key === "bni")!;
+      const brokenTxRefSnap = {
+        ...validSnap,
+        transactions: [
+          {
+            id: 100,
+            type: "expense",
+            merchant: "Broken Ref",
+            amount: 50_000,
+            transactionDate: "2026-11-10",
+            category: "Makanan & Belanja Dapur",
+            walletId: bni.id,
+            convertedAccountId: 99999,
+          },
+        ],
+      };
+      const brokenTxRes = await ctx.app.request("/api/export/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: "IMPORT_CONFIRMED", snapshot: brokenTxRefSnap }),
+      });
+      expect(brokenTxRes.status).toBe(400);
+
+      const brokenAccSourceSnap = {
+        ...validSnap,
+        accounts: [
+          {
+            id: 1,
+            key: "split-1",
+            name: "Split",
+            lender: "CC",
+            kind: "card_installment",
+            direction: "payable",
+            initialBalance: 100_000,
+            paymentMethod: "CC",
+            color: "#00797a",
+            sourceTransactionId: 88888,
+          },
+        ],
+      };
+      const brokenAccRes = await ctx.app.request("/api/export/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: "IMPORT_CONFIRMED", snapshot: brokenAccSourceSnap }),
+      });
+      expect(brokenAccRes.status).toBe(400);
+
+      const brokenInstSettleSnap = {
+        ...validSnap,
+        accounts: [
+          {
+            id: 1,
+            key: "loan-1",
+            name: "Loan",
+            lender: "Bank",
+            kind: "loan",
+            direction: "payable",
+            initialBalance: 100_000,
+            paymentMethod: "BCA",
+            color: "#00797a",
+          },
+        ],
+        installments: [
+          {
+            id: 1,
+            accountId: 1,
+            period: "2026-11",
+            dueDate: "2026-11-25",
+            plannedAmount: 100_000,
+            status: "paid",
+            settlementTransactionId: 77777,
+          },
+        ],
+      };
+      const brokenInstRes = await ctx.app.request("/api/export/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: "IMPORT_CONFIRMED", snapshot: brokenInstSettleSnap }),
+      });
+      expect(brokenInstRes.status).toBe(400);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it("enforces strict reset confirmations, cleans dependent state on transaction reset, and guards settings/ledger inputs", async () => {
+    const ctx = await setupTestContext();
+    try {
+      const walletRows = await ctx.db.select().from(wallets);
+      const bca = walletRows.find((w) => w.key === "bca")!;
+      const cc = walletRows.find((w) => w.key === "cc-jenius")!;
+
+      // Reject credit_card or non-existent defaultSalaryWalletId
+      const badSalaryWallet = await ctx.app.request("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ defaultSalaryWalletId: cc.id }),
+      });
+      expect(badSalaryWallet.status).toBe(400);
+
+      const missingSalaryWallet = await ctx.app.request("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ defaultSalaryWalletId: 999999 }),
+      });
+      expect(missingSalaryWallet.status).toBe(404);
+
+      // Audit logs safely handle NaN query params and clamp limit <= 200
+      const auditNaN = await ctx.app.request("/api/settings/audit-logs?limit=abc&offset=xyz");
+      expect(auditNaN.status).toBe(200);
+      const auditBody = (await auditNaN.json()) as { limit: number; offset: number };
+      expect(auditBody.limit).toBe(50);
+      expect(auditBody.offset).toBe(0);
+
+      const auditHigh = await ctx.app.request("/api/settings/audit-logs?limit=999");
+      expect(auditHigh.status).toBe(200);
+      expect(((await auditHigh.json()) as { limit: number }).limit).toBe(200);
+
+      // Salary preview query validation rejects 0, NaN, invalid period, and > MAX_PG_INT
+      expect((await ctx.app.request("/api/ledger/salary-preview?grossSalary=0")).status).toBe(400);
+      expect((await ctx.app.request("/api/ledger/salary-preview?grossSalary=abc")).status).toBe(400);
+      expect((await ctx.app.request("/api/ledger/salary-preview?period=2026-99")).status).toBe(400);
+      expect(
+        (await ctx.app.request(`/api/ledger/salary-preview?grossSalary=${MAX_PG_INT + 1}`)).status,
+      ).toBe(400);
+
+      // periodBounds clamps out-of-range days in Feb
+      expect(periodBounds("2026-02", "gajian", 30, 20)).toEqual({
+        start: "2026-02-28",
+        end: "2026-03-29",
+      });
+      expect(periodBounds("2026-03", "cc", 25, 30)).toEqual({
+        start: "2026-02-28",
+        end: "2026-03-29",
+      });
+      expect(periodBounds("2026-02", "gajian", 0, 0)).toEqual({
+        start: "2026-02-01",
+        end: "2026-02-28",
+      });
+
+      // mode === "all" rejects RESET_CONFIRMED
+      const badAllReset = await ctx.app.request("/api/settings/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "all", confirmation: "RESET_CONFIRMED" }),
+      });
+      expect(badAllReset.status).toBe(400);
+
+      // Seed debt, paid installment, split pay account, recurring rule, and sync date
+      const { accountId } = await createDebtAccountWithSchedule(ctx.db, {
+        name: "Cicilan Uji",
+        lender: "Bank",
+        kind: "loan",
+        initialBalance: 1_000_000,
+        installmentCount: 1,
+        installmentAmount: 1_000_000,
+        firstDueDate: "2026-11-10",
+        paymentMethod: "BCA",
+        walletId: bca.id,
+        disburseWalletId: bca.id,
+        recordDisbursement: true,
+      });
+
+      const [instRow] = await ctx.db
+        .select()
+        .from(installments)
+        .where(eq(installments.accountId, accountId));
+      await ctx.app.request("/api/installments/settle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          installmentIds: [instRow!.id],
+          fromWalletId: bca.id,
+          paymentDate: "2026-11-12",
+        }),
+      });
+
+      const ccTxRes = await ctx.app.request("/api/transactions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "expense",
+          merchant: "Split Pay Uji",
+          amount: 1_200_000,
+          transactionDate: "2026-11-05",
+          category: "Belanja Pribadi & Hobi",
+          walletId: cc.id,
+        }),
+      });
+      const { id: ccTxId } = (await ccTxRes.json()) as { id: number };
+      await ctx.app.request(`/api/transactions/${ccTxId}/convert-to-installment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          installmentCount: 2,
+          installmentAmount: 600_000,
+          firstPeriod: "2026-12",
+        }),
+      });
+
+      const recRes = await ctx.app.request("/api/recurring", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          merchant: "Listrik",
+          amount: 200_000,
+          category: "Tagihan & Utilitas",
+          walletId: bca.id,
+          dueDay: 10,
+        }),
+      });
+      const { rule } = (await recRes.json()) as { rule: { id: number } };
+      await ctx.app.request(`/api/recurring/${rule.id}/pay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ period: "2026-11", transactionDate: "2026-11-10" }),
+      });
+
+      await ctx.db
+        .update(appSettings)
+        .set({ lastAutoSyncDate: "2026-11-25", legacySettledBeforeCycle: "2026-10" })
+        .where(eq(appSettings.id, 1));
+
+      // Transactions-only reset clears split-pay accounts, reverts installments, clears closedAt/disbursedAt/lastPaidPeriod/lastAutoSyncDate
+      const txResetRes = await ctx.app.request("/api/settings/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "transactions", confirmation: "RESET_CONFIRMED" }),
+      });
+      expect(txResetRes.status).toBe(200);
+
+      const remainingAccounts = await ctx.db.select().from(debtAccounts);
+      expect(remainingAccounts).toHaveLength(1);
+      expect(remainingAccounts[0]!.closedAt).toBeNull();
+      expect(remainingAccounts[0]!.disbursedAt).toBeNull();
+
+      const remainingInsts = await ctx.db.select().from(installments);
+      expect(remainingInsts).toHaveLength(1);
+      expect(remainingInsts[0]!.status).toBe("upcoming");
+      expect(remainingInsts[0]!.actualAmount).toBeNull();
+      expect(remainingInsts[0]!.paidAt).toBeNull();
+      expect(remainingInsts[0]!.settlementTransactionId).toBeNull();
+
+      const [ruleAfter] = await ctx.db.select().from(recurringRules);
+      expect(ruleAfter!.lastPaidPeriod).toBeNull();
+
+      const [settingsAfterTxReset] = await ctx.db
+        .select()
+        .from(appSettings)
+        .where(eq(appSettings.id, 1));
+      expect(settingsAfterTxReset!.lastAutoSyncDate).toBeNull();
+
+      // Full reset clears legacySettledBeforeCycle and lastAutoSyncDate as well
+      const allResetRes = await ctx.app.request("/api/settings/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "all", confirmation: "RESET_ALL_CONFIRMED" }),
+      });
+      expect(allResetRes.status).toBe(200);
+      const [settingsAfterAllReset] = await ctx.db
+        .select()
+        .from(appSettings)
+        .where(eq(appSettings.id, 1));
+      expect(settingsAfterAllReset!.lastAutoSyncDate).toBeNull();
+      expect(settingsAfterAllReset!.legacySettledBeforeCycle).toBeNull();
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it("hardens LoginRateLimiter map cap, global PIN lockout, and proxy IP extraction", async () => {
+    const limiter = new LoginRateLimiter();
+    for (let i = 0; i < 1200; i += 1) {
+      limiter.recordFailure(`login:10.0.${Math.floor(i / 255)}.${i % 255}`, 1_000_000);
+    }
+    expect(limiter.checkGlobal(1_000_000).allowed).toBe(false);
+    // Internal map size must never exceed MAX_ENTRIES (1000)
+    expect((limiter as unknown as { attempts: Map<string, unknown> }).attempts.size).toBeLessThanOrEqual(
+      LoginRateLimiter.MAX_ENTRIES,
+    );
+
+    const prevTrustProxy = process.env.TRUST_PROXY;
+    try {
+      process.env.TRUST_PROXY = "true";
+      const makeCtx = (headers: Record<string, string>) =>
+        ({
+          req: { header: (name: string) => headers[name.toLowerCase()] },
+        }) as Parameters<typeof clientRateKey>[0];
+
+      expect(
+        clientRateKey(
+          makeCtx({
+            "x-forwarded-for": "1.2.3.4, 5.6.7.8",
+            "x-real-ip": "9.9.9.9",
+          }),
+        ),
+      ).toBe("9.9.9.9");
+      expect(
+        clientRateKey(
+          makeCtx({
+            "x-forwarded-for": "spoofed.1, 10.20.30.40",
+          }),
+        ),
+      ).toBe("10.20.30.40");
+
+      process.env.TRUST_PROXY = "false";
+      expect(clientRateKey(makeCtx({ "x-real-ip": "9.9.9.9" }))).toBe("local");
+    } finally {
+      if (prevTrustProxy === undefined) {
+        delete process.env.TRUST_PROXY;
+      } else {
+        process.env.TRUST_PROXY = prevTrustProxy;
+      }
+    }
+
+    // Integration test: global lockout across rotating XFF IPs on /login and /change-pin
+    const ctx = await setupTestContext();
+    const savedTrustProxy = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY = "true";
+    try {
+      const setupRes = await ctx.app.request("/api/auth/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: "1234" }),
+      });
+      expect(setupRes.status).toBe(200);
+      const cookie = setupRes.headers.get("set-cookie") ?? "";
+
+      for (let i = 0; i < 20; i += 1) {
+        const failRes = await ctx.app.request("/api/auth/login", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-forwarded-for": `203.0.113.${i + 1}`,
+          },
+          body: JSON.stringify({ pin: "9999" }),
+        });
+        expect(failRes.status).toBe(401);
+      }
+
+      const blockedLogin = await ctx.app.request("/api/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": "198.51.100.50",
+        },
+        body: JSON.stringify({ pin: "1234" }),
+      });
+      expect(blockedLogin.status).toBe(429);
+
+      const blockedChangePin = await ctx.app.request("/api/auth/change-pin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: cookie,
+          "x-forwarded-for": "198.51.100.51",
+        },
+        body: JSON.stringify({ currentPin: "1234", newPin: "5678" }),
+      });
+      expect(blockedChangePin.status).toBe(429);
+    } finally {
+      if (savedTrustProxy === undefined) {
+        delete process.env.TRUST_PROXY;
+      } else {
+        process.env.TRUST_PROXY = savedTrustProxy;
+      }
       await ctx.cleanup();
     }
   });

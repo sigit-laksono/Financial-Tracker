@@ -17,8 +17,16 @@ describe("Milestone 3: Pencatatan Harian Cepat, Split Category, Recurring Bills 
       body: JSON.stringify({ openingBalance: 2_000_000 }),
     });
 
+    // Ensure custom split category exists before recording split transaction
+    const catRes = await app.request("/api/categories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Kebutuhan Kucing", type: "expense", bucket: "needs" }),
+    });
+    expect(catRes.status).toBe(201);
+
     // 1. Create split transaction: Belanja Indomaret Rp150.000
-    // Splits: Rp100.000 (Makanan & Minuman) + Rp50.000 (Kebutuhan Kucing)
+    // Splits: Rp100.000 (Makanan & Belanja Dapur) + Rp50.000 (Kebutuhan Kucing)
     const txRes = await app.request("/api/transactions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -27,10 +35,10 @@ describe("Milestone 3: Pencatatan Harian Cepat, Split Category, Recurring Bills 
         merchant: "Indomaret",
         amount: 150_000,
         transactionDate: "2026-04-26",
-        category: "Makanan & Minuman",
+        category: "Makanan & Belanja Dapur",
         walletId: bni!.id,
         splits: [
-          { category: "Makanan & Minuman", amount: 100_000, note: "Beli roti & susu" },
+          { category: "Makanan & Belanja Dapur", amount: 100_000, note: "Beli roti & susu" },
           { category: "Kebutuhan Kucing", amount: 50_000, note: "Whiskas sachet" },
         ],
       }),
@@ -45,15 +53,15 @@ describe("Milestone 3: Pencatatan Harian Cepat, Split Category, Recurring Bills 
       .from(transactionSplits)
       .where(eq(transactionSplits.transactionId, txBody.id));
     expect(splitsInDb.length).toBe(2);
-    expect(splitsInDb.find((s) => s.category === "Makanan & Minuman")?.amount).toBe(100_000);
+    expect(splitsInDb.find((s) => s.category === "Makanan & Belanja Dapur")?.amount).toBe(100_000);
     expect(splitsInDb.find((s) => s.category === "Kebutuhan Kucing")?.amount).toBe(50_000);
 
-    // Set budgets: Makanan & Minuman limit 500.000, Kebutuhan Kucing limit 200.000
+    // Set budgets: Makanan & Belanja Dapur limit 500.000, Kebutuhan Kucing limit 200.000
     await app.request("/api/budgets", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        category: "Makanan & Minuman",
+        category: "Makanan & Belanja Dapur",
         period: "default",
         limitAmount: 500_000,
       }),
@@ -80,13 +88,13 @@ describe("Milestone 3: Pencatatan Harian Cepat, Split Category, Recurring Bills 
     expect(dash.metrics.totalSpendableCash).toBe(1_850_000);
 
     // Category breakdown reflects split amounts
-    const foodCat = dash.categoryTotals.find((c) => c.category === "Makanan & Minuman");
+    const foodCat = dash.categoryTotals.find((c) => c.category === "Makanan & Belanja Dapur");
     const catCat = dash.categoryTotals.find((c) => c.category === "Kebutuhan Kucing");
     expect(foodCat?.total).toBe(100_000);
     expect(catCat?.total).toBe(50_000);
 
     // Budgets reflect the split breakdown
-    const foodBudget = dash.budgets.find((b) => b.category === "Makanan & Minuman");
+    const foodBudget = dash.budgets.find((b) => b.category === "Makanan & Belanja Dapur");
     const catBudget = dash.budgets.find((b) => b.category === "Kebutuhan Kucing");
     expect(foodBudget?.spentAmount).toBe(100_000);
     expect(foodBudget?.remainingAmount).toBe(400_000);
@@ -112,10 +120,10 @@ describe("Milestone 3: Pencatatan Harian Cepat, Split Category, Recurring Bills 
         merchant: "Salah Total",
         amount: 100_000,
         transactionDate: "2026-04-05",
-        category: "Makanan & Minuman",
+        category: "Makanan & Belanja Dapur",
         walletId: bni!.id,
         splits: [
-          { category: "Makanan & Minuman", amount: 60_000 },
+          { category: "Makanan & Belanja Dapur", amount: 60_000 },
           { category: "Kebutuhan Kucing", amount: 20_000 }, // sum 80.000 != 100.000
         ],
       }),
@@ -225,7 +233,7 @@ describe("Milestone 3: Pencatatan Harian Cepat, Split Category, Recurring Bills 
       body: JSON.stringify({
         merchant: "Internet Indihome",
         amount: 350_000,
-        category: "Internet",
+        category: "Internet & Komunikasi",
         walletId: bni!.id,
         dueDay: 10,
         isActive: true,
@@ -334,7 +342,7 @@ describe("Milestone 3: Pencatatan Harian Cepat, Split Category, Recurring Bills 
           merchant: "Kopi Kenangan",
           amount: 25_000,
           transactionDate: "2026-04-01",
-          category: "Jajan",
+          category: "Jajan & Nongkrong",
           walletId: bni!.id,
         }),
       });

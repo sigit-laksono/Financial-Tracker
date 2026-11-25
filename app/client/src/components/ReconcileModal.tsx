@@ -2,6 +2,7 @@ import { useEffect, useId, useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type WalletDto } from "../lib/api";
 import { formatRupiah, formatSignedDigitsInput, jakartaToday, parseSignedInt } from "../lib/format";
+import { budgetKeys } from "../lib/queryKeys";
 import { AlertIcon } from "./Icons";
 import { Button, ModalSheet } from "./UI";
 
@@ -34,6 +35,9 @@ export function ReconcileModal({
         throw new Error("Masukkan saldo aktual yang valid.");
       }
       const actualBalance = parseSignedInt(actualInput);
+      if (Math.abs(actualBalance) > 2_147_483_647) {
+        throw new Error("Nominal saldo maksimal Rp 2.147.483.647.");
+      }
       return api.reconcileWallet(wallet.id, {
         actualBalance,
         date: jakartaToday(),
@@ -46,6 +50,8 @@ export function ReconcileModal({
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
       await queryClient.invalidateQueries({ queryKey: ["debts"] });
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       if (res?.adjusted) {
         onSuccess(`Saldo ${wallet?.name} disesuaikan (${formatRupiah(res.delta)})`);
       } else {

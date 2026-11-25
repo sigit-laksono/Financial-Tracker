@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lt, lte, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, like, lt, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
@@ -13,7 +13,9 @@ import type { AppDb } from "../db";
 import {
   categories,
   debtAccounts,
+  goals,
   installments,
+  recurringRules,
   settlementAllocations,
   transactionSplits,
   transactions,
@@ -22,6 +24,7 @@ import {
 import { recordAuditLog } from "../lib/auditService";
 import { getCreditCardLimitStatus } from "../lib/ccLimit";
 import { ccCycleForDate, periodBounds } from "../lib/dates";
+import { reopenDebtAccountsIfNeeded } from "../lib/debtEngine";
 import { ConflictError, NotFoundError, ValidationError } from "../lib/errors";
 import {
   convertTransactionToInstallment,
@@ -229,13 +232,18 @@ export function createTransactionRoutes(db: AppDb) {
       db
         .select()
         .from(transactions)
-        .where(or(eq(transactions.type, "expense"), eq(transactions.type, "income")))
+        .where(
+          and(
+            or(eq(transactions.type, "expense"), eq(transactions.type, "income")),
+            ne(transactions.source, "system"),
+          ),
+        )
         .orderBy(desc(transactions.transactionDate), desc(transactions.id))
         .limit(300),
       db
         .select()
         .from(transactions)
-        .where(eq(transactions.type, "transfer"))
+        .where(and(eq(transactions.type, "transfer"), ne(transactions.source, "system")))
         .orderBy(desc(transactions.transactionDate), desc(transactions.id))
         .limit(100),
       db.select().from(wallets).where(eq(wallets.isActive, true)),
@@ -256,6 +264,7 @@ export function createTransactionRoutes(db: AppDb) {
     >();
 
     for (const tx of txRows) {
+      if (tx.source === "system" || !walletMap.has(tx.walletId)) continue;
       const norm = tx.merchant.trim().toLowerCase();
       if (!norm) continue;
       const existing = merchantMap.get(norm);
@@ -306,7 +315,8 @@ export function createTransactionRoutes(db: AppDb) {
     >();
 
     for (const t of transferRows) {
-      if (!t.toWalletId) continue;
+      if (t.source === "system" || !t.toWalletId) continue;
+      if (!walletMap.has(t.walletId) || !walletMap.has(t.toWalletId)) continue;
       const key = `${t.walletId}->${t.toWalletId}`;
       const ex = routeMap.get(key);
       if (ex) {
@@ -536,6 +546,13 @@ export function createTransactionRoutes(db: AppDb) {
     if (!existing) return c.json({ error: "Transaksi tidak ditemukan." }, 404);
 
     if (existing.type === "transfer") {
+      if (parsed.data.type !== undefined && parsed.data.type !== "transfer") {
+        return c.json(
+          { error: "Transaksi transfer tidak dapat diubah menjadi pemasukan atau pengeluaran." },
+          400,
+        );
+      }
+
       const nextFromWalletId = parsed.data.walletId ?? existing.walletId;
       const nextToWalletId = parsed.data.toWalletId ?? existing.toWalletId;
       if (!nextToWalletId || nextFromWalletId === nextToWalletId) {
@@ -562,6 +579,12 @@ export function createTransactionRoutes(db: AppDb) {
         parsed.data.note !== undefined ? parsed.data.note?.trim() || null : existing.note;
 
       await db.transaction(async (tx) => {
+        const needsNewGroupId =
+          !existing.transferGroupId &&
+          parsed.data.adminFee !== undefined &&
+          parsed.data.adminFee > 0;
+        const effectiveGroupId = existing.transferGroupId ?? (needsNewGroupId ? crypto.randomUUID() : null);
+
         await tx
           .update(transactions)
           .set({
@@ -570,18 +593,19 @@ export function createTransactionRoutes(db: AppDb) {
             transactionDate: nextDate,
             walletId: nextFromWalletId,
             toWalletId: nextToWalletId,
+            transferGroupId: effectiveGroupId,
             note: nextNote,
             updatedAt: new Date(),
           })
           .where(eq(transactions.id, id));
 
-        if (existing.transferGroupId) {
+        if (effectiveGroupId) {
           const [feeRow] = await tx
             .select()
             .from(transactions)
             .where(
               and(
-                eq(transactions.transferGroupId, existing.transferGroupId),
+                eq(transactions.transferGroupId, effectiveGroupId),
                 eq(transactions.type, "expense"),
               ),
             )
@@ -622,7 +646,7 @@ export function createTransactionRoutes(db: AppDb) {
                     category: "Biaya Bank",
                     categoryId: feeCategory?.id ?? null,
                     walletId: nextFromWalletId,
-                    transferGroupId: existing.transferGroupId,
+                    transferGroupId: effectiveGroupId,
                     note: `Biaya admin untuk transfer Rp${nextAmount.toLocaleString("id-ID")}`,
                     source: "manual",
                   });
@@ -674,6 +698,13 @@ export function createTransactionRoutes(db: AppDb) {
       );
     }
 
+    if (parsed.data.type === "transfer") {
+      return c.json(
+        { error: "Transaksi pemasukan atau pengeluaran tidak dapat diubah menjadi transfer." },
+        400,
+      );
+    }
+
     if (existing.isConvertedToInstallment) {
       const mutatesFinancialFacts =
         (parsed.data.amount !== undefined && parsed.data.amount !== existing.amount) ||
@@ -720,6 +751,29 @@ export function createTransactionRoutes(db: AppDb) {
     }
 
     const splits = parsed.data.splits;
+    const existingSplits = await db
+      .select({ id: transactionSplits.id })
+      .from(transactionSplits)
+      .where(eq(transactionSplits.transactionId, id));
+    const hasExistingSplits = existingSplits.length > 0;
+    let shouldClearSplits = false;
+
+    if (splits === undefined && hasExistingSplits) {
+      if (parsed.data.amount !== undefined && parsed.data.amount !== existing.amount) {
+        return c.json(
+          { error: "Nominal transaksi dengan pecahan kategori hanya dapat diubah bersama daftar pecahan terbaru." },
+          400,
+        );
+      }
+      const typeChangedToIncome = nextType === "income" && existing.type !== "income";
+      const categoryExplicitlyChanged =
+        parsed.data.category !== undefined &&
+        canonicalCategory.trim().toLowerCase() !== existing.category.trim().toLowerCase();
+      if (typeChangedToIncome || categoryExplicitlyChanged) {
+        shouldClearSplits = true;
+      }
+    }
+
     if (splits !== undefined && splits.length > 0) {
       const sumSplits = splits.reduce((sum, s) => sum + s.amount, 0);
       if (sumSplits !== nextAmount) {
@@ -756,19 +810,68 @@ export function createTransactionRoutes(db: AppDb) {
         : null;
 
     await db.transaction(async (tx) => {
-      if (nextType === "expense" && wallet.type === "credit_card" && !existing.isConvertedToInstallment) {
+      if (nextType === "expense" && wallet.type === "credit_card" && !existing.isConvertedToInstallment && ccCycleKey) {
         const limitStatus = await getCreditCardLimitStatus(tx, wallet.id);
-        let effectiveAvailable = limitStatus.availableLimit;
-        if (
+        const oldCycle =
           existing.type === "expense" &&
           existing.walletId === wallet.id &&
-          !existing.isConvertedToInstallment &&
-          existing.ccCycleKey
-        ) {
-          const oldCycleUnpaid = limitStatus.unpaidByCycle.get(existing.ccCycleKey) ?? 0;
-          effectiveAvailable += Math.min(existing.amount, oldCycleUnpaid);
+          !existing.isConvertedToInstallment
+            ? existing.ccCycleKey
+            : null;
+        const cyclesToCheck = [...new Set([oldCycle, ccCycleKey].filter((c): c is string => Boolean(c)))];
+        const allCcRows = await tx
+          .select({ id: wallets.id })
+          .from(wallets)
+          .where(eq(wallets.type, "credit_card"));
+        const isSingleCc = allCcRows.length <= 1;
+
+        let deltaLimit = 0;
+        for (const cKey of cyclesToCheck) {
+          const isLegacy = Boolean(
+            settings.legacySettledBeforeCycle && cKey <= settings.legacySettledBeforeCycle,
+          );
+          if (isLegacy) continue;
+
+          const [spendRow] = await tx
+            .select({ total: sql<number>`COALESCE(SUM(${transactions.amount}), 0)` })
+            .from(transactions)
+            .where(
+              and(
+                eq(transactions.walletId, wallet.id),
+                eq(transactions.type, "expense"),
+                eq(transactions.isConvertedToInstallment, false),
+                eq(transactions.ccCycleKey, cKey),
+              ),
+            );
+          const [settledRow] = await tx
+            .select({ total: sql<number>`COALESCE(SUM(${settlementAllocations.allocatedAmount}), 0)` })
+            .from(settlementAllocations)
+            .where(
+              and(
+                eq(settlementAllocations.targetType, "cc_cycle"),
+                eq(settlementAllocations.ccCycleKey, cKey),
+                isSingleCc
+                  ? or(
+                      eq(settlementAllocations.ccWalletId, wallet.id),
+                      isNull(settlementAllocations.ccWalletId),
+                    )
+                  : eq(settlementAllocations.ccWalletId, wallet.id),
+              ),
+            );
+          const spendBefore = Number(spendRow?.total ?? 0);
+          const settled = Number(settledRow?.total ?? 0);
+          const unpaidBefore = Math.max(0, spendBefore - settled);
+          const spendAfter =
+            spendBefore -
+            (cKey === oldCycle ? existing.amount : 0) +
+            (cKey === ccCycleKey ? nextAmount : 0);
+          const unpaidAfter = Math.max(0, spendAfter - settled);
+          deltaLimit += unpaidAfter - unpaidBefore;
         }
-        if (nextAmount > effectiveAvailable) {
+
+        const nextLimitUsed = limitStatus.limitUsed + deltaLimit;
+        if (deltaLimit > 0 && nextLimitUsed > limitStatus.creditLimit) {
+          const effectiveAvailable = Math.max(0, limitStatus.creditLimit - (limitStatus.limitUsed - (oldCycle === ccCycleKey ? existing.amount : 0)));
           throw new ValidationError(
             `Transaksi melebihi sisa limit ${limitStatus.walletName} (Sisa limit tersedia: Rp${effectiveAvailable.toLocaleString("id-ID")}, Limit kartu: Rp${limitStatus.creditLimit.toLocaleString("id-ID")}).`,
           );
@@ -791,7 +894,9 @@ export function createTransactionRoutes(db: AppDb) {
         })
         .where(eq(transactions.id, id));
 
-      if (splits !== undefined) {
+      if (shouldClearSplits) {
+        await tx.delete(transactionSplits).where(eq(transactionSplits.transactionId, id));
+      } else if (splits !== undefined) {
         await tx.delete(transactionSplits).where(eq(transactionSplits.transactionId, id));
         if (splits.length > 0) {
           for (const s of splits) {
@@ -871,6 +976,12 @@ export function createTransactionRoutes(db: AppDb) {
         existing.type === "debt_collection" ||
         (existing.type === "income" && existing.sourceRef?.startsWith("salary-"))
       ) {
+        const linkedInstallments = await tx
+          .select({ accountId: installments.accountId })
+          .from(installments)
+          .where(eq(installments.settlementTransactionId, id));
+        const affectedAccountIds = [...new Set(linkedInstallments.map((i) => i.accountId))];
+
         await tx
           .update(installments)
           .set({
@@ -884,14 +995,54 @@ export function createTransactionRoutes(db: AppDb) {
         await tx
           .delete(settlementAllocations)
           .where(eq(settlementAllocations.settlementTransactionId, id));
+
+        await reopenDebtAccountsIfNeeded(tx, affectedAccountIds);
       }
 
-      if (existing.transferGroupId) {
+      if (existing.type === "transfer" && existing.transferGroupId) {
         await tx
           .delete(transactions)
           .where(eq(transactions.transferGroupId, existing.transferGroupId));
       } else {
         await tx.delete(transactions).where(eq(transactions.id, id));
+      }
+
+      if (existing.sourceRef?.startsWith("recurring-")) {
+        const match = /^recurring-(\d+)-(\d{4}-\d{2})$/.exec(existing.sourceRef);
+        if (match) {
+          const ruleId = Number(match[1]);
+          const remainingRecurring = await tx
+            .select({ sourceRef: transactions.sourceRef })
+            .from(transactions)
+            .where(like(transactions.sourceRef, `recurring-${ruleId}-%`));
+          const remainingPeriods = remainingRecurring
+            .map((r) => {
+              const m = /^recurring-\d+-(\d{4}-\d{2})$/.exec(r.sourceRef ?? "");
+              return m ? m[1]! : null;
+            })
+            .filter((p): p is string => Boolean(p))
+            .sort();
+          const nextLastPaidPeriod =
+            remainingPeriods.length > 0 ? remainingPeriods[remainingPeriods.length - 1]! : null;
+          await tx
+            .update(recurringRules)
+            .set({ lastPaidPeriod: nextLastPaidPeriod })
+            .where(eq(recurringRules.id, ruleId));
+        }
+      }
+
+      if (existing.sourceRef?.startsWith("goal:")) {
+        const goalMatch = /^goal:(\d+):/.exec(existing.sourceRef);
+        if (goalMatch) {
+          const goalId = Number(goalMatch[1]);
+          await tx
+            .update(goals)
+            .set({
+              currentAmount: sql`GREATEST(0, ${goals.currentAmount} - ${existing.amount})`,
+              updatedAt: new Date(),
+            })
+            .where(eq(goals.id, goalId));
+        }
       }
 
       await recordAuditLog(tx, {

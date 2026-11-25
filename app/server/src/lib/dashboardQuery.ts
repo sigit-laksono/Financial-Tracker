@@ -9,6 +9,7 @@ import {
   ccCycleForDate,
   ccDueDateForCycle,
   daysBetween,
+  gajianPeriodForDate,
   jakartaToday,
   periodBounds,
   periodForDate,
@@ -34,8 +35,8 @@ function findDatesWithDayInBounds(dayNumber: number, start: string, end: string)
     if (iso >= start && iso <= end && !dates.includes(iso)) {
       dates.push(iso);
     }
-    cur.setUTCMonth(cur.getUTCMonth() + 1);
     cur.setUTCDate(1);
+    cur.setUTCMonth(cur.getUTCMonth() + 1);
   }
   return dates;
 }
@@ -265,6 +266,7 @@ export async function buildDashboardData(
         and(
           gte(transactions.transactionDate, monthStart),
           lte(transactions.transactionDate, monthEnd),
+          eq(transactions.isConvertedToInstallment, false),
         ),
       ),
   ]);
@@ -417,7 +419,7 @@ export async function buildDashboardData(
   }
 
   // Billed vs unbilled CC bridge inside a gajian cycle view.
-  const ccWallets = snap.wallets.filter((w) => w.type === "credit_card");
+  const ccWallets = snap.ccWallets;
   const unbilledStartByCcWalletId = new Map<number, string>();
   let primaryUnbilledStartKey: string | null = null;
 
@@ -554,9 +556,10 @@ export async function buildDashboardData(
 
   let unpaidRecurringSum = 0;
   const recurringBills = recurringRuleRows.map((r) => {
+    const prefix = `recurring-${r.id}-`;
     const isPaidThisCycle =
-      r.lastPaidPeriod === selectedPeriod ||
-      periodRows.some((tx) => tx.sourceRef === `recurring-${r.id}-${selectedPeriod}`);
+      (cycle === "gajian" && r.lastPaidPeriod === selectedPeriod) ||
+      periodRows.some((tx) => typeof tx.sourceRef === "string" && tx.sourceRef.startsWith(prefix));
     const dueDates = findDatesWithDayInBounds(r.dueDay, bounds.start, bounds.end);
     const dueDateThisCycle =
       dueDates[0] ?? `${selectedPeriod}-${String(r.dueDay).padStart(2, "0")}`;
@@ -743,6 +746,7 @@ export async function buildDashboardData(
     spentByCategory,
     bounds.end,
     today,
+    bounds.start,
   );
 
   const serializedTransactions = periodRows.map((tx) => {
@@ -808,6 +812,7 @@ export async function buildDashboardData(
 
   const categoryBucketMap = new Map<string, "needs" | "wants" | "savings">();
   for (const cat of snap.categories) {
+    if (cat.type !== "expense") continue;
     categoryBucketMap.set(
       cat.name.toLowerCase(),
       (cat.bucket as "needs" | "wants" | "savings") ?? "needs",
@@ -820,10 +825,20 @@ export async function buildDashboardData(
 
   for (const tx of periodRows) {
     if (tx.type === "expense" && !tx.isConvertedToInstallment) {
-      const bucket = categoryBucketMap.get(tx.category.toLowerCase()) ?? "needs";
-      if (bucket === "needs") spentNeeds += tx.amount;
-      else if (bucket === "wants") spentWants += tx.amount;
-      else spentSavings += tx.amount;
+      const splits = splitsByTxId.get(tx.id);
+      if (splits && splits.length > 0) {
+        for (const s of splits) {
+          const bucket = categoryBucketMap.get(s.category.toLowerCase()) ?? "needs";
+          if (bucket === "needs") spentNeeds += s.amount;
+          else if (bucket === "wants") spentWants += s.amount;
+          else spentSavings += s.amount;
+        }
+      } else {
+        const bucket = categoryBucketMap.get(tx.category.toLowerCase()) ?? "needs";
+        if (bucket === "needs") spentNeeds += tx.amount;
+        else if (bucket === "wants") spentWants += tx.amount;
+        else spentSavings += tx.amount;
+      }
     } else if (tx.type === "settlement") {
       const instExpense = computeSettlementExpenseAmount(tx, ccCycleAllocatedByTxId);
       if (instExpense > 0) {
@@ -836,34 +851,43 @@ export async function buildDashboardData(
     }
   }
 
-  const incomeBaseline = totalIncome > 0 ? totalIncome : snap.settings.netSalary;
+  const defaultBudgetMap = new Map<string, (typeof snap.budgets)[number]>();
+  const overrideBudgetMap = new Map<string, (typeof snap.budgets)[number]>();
+  for (const b of snap.budgets) {
+    const key = b.category.trim().toLowerCase();
+    if (b.period === "default") defaultBudgetMap.set(key, b);
+    else if (b.period === selectedPeriod) overrideBudgetMap.set(key, b);
+  }
 
-  const defNeeds = snap.budgets.find(
-    (b) =>
-      b.category.toLowerCase() === "bucket:needs" &&
-      (b.period === "default" || b.period === selectedPeriod),
-  );
-  const defWants = snap.budgets.find(
-    (b) =>
-      b.category.toLowerCase() === "bucket:wants" &&
-      (b.period === "default" || b.period === selectedPeriod),
-  );
-  const defSavings = snap.budgets.find(
-    (b) =>
-      b.category.toLowerCase() === "bucket:savings" &&
-      (b.period === "default" || b.period === selectedPeriod),
-  );
+  const subAllocatedByBucket = { needs: 0, wants: 0, savings: 0 };
+  for (const cat of snap.categories) {
+    if (cat.isArchived || cat.type !== "expense") continue;
+    const catKey = cat.name.trim().toLowerCase();
+    const catBudget = overrideBudgetMap.get(catKey) ?? defaultBudgetMap.get(catKey);
+    if (catBudget && catBudget.limitAmount > 0) {
+      const bucket = (cat.bucket as "needs" | "wants" | "savings") ?? "needs";
+      subAllocatedByBucket[bucket] += catBudget.limitAmount;
+    }
+  }
 
-  const isConfiguredNeeds = !!(defNeeds && defNeeds.limitAmount > 0);
-  const limitNeeds = isConfiguredNeeds ? defNeeds.limitAmount : 0;
+  const resolveBucketLimit = (bucket: "needs" | "wants" | "savings") => {
+    const key = `bucket:${bucket}`;
+    const manualRow = overrideBudgetMap.get(key) ?? defaultBudgetMap.get(key);
+    const manualLimit = manualRow && manualRow.limitAmount > 0 ? manualRow.limitAmount : 0;
+    const subAllocated = subAllocatedByBucket[bucket];
+    return manualLimit > 0 ? Math.max(manualLimit, subAllocated) : subAllocated;
+  };
 
-  const isConfiguredWants = !!(defWants && defWants.limitAmount > 0);
-  const limitWants = isConfiguredWants ? defWants.limitAmount : 0;
+  const limitNeeds = resolveBucketLimit("needs");
+  const isConfiguredNeeds = limitNeeds > 0;
 
-  const isConfiguredSavings = !!(defSavings && defSavings.limitAmount > 0);
-  const targetSavings = isConfiguredSavings ? defSavings.limitAmount : 0;
+  const limitWants = resolveBucketLimit("wants");
+  const isConfiguredWants = limitWants > 0;
 
-  const budget503020 = {
+  const targetSavings = resolveBucketLimit("savings");
+  const isConfiguredSavings = targetSavings > 0;
+
+  const budgetBuckets = {
     needs: {
       spent: spentNeeds,
       limit: limitNeeds,
@@ -1021,7 +1045,7 @@ export async function buildDashboardData(
     transactions: serializedTransactions,
     categories: snap.categories,
     recurringBills,
-    budget503020,
+    budgetBuckets,
     calendarHeatmap,
   };
 }
@@ -1157,9 +1181,10 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
   const primaryCard = cards[0];
   const cycleSummaries = primaryCard?.cycleSummaries ?? [];
 
-  // Generate cycle timeline for the active period
+  // Generate cycle timeline for the active gajian period
+  const currentGajianPeriod = gajianPeriodForDate(today, snap.settings.gajianStartDay);
   const gajianBounds = periodBounds(
-    snap.currentCcCycle,
+    currentGajianPeriod,
     "gajian",
     snap.settings.gajianStartDay,
     snap.settings.cardCutoffDay,
@@ -1182,7 +1207,7 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
       ccLimit: totalCcLimit,
       ccLimitUsed: totalCcLimitUsed,
       ccLimitAvailable: totalCcLimitAvailable,
-      currentCycleSpend: snap.ccSpendByCycle.get(snap.currentCcCycle) ?? 0,
+      currentCycleSpend: cards.reduce((sum, c) => sum + c.currentCycleSpend, 0),
     },
     accounts: snap.accounts.map((a) => ({
       ...a,

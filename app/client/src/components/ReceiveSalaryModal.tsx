@@ -50,7 +50,7 @@ export function ReceiveSalaryModal({
     }
   }, [open, data.settings.grossSalary, defaultWalletId]);
 
-  const parsedGross = parsePositiveInt(grossSalaryInput) || data.settings.grossSalary;
+  const parsedGross = parsePositiveInt(grossSalaryInput);
 
   const previewQuery = useQuery({
     queryKey: ["salary-preview", period, parsedGross, selectedWalletId],
@@ -79,8 +79,10 @@ export function ReceiveSalaryModal({
       await queryClient.invalidateQueries({ queryKey: ["transactions"] });
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
       await queryClient.invalidateQueries({ queryKey: ["debts"] });
+      await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+      await queryClient.invalidateQueries({ queryKey: ["salary-preview"] });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
       onSuccess(`Gaji periode ${period} berhasil dicatat (${formatRupiah(netSalary)})`);
       onClose();
     },
@@ -98,6 +100,10 @@ export function ReceiveSalaryModal({
     setError("");
     if (parsedGross <= 0) {
       setError("Gaji kotor harus lebih dari 0.");
+      return;
+    }
+    if (parsedGross > 2_147_483_647) {
+      setError("Nominal gaji maksimal Rp 2.147.483.647.");
       return;
     }
     receiveMutation.mutate();

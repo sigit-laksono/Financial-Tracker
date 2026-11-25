@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { AlertIcon, LockIcon, MoonIcon, SunIcon } from "../../components/Icons";
 import { Badge, Button, Card } from "../../components/UI";
 import { api, ApiError } from "../../lib/api";
@@ -18,6 +19,7 @@ export function ProfileSecurityTab({
   onAuthChanged: () => void;
   onToast: (msg: string) => void;
 }) {
+  const queryClient = useQueryClient();
   const [currentPin, setCurrentPin] = useState("");
   const [newPin, setNewPin] = useState("");
   const [pinError, setPinError] = useState("");
@@ -164,6 +166,9 @@ export function ProfileSecurityTab({
                     type="button"
                     onClick={async () => {
                       await api.logout();
+                      queryClient.removeQueries({
+                        predicate: (q) => q.queryKey[0] !== "auth-status",
+                      });
                       onAuthChanged();
                     }}
                     className="min-h-[44px] flex-1 sm:flex-initial rounded-[14px] font-semibold"
@@ -175,6 +180,9 @@ export function ProfileSecurityTab({
                     type="button"
                     onClick={async () => {
                       await api.logoutAll();
+                      queryClient.removeQueries({
+                        predicate: (q) => q.queryKey[0] !== "auth-status",
+                      });
                       onAuthChanged();
                       onToast("Semua sesi perangkat lain dicabut");
                     }}

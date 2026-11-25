@@ -111,12 +111,12 @@ export function createExportRoutes(db: AppDb) {
       scope: period === "all" ? ("full" as const) : ("period" as const),
       settings: fullBackupData.settings,
       categories: fullBackupData.categories,
-      wallets: snap.wallets,
+      wallets: fullBackupData.wallets,
       walletRecurringFees: fullBackupData.walletRecurringFees,
-      accounts: snap.accounts,
+      accounts: fullBackupData.accounts,
       installments:
         period === "all" ? fullBackupData.installments : snap.activeInstallments,
-      budgets: snap.budgets,
+      budgets: fullBackupData.budgets,
       transactions: txRows.map((t) => ({
         ...t,
         walletName: walletById.get(t.walletId) ?? null,

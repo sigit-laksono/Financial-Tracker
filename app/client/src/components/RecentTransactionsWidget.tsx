@@ -66,7 +66,10 @@ export function RecentTransactionsWidget({
         ) : (
           <div className="space-y-2.5">
             {recentItems.map((tx) => {
-              const isIncome = tx.type === "income";
+              const isInflow =
+                tx.type === "income" ||
+                tx.type === "debt_collection" ||
+                tx.type === "loan_disbursement";
               const isTransfer = tx.type === "transfer";
 
               return (
@@ -79,14 +82,14 @@ export function RecentTransactionsWidget({
                       className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${
                         isMasked
                           ? "bg-[var(--card)] text-[var(--muted-foreground)] border border-[var(--border)]"
-                          : isIncome
+                          : isInflow
                             ? "bg-[var(--chart-income)]/15 text-[var(--chart-income)]"
                             : isTransfer
                               ? "bg-[var(--card)] text-[var(--muted-foreground)] border border-[var(--border)]"
                               : "bg-[var(--destructive)]/15 text-[var(--destructive)]"
                       }`}
                     >
-                      {isIncome ? "↓" : isTransfer ? "⇄" : "↑"}
+                      {isInflow ? "↓" : isTransfer ? "⇄" : "↑"}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-xs sm:text-sm font-bold text-[var(--foreground)]">
@@ -103,14 +106,14 @@ export function RecentTransactionsWidget({
                       className={`tabular-nums font-mono text-xs font-bold ${
                         isMasked
                           ? "text-[var(--muted-foreground)]"
-                          : isIncome
+                          : isInflow
                             ? "text-[var(--chart-income)]"
                             : isTransfer
                               ? "text-[var(--foreground)]"
                               : "text-[var(--destructive)]"
                       }`}
                     >
-                      {isMasked ? "" : isIncome ? "+" : isTransfer ? "" : "−"}
+                      {isMasked ? "" : isInflow ? "+" : isTransfer ? "" : "−"}
                       {formatRupiah(tx.amount, isMasked)}
                     </p>
                     <p className="text-[10px] text-[var(--muted-foreground)]">

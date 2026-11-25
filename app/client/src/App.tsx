@@ -91,6 +91,7 @@ export function App() {
 
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickAddMode, setQuickAddMode] = useState<QuickAddMode>("expense");
+  const [quickAddInitialWalletId, setQuickAddInitialWalletId] = useState<number | null>(null);
   const [editingTx, setEditingTx] = useState<TransactionDto | null>(null);
   const [preselectedInstIds, setPreselectedInstIds] = useState<number[]>([]);
   const [preselectedCcCycle, setPreselectedCcCycle] = useState("");
@@ -108,6 +109,9 @@ export function App() {
   const [toast, setToast] = useState("");
   const toastTimerRef = useRef<number | null>(null);
   const syncedCyclesRef = useRef<Set<string>>(new Set());
+  const prevCycleSettingsRef = useRef<{ gajianStartDay: number; cardCutoffDay: number } | null>(
+    null,
+  );
 
   useEffect(() => {
     localStorage.setItem("ft-theme", theme);
@@ -159,6 +163,7 @@ export function App() {
         if (res.feesInserted > 0 || res.payrollSettled > 0) {
           queryClient.invalidateQueries({ queryKey: ["dashboard"] });
           queryClient.invalidateQueries({ queryKey: ["debts"] });
+          queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
         }
       })
       .catch(() => {
@@ -193,6 +198,22 @@ export function App() {
     }
   }, [dashboardQuery.error, debtsQuery.error, queryClient]);
 
+  const gajianStartDay = dashboardQuery.data?.settings.gajianStartDay;
+  const cardCutoffDay = dashboardQuery.data?.settings.cardCutoffDay;
+
+  useEffect(() => {
+    if (gajianStartDay === undefined || cardCutoffDay === undefined) return;
+    const prev = prevCycleSettingsRef.current;
+    if (
+      prev === null ||
+      prev.gajianStartDay !== gajianStartDay ||
+      prev.cardCutoffDay !== cardCutoffDay
+    ) {
+      prevCycleSettingsRef.current = { gajianStartDay, cardCutoffDay };
+      setPeriod(currentPeriodForCycle(cycle, gajianStartDay, cardCutoffDay));
+    }
+  }, [gajianStartDay, cardCutoffDay, cycle]);
+
   useEffect(() => {
     if (!isAuthenticated || !dashboardQuery.data) return;
     const completed = localStorage.getItem("ft-onboarding-completed");
@@ -217,13 +238,18 @@ export function App() {
     setTxFilters((prev) => ({ ...prev, weekChoice: "all" }));
   };
 
-  const openQuickAdd = useCallback((mode: QuickAddMode = "expense") => {
-    setEditingTx(null);
-    setPreselectedInstIds([]);
-    setPreselectedCcCycle("");
-    setQuickAddMode(mode);
-    setQuickAddOpen(true);
-  }, []);
+  const openQuickAdd = useCallback(
+    (mode: QuickAddMode = "expense", initialWalletId?: number | null) => {
+      setEditingTx(null);
+      setPreselectedInstIds([]);
+      setPreselectedCcCycle("");
+      setPreselectedCcWalletId(undefined);
+      setQuickAddInitialWalletId(initialWalletId ?? null);
+      setQuickAddMode(mode);
+      setQuickAddOpen(true);
+    },
+    [],
+  );
 
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
@@ -254,6 +280,7 @@ export function App() {
 
   const openPayInstallment = (installmentId: number) => {
     setEditingTx(null);
+    setQuickAddInitialWalletId(null);
     setPreselectedCcCycle("");
     setPreselectedCcWalletId(undefined);
     setPreselectedInstIds([installmentId]);
@@ -263,6 +290,7 @@ export function App() {
 
   const openPayCcCycle = (cycleKey: string, installmentIds: number[], ccWalletId?: number) => {
     setEditingTx(null);
+    setQuickAddInitialWalletId(null);
     setPreselectedCcCycle(cycleKey);
     setPreselectedCcWalletId(ccWalletId);
     setPreselectedInstIds(installmentIds);
@@ -309,9 +337,7 @@ export function App() {
       <LockScreen
         onUnlocked={async () => {
           syncedCyclesRef.current.clear();
-          await queryClient.invalidateQueries({ queryKey: ["auth-status"] });
-          await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-          await queryClient.invalidateQueries({ queryKey: ["debts"] });
+          await queryClient.invalidateQueries();
         }}
       />
     );
@@ -493,6 +519,15 @@ export function App() {
             onThemeChange={setTheme}
             onReconcileWallet={(w) => setReconcileWallet(w)}
             onAuthChanged={() => queryClient.invalidateQueries({ queryKey: ["auth-status"] })}
+            onDataRestored={() => {
+              syncedCyclesRef.current.clear();
+              prevCycleSettingsRef.current = null;
+              setTxFilters(INITIAL_TRANSACTION_FILTERS);
+              const s = dashboardQuery.data?.settings;
+              setPeriod(
+                currentPeriodForCycle(cycle, s?.gajianStartDay ?? 25, s?.cardCutoffDay ?? 20),
+              );
+            }}
             onToast={showToast}
           />
         </Suspense>
@@ -558,6 +593,7 @@ export function App() {
           onFiltersChange={setTxFilters}
           onPeriodChange={handlePeriodChange}
           onEditTransaction={(tx) => {
+            setQuickAddInitialWalletId(null);
             setEditingTx(tx);
             setQuickAddOpen(true);
           }}
@@ -677,6 +713,9 @@ export function App() {
               type="button"
               onClick={async () => {
                 await api.logout();
+                queryClient.removeQueries({
+                  predicate: (q) => q.queryKey[0] !== "auth-status",
+                });
                 await queryClient.invalidateQueries({ queryKey: ["auth-status"] });
               }}
               aria-label="Kunci aplikasi"
@@ -720,6 +759,9 @@ export function App() {
                 type="button"
                 onClick={async () => {
                   await api.logout();
+                  queryClient.removeQueries({
+                    predicate: (q) => q.queryKey[0] !== "auth-status",
+                  });
                   await queryClient.invalidateQueries({ queryKey: ["auth-status"] });
                 }}
                 aria-label="Kunci aplikasi"
@@ -1008,11 +1050,13 @@ export function App() {
           onClose={() => {
             setQuickAddOpen(false);
             setEditingTx(null);
+            setQuickAddInitialWalletId(null);
           }}
           wallets={dashboardQuery.data.wallets}
           categories={dashboardQuery.data.categories}
           debts={debtsQuery.data}
           initialMode={quickAddMode}
+          initialWalletId={quickAddInitialWalletId}
           editingTx={editingTx}
           preselectedInstallmentIds={preselectedInstIds}
           preselectedCcCycleKey={preselectedCcCycle}

@@ -106,11 +106,21 @@ function validateBackupReferentialIntegrity(snapshot: BackupSnapshotV2): void {
         `Akun hutang "${acc.name}" merujuk dompet pencairan #${acc.disburseWalletId} yang tidak ada.`,
       );
     }
+    if (acc.sourceTransactionId != null && !txIds.has(acc.sourceTransactionId)) {
+      throw new ValidationError(
+        `Akun hutang "${acc.name}" merujuk transaksi sumber #${acc.sourceTransactionId} yang tidak ada.`,
+      );
+    }
   }
 
   for (const inst of snapshot.installments) {
     if (!accountIds.has(inst.accountId)) {
       throw new ValidationError(`Cicilan #${inst.id} merujuk akun hutang #${inst.accountId} yang tidak ada.`);
+    }
+    if (inst.settlementTransactionId != null && !txIds.has(inst.settlementTransactionId)) {
+      throw new ValidationError(
+        `Cicilan #${inst.id} merujuk transaksi pelunasan #${inst.settlementTransactionId} yang tidak ada.`,
+      );
     }
   }
 
@@ -127,6 +137,14 @@ function validateBackupReferentialIntegrity(snapshot: BackupSnapshotV2): void {
     }
     if (t.debtAccountId != null && !accountIds.has(t.debtAccountId)) {
       throw new ValidationError(`Transaksi #${t.id} merujuk akun hutang #${t.debtAccountId} yang tidak ada.`);
+    }
+    if (t.convertedAccountId != null && !accountIds.has(t.convertedAccountId)) {
+      throw new ValidationError(
+        `Transaksi #${t.id} merujuk akun konversi cicilan #${t.convertedAccountId} yang tidak ada.`,
+      );
+    }
+    if (t.installmentId != null && !installmentIds.has(t.installmentId)) {
+      throw new ValidationError(`Transaksi #${t.id} merujuk cicilan #${t.installmentId} yang tidak ada.`);
     }
     if (t.sourceRef != null) {
       if (sourceRefs.has(t.sourceRef)) {
@@ -212,8 +230,11 @@ export async function buildFullJsonBackupData(db: AppDb, txIdsFilter?: number[])
   const [
     settings,
     categoryRows,
+    walletRows,
     feeRows,
+    accountRows,
     installmentRows,
+    budgetRows,
     splitRows,
     allocationRows,
     goalRows,
@@ -222,8 +243,11 @@ export async function buildFullJsonBackupData(db: AppDb, txIdsFilter?: number[])
   ] = await Promise.all([
     getSettings(db),
     db.select().from(categories).orderBy(asc(categories.sortOrder), asc(categories.id)),
+    db.select().from(wallets).orderBy(asc(wallets.sortOrder), asc(wallets.id)),
     db.select().from(walletRecurringFees).orderBy(asc(walletRecurringFees.id)),
+    db.select().from(debtAccounts).orderBy(asc(debtAccounts.id)),
     db.select().from(installments).orderBy(asc(installments.dueDate), asc(installments.id)),
+    db.select().from(budgets).orderBy(asc(budgets.id)),
     txIdsFilter === undefined
       ? db.select().from(transactionSplits).orderBy(asc(transactionSplits.id))
       : txIdsFilter.length > 0
@@ -262,8 +286,11 @@ export async function buildFullJsonBackupData(db: AppDb, txIdsFilter?: number[])
       lastAutoSyncDate: settings.lastAutoSyncDate,
     },
     categories: categoryRows,
+    wallets: walletRows,
     walletRecurringFees: feeRows,
+    accounts: accountRows,
     installments: installmentRows,
+    budgets: budgetRows,
     transactionSplits: splitRows,
     settlementAllocations: allocationRows,
     goals: goalRows,

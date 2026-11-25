@@ -9,7 +9,7 @@ Aplikasi pelacak arus kas pribadi, siklus kartu kredit, anggaran, target tabunga
 - **Ringkasan Siklus Ganda (`gajian` & `cc`)**: Pantau *Safe-to-Spend*, jatah belanja harian (*Daily Allowance*), arus kas bersih, serta pemisahan tagihan kartu kredit *Billed* dan *Unbilled*.
 - **Dompet & Rekening**: Kelola rekening bank, e-wallet, uang tunai, dan kartu kredit (limit, *cutoff*, *statement*, jatuh tempo, biaya rutin kartu), transfer antar dompet dengan biaya admin atomik, serta rekonsiliasi saldo.
 - **Transaksi & Split Struk**: Pencatatan cepat (*Quick Add*) untuk pengeluaran, pemasukan, transfer, dan pembayaran kewajiban, dukungan *split* transaksi multi-kategori, tagihan rutin berulang, serta ekspor **CSV** (dengan mitigasi *formula injection*) dan **JSON**.
-- **Anggaran 50/30/20**: Alokasi *Needs / Wants / Savings* serta batas anggaran per kategori per siklus.
+- **Anggaran Kustom Per Siklus**: Alokasi *Needs / Wants / Savings* secara fleksibel per siklus (otomatis dari total budget kategori atau batas manual) serta kontrol batas anggaran per kategori.
 - **Target & Dana Darurat**: Pelacakan progres target tabungan dan estimasi ketahanan dana darurat (*runway*).
 - **Aset & Net Worth**: Pencatatan aset investasi dan aset fisik untuk menghitung kekayaan bersih (*Net Worth*).
 - **Kartu Kredit, Utang & Piutang**: Jadwal cicilan, *Split Pay* transaksi kartu kredit, potongan gaji otomatis (*payroll*), dan alokasi pelunasan.

@@ -139,7 +139,7 @@ describe("Ledger engine & core flows", () => {
           merchant: "Beli Monitor",
           amount: 1_200_000,
           transactionDate: "2026-11-10",
-          category: "Belanja",
+          category: "Belanja Pribadi & Hobi",
           walletId: cc.id,
         }),
       });
@@ -153,7 +153,7 @@ describe("Ledger engine & core flows", () => {
           merchant: "Kopi Unbilled",
           amount: 50_000,
           transactionDate: "2026-11-21",
-          category: "Makanan & Minuman",
+          category: "Makanan & Belanja Dapur",
           walletId: cc.id,
         }),
       });
@@ -297,7 +297,7 @@ describe("Ledger engine & core flows", () => {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          category: "Makanan & Minuman",
+          category: "Makanan & Belanja Dapur",
           period: "default",
           limitAmount: 100_000,
         }),
@@ -310,7 +310,7 @@ describe("Ledger engine & core flows", () => {
           merchant: "Warung",
           amount: 85_000,
           transactionDate: "2026-11-10",
-          category: "Makanan & Minuman",
+          category: "Makanan & Belanja Dapur",
           walletId: bni.id,
         }),
       });
@@ -319,7 +319,7 @@ describe("Ledger engine & core flows", () => {
       const budgetJson = (await budgetRes.json()) as {
         budgets: Array<{ category: string; percentUsed: number; status: string }>;
       };
-      const makan = budgetJson.budgets.find((b) => b.category === "Makanan & Minuman")!;
+      const makan = budgetJson.budgets.find((b) => b.category === "Makanan & Belanja Dapur")!;
       expect(makan.percentUsed).toBe(85);
       expect(makan.status).toBe("warning");
 
@@ -488,7 +488,7 @@ describe("Phase 4 hardening: validation, settlements, CC cycles & CSV security",
           merchant: "Test Bad Date",
           amount: 10_000,
           transactionDate: "2026-02-31",
-          category: "Jajan",
+          category: "Jajan & Nongkrong",
           walletId: bni.id,
         }),
       });
@@ -516,7 +516,7 @@ describe("Phase 4 hardening: validation, settlements, CC cycles & CSV security",
             merchant: "Kopi",
             amount: 25_000,
             transactionDate: "2026-11-10",
-            category: "Jajan",
+            category: "Jajan & Nongkrong",
             walletId: bni.id,
             sourceRef: "idem-key-1",
           }),
@@ -529,7 +529,7 @@ describe("Phase 4 hardening: validation, settlements, CC cycles & CSV security",
             merchant: "Kopi",
             amount: 25_000,
             transactionDate: "2026-11-10",
-            category: "Jajan",
+            category: "Jajan & Nongkrong",
             walletId: bni.id,
             sourceRef: "idem-key-1",
           }),
@@ -549,7 +549,7 @@ describe("Phase 4 hardening: validation, settlements, CC cycles & CSV security",
           merchant: "Laptop",
           amount: 3_000_000,
           transactionDate: "2026-11-10",
-          category: "Belanja",
+          category: "Belanja Pribadi & Hobi",
           walletId: cc.id,
         }),
       });
@@ -618,7 +618,7 @@ describe("Phase 4 hardening: validation, settlements, CC cycles & CSV security",
           merchant: "Beli Materai 10rb",
           amount: 10_000,
           transactionDate: "2026-09-10",
-          category: "Belanja",
+          category: "Belanja Pribadi & Hobi",
           walletId: cc.id,
         }),
       });
@@ -710,7 +710,7 @@ describe("Phase 4 hardening: validation, settlements, CC cycles & CSV security",
           merchant: "Belanja Siklus 2026-10",
           amount: 100_000,
           transactionDate: "2026-10-05",
-          category: "Belanja",
+          category: "Belanja Pribadi & Hobi",
           walletId: cc.id,
         }),
       });
@@ -722,7 +722,7 @@ describe("Phase 4 hardening: validation, settlements, CC cycles & CSV security",
         initialBalance: 400_000,
         installmentCount: 2,
         installmentAmount: 200_000,
-        firstDueDate: "2026-10-25",
+        firstDueDate: "2026-09-25",
         paymentMethod: "Tagihan kartu",
       });
       const debtsJson = (await (await app.request("/api/debts")).json()) as {
@@ -798,7 +798,7 @@ describe("Phase 4 hardening: validation, settlements, CC cycles & CSV security",
           merchant: "=CMD('calc')",
           amount: 15_000,
           transactionDate: "2026-11-10",
-          category: "Jajan",
+          category: "Jajan & Nongkrong",
           walletId: bni.id,
           note: "+1+1",
         }),
@@ -933,7 +933,7 @@ describe("Phase 6: schema integrity, audit logs, pagination, observability & 5k 
       const [targetCat] = await db
         .select()
         .from(categories)
-        .where(eq(categories.name, "Makanan & Minuman"))
+        .where(eq(categories.name, "Makanan & Belanja Dapur"))
         .limit(1);
       expect(targetCat).toBeDefined();
       if (!targetCat || !bca) return;
@@ -946,7 +946,7 @@ describe("Phase 6: schema integrity, audit logs, pagination, observability & 5k 
           type: "expense",
           merchant: "RM Sederhana",
           amount: 45_000,
-          category: "Makanan & Minuman",
+          category: "Makanan & Belanja Dapur",
           note: "Nasi Padang",
           transactionDate: "2026-04-12",
         }),
@@ -957,7 +957,7 @@ describe("Phase 6: schema integrity, audit logs, pagination, observability & 5k 
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          category: "Makanan & Minuman",
+          category: "Makanan & Belanja Dapur",
           limitAmount: 1_500_000,
         }),
       });
@@ -1007,7 +1007,7 @@ describe("Phase 6: schema integrity, audit logs, pagination, observability & 5k 
           type: "expense",
           merchant: "Warung Kopi",
           amount: 50_000,
-          category: "Makanan & Minuman",
+          category: "Makanan & Belanja Dapur",
           transactionDate: "2026-04-11",
         }),
       });
@@ -1066,7 +1066,7 @@ describe("Phase 6: schema integrity, audit logs, pagination, observability & 5k 
 
       let thrownAmount = false;
       try {
-        await client`INSERT INTO transactions (wallet_id, type, amount, merchant, category, transaction_date) VALUES (${bca!.id}, 'expense', 0, 'Test', 'Makanan & Minuman', '2026-04-10')`;
+        await client`INSERT INTO transactions (wallet_id, type, amount, merchant, category, transaction_date) VALUES (${bca!.id}, 'expense', 0, 'Test', 'Makanan & Belanja Dapur', '2026-04-10')`;
       } catch {
         thrownAmount = true;
       }
@@ -1082,7 +1082,7 @@ describe("Phase 6: schema integrity, audit logs, pagination, observability & 5k 
 
       let thrownBudget = false;
       try {
-        await client`INSERT INTO budgets (category, period, limit_amount) VALUES ('Makanan & Minuman', 'default', 0)`;
+        await client`INSERT INTO budgets (category, period, limit_amount) VALUES ('Makanan & Belanja Dapur', 'default', 0)`;
       } catch {
         thrownBudget = true;
       }
@@ -1132,7 +1132,7 @@ describe("Phase 6: schema integrity, audit logs, pagination, observability & 5k 
           type: isIncome ? "income" : "expense",
           amount: 10_000 + (i % 50) * 1_000,
           merchant: isIncome ? "Employer" : `Merchant #${i % 20}`,
-          category: isIncome ? "Gaji" : "Makanan & Minuman",
+          category: isIncome ? "Gaji" : "Makanan & Belanja Dapur",
           note: `Synthetic tx #${i}`,
           transactionDate: date,
         });

@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import type { EmergencyFundRunwayDto, GoalDto } from "../../../shared/src/dtos";
 import {
@@ -7,29 +7,43 @@ import {
   updateGoalSchema,
 } from "../../../shared/src/schemas";
 import type { AppDb } from "../db";
-import { categories, goals, transactions, wallets } from "../db/schema";
-import { jakartaToday } from "../lib/dates";
-import { computeWalletBalance } from "../lib/ledger";
-import { getSettings } from "../lib/settingsService";
+import { categories, goals, transactions, transactionSplits, wallets } from "../db/schema";
+import { recordAuditLog } from "../lib/auditService";
+import { addDaysToDate, jakartaToday } from "../lib/dates";
+import { computeLedgerSnapshot, computeWalletBalance } from "../lib/ledger";
+
+async function validateGoalWallet(db: AppDb, walletId: number | null | undefined) {
+  if (walletId == null) return null;
+  const [wallet] = await db
+    .select({ id: wallets.id, type: wallets.type })
+    .from(wallets)
+    .where(eq(wallets.id, walletId))
+    .limit(1);
+  if (!wallet) {
+    return { status: 404 as const, error: "Dompet target tidak ditemukan." };
+  }
+  if (wallet.type === "credit_card") {
+    return {
+      status: 400 as const,
+      error: "Dompet target tabungan tidak boleh berupa kartu kredit.",
+    };
+  }
+  return null;
+}
 
 export function createGoalRoutes(db: AppDb) {
   const router = new Hono();
 
   router.get("/", async (c) => {
     const today = jakartaToday();
-    const [goalRows, walletRows, settings] = await Promise.all([
+    const ninetyDaysAgo = addDaysToDate(today, -90);
+
+    const [goalRows, snap, recentExpenses] = await Promise.all([
       db.select().from(goals).orderBy(desc(goals.isEmergencyFund), desc(goals.id)),
-      db.select().from(wallets),
-      getSettings(db),
-    ]);
-
-    const walletMap = new Map(walletRows.map((w) => [w.id, w.name]));
-
-    // Calculate monthly needs burn rate from last 90 days expenses
-    const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
-    const [recentExpenses, categoryRows] = await Promise.all([
+      computeLedgerSnapshot(db, today),
       db
         .select({
+          id: transactions.id,
           amount: transactions.amount,
           category: transactions.category,
         })
@@ -41,28 +55,55 @@ export function createGoalRoutes(db: AppDb) {
             gte(transactions.transactionDate, ninetyDaysAgo),
           ),
         ),
-      db.select({ name: categories.name, bucket: categories.bucket }).from(categories),
     ]);
 
+    const expIds = recentExpenses.map((e) => e.id);
+    const splitRows =
+      expIds.length > 0
+        ? await db
+            .select({
+              transactionId: transactionSplits.transactionId,
+              category: transactionSplits.category,
+              amount: transactionSplits.amount,
+            })
+            .from(transactionSplits)
+            .where(inArray(transactionSplits.transactionId, expIds))
+        : [];
+
+    const splitsByTxId = new Map<number, typeof splitRows>();
+    for (const sp of splitRows) {
+      const list = splitsByTxId.get(sp.transactionId) ?? [];
+      list.push(sp);
+      splitsByTxId.set(sp.transactionId, list);
+    }
+
+    const walletMap = new Map(snap.wallets.map((w) => [w.id, w.name]));
     const needsCatSet = new Set(
-      categoryRows.filter((cat) => cat.bucket === "needs").map((cat) => cat.name.toLowerCase()),
+      snap.categories
+        .filter((cat) => cat.type === "expense" && cat.bucket === "needs")
+        .map((cat) => cat.name.trim().toLowerCase()),
     );
 
     let needsExpenseSum = 0;
     for (const exp of recentExpenses) {
-      if (needsCatSet.has(exp.category.trim().toLowerCase())) {
+      const txSplits = splitsByTxId.get(exp.id);
+      if (txSplits && txSplits.length > 0) {
+        for (const sp of txSplits) {
+          if (needsCatSet.has(sp.category.trim().toLowerCase())) {
+            needsExpenseSum += sp.amount;
+          }
+        }
+      } else if (needsCatSet.has(exp.category.trim().toLowerCase())) {
         needsExpenseSum += exp.amount;
       }
     }
 
-    // Monthly needs burn rate: 90 days total / 3 (or fallback to 50% net salary or 3 million)
     let monthlyNeedsBurnRate = Math.round(needsExpenseSum / 3);
     if (monthlyNeedsBurnRate === 0) {
       monthlyNeedsBurnRate =
-        settings.netSalary > 0 ? Math.round(settings.netSalary * 0.5) : 3_000_000;
+        snap.settings.netSalary > 0 ? Math.round(snap.settings.netSalary * 0.5) : 3_000_000;
     }
 
-    // Map goal items
     const todayYearMonth = today.slice(0, 7);
     const items: GoalDto[] = goalRows.map((g) => {
       const remainingAmount = Math.max(0, g.targetAmount - g.currentAmount);
@@ -102,14 +143,12 @@ export function createGoalRoutes(db: AppDb) {
       };
     });
 
-    // Emergency fund calculations
     const emergencyGoals = goalRows.filter((g) => g.isEmergencyFund);
     let totalEmergencyFunds = emergencyGoals.reduce((sum, g) => sum + g.currentAmount, 0);
 
-    // If no emergency fund goals have funds, check savings wallets
+    // Fall back to live savings-wallet balance when no dedicated emergency goal has funds.
     if (totalEmergencyFunds === 0) {
-      const savingsWallets = walletRows.filter((w) => w.role === "savings" && w.isActive);
-      totalEmergencyFunds = savingsWallets.reduce((sum, w) => sum + w.openingBalance, 0);
+      totalEmergencyFunds = Math.max(0, snap.totalSavingsCash);
     }
 
     const runwayMonths =
@@ -148,6 +187,11 @@ export function createGoalRoutes(db: AppDb) {
       );
     }
 
+    const walletError = await validateGoalWallet(db, parsed.data.walletId);
+    if (walletError) {
+      return c.json({ error: walletError.error }, walletError.status);
+    }
+
     const [created] = await db
       .insert(goals)
       .values({
@@ -177,6 +221,11 @@ export function createGoalRoutes(db: AppDb) {
 
     const [existing] = await db.select().from(goals).where(eq(goals.id, id)).limit(1);
     if (!existing) return c.json({ error: "Target tabungan tidak ditemukan." }, 404);
+
+    const walletError = await validateGoalWallet(db, parsed.data.walletId);
+    if (walletError) {
+      return c.json({ error: walletError.error }, walletError.status);
+    }
 
     const [updated] = await db
       .update(goals)
@@ -221,6 +270,13 @@ export function createGoalRoutes(db: AppDb) {
       return c.json({ error: "Tidak dapat menyetor tabungan menggunakan kartu kredit." }, 400);
     }
 
+    const [targetWallet] = goal.walletId
+      ? await db.select().from(wallets).where(eq(wallets.id, goal.walletId)).limit(1)
+      : [null];
+    if (targetWallet && targetWallet.type === "credit_card") {
+      return c.json({ error: "Dompet tujuan target tabungan tidak boleh berupa kartu kredit." }, 400);
+    }
+
     if (parsed.data.preventOverdraft) {
       const curBalance = await computeWalletBalance(db, wallet.id, wallet.openingBalance);
       if (curBalance < parsed.data.amount) {
@@ -233,41 +289,42 @@ export function createGoalRoutes(db: AppDb) {
       }
     }
 
-    const [tabunganCategory] = await db
-      .select({ id: categories.id, name: categories.name })
-      .from(categories)
-      .where(and(eq(categories.type, "expense"), eq(categories.name, "Tabungan")))
-      .limit(1);
-
-    const [targetWallet] = goal.walletId
-      ? await db.select().from(wallets).where(eq(wallets.id, goal.walletId)).limit(1)
-      : [null];
     const hasTargetWallet = Boolean(targetWallet && targetWallet.id !== wallet.id);
-
     const txDate = parsed.data.date ?? jakartaToday();
     const amount = parsed.data.amount;
 
-    const result = await db.transaction(async (tx) => {
-      // 1. Record transaction (as transfer if a separate target savings wallet is defined)
-      const [txRow] = await tx
-        .insert(transactions)
-        .values({
-          type: hasTargetWallet ? "transfer" : "expense",
-          merchant: hasTargetWallet
-            ? `Setor Target: ${goal.name} ke ${targetWallet!.name}`
-            : `Setor Target: ${goal.name}`,
-          amount,
-          transactionDate: txDate,
-          category: tabunganCategory?.name ?? "Tabungan",
-          categoryId: tabunganCategory?.id ?? null,
-          walletId: wallet.id,
-          toWalletId: hasTargetWallet ? targetWallet!.id : null,
-          note: parsed.data.note?.trim() || `Setor dana ke target tabungan ${goal.name}`,
-          source: "manual",
-        })
-        .returning({ id: transactions.id });
+    const [tabunganCategory] = hasTargetWallet
+      ? await db
+          .select({ id: categories.id, name: categories.name })
+          .from(categories)
+          .where(and(eq(categories.type, "expense"), eq(categories.name, "Tabungan")))
+          .limit(1)
+      : [null];
 
-      // 2. Update goal currentAmount
+    const result = await db.transaction(async (tx) => {
+      let transactionId: number | null = null;
+
+      if (hasTargetWallet) {
+        // Record a transfer only when moving cash to a separate target wallet.
+        const [txRow] = await tx
+          .insert(transactions)
+          .values({
+            type: "transfer",
+            merchant: `Setor Target: ${goal.name} ke ${targetWallet!.name}`,
+            amount,
+            transactionDate: txDate,
+            category: tabunganCategory?.name ?? "Tabungan",
+            categoryId: tabunganCategory?.id ?? null,
+            walletId: wallet.id,
+            toWalletId: targetWallet!.id,
+            note: parsed.data.note?.trim() || `Setor dana ke target tabungan ${goal.name}`,
+            source: "manual",
+            sourceRef: `goal:${goal.id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+          })
+          .returning({ id: transactions.id });
+        transactionId = txRow!.id;
+      }
+
       const [updatedGoal] = await tx
         .update(goals)
         .set({
@@ -277,7 +334,24 @@ export function createGoalRoutes(db: AppDb) {
         .where(eq(goals.id, id))
         .returning();
 
-      return { transactionId: txRow!.id, goal: updatedGoal };
+      if (!hasTargetWallet) {
+        // Earmarking inside the same/unlinked wallet preserves cash balance and net worth.
+        await recordAuditLog(tx, {
+          entityType: "goal",
+          entityId: goal.id,
+          action: "goal_contribute_earmark",
+          before: { currentAmount: goal.currentAmount },
+          after: {
+            currentAmount: updatedGoal!.currentAmount,
+            amount,
+            walletId: wallet.id,
+            date: txDate,
+            note: parsed.data.note?.trim() || null,
+          },
+        });
+      }
+
+      return { transactionId, goal: updatedGoal };
     });
 
     return c.json({ ok: true, ...result });

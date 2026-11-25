@@ -4,14 +4,14 @@ import { formatRupiah } from "../lib/format";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
 import { Badge, Button } from "./UI";
 
-export function Budget503020Progress({
-  budget503020,
+export function BudgetBucketProgress({
+  budgetBuckets,
   daysElapsed,
   daysTotal,
   onOpenBudget,
   onOpenGoals,
 }: {
-  budget503020?: DashboardDto["budget503020"];
+  budgetBuckets?: DashboardDto["budgetBuckets"];
   daysElapsed: number;
   daysTotal: number;
   onOpenBudget?: () => void;
@@ -24,9 +24,9 @@ export function Budget503020Progress({
     return Math.min(100, Math.round((daysElapsed / daysTotal) * 100));
   }, [daysElapsed, daysTotal]);
 
-  const needs = budget503020?.needs ?? { spent: 0, limit: 0, percent: 0, status: "unconfigured" as const };
-  const wants = budget503020?.wants ?? { spent: 0, limit: 0, percent: 0, status: "unconfigured" as const };
-  const savings = budget503020?.savings ?? {
+  const needs = budgetBuckets?.needs ?? { spent: 0, limit: 0, percent: 0, status: "unconfigured" as const };
+  const wants = budgetBuckets?.wants ?? { spent: 0, limit: 0, percent: 0, status: "unconfigured" as const };
+  const savings = budgetBuckets?.savings ?? {
     spent: 0,
     target: 0,
     percent: 0,
@@ -139,7 +139,7 @@ export function Budget503020Progress({
                   </Badge>
                 </div>
                 <p className="text-xs text-[var(--muted-foreground)] leading-relaxed">
-                  Atur pagu <strong className="text-[var(--foreground)]">Kebutuhan</strong>,{" "}
+                  Atur batas budget <strong className="text-[var(--foreground)]">Kebutuhan</strong>,{" "}
                   <strong className="text-[var(--foreground)]">Keinginan</strong>, dan target{" "}
                   <strong className="text-[var(--foreground)]">Tabungan &amp; Utang</strong> siklus
                   ini.
@@ -259,7 +259,7 @@ export function Budget503020Progress({
                       <button
                         type="button"
                         onClick={onOpenGoals}
-                        className="inline-flex min-h-[32px] items-center px-1.5 text-xs font-bold text-[var(--primary)] hover:underline"
+                        className="inline-flex min-h-[44px] items-center px-1.5 text-xs font-bold text-[var(--primary)] hover:underline"
                       >
                         Target
                       </button>

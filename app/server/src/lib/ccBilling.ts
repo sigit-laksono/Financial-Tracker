@@ -1,6 +1,12 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import type { AppDb } from "../db";
-import { categories, transactions, walletRecurringFees, wallets } from "../db/schema";
+import {
+  categories,
+  settlementAllocations,
+  transactions,
+  walletRecurringFees,
+  wallets,
+} from "../db/schema";
 import { periodBounds } from "./dates";
 import { getSettings } from "./settingsService";
 
@@ -9,14 +15,21 @@ export const DEFAULT_BANK_FEES = [
   { key: "notifikasi", merchant: "Notifikasi", amount: 12_500 },
 ] as const;
 
-export async function ensureMonthlyBankFees(db: AppDb, cycleKey: string): Promise<number> {
-  const ccWallets = await db
-    .select()
-    .from(wallets)
-    .where(and(eq(wallets.type, "credit_card"), eq(wallets.isActive, true)));
+export async function ensureMonthlyBankFees(
+  db: AppDb,
+  cycleKey: string,
+  options: { requireActivityForWallets?: boolean } = {},
+): Promise<number> {
+  const allCcWallets = await db.select().from(wallets).where(eq(wallets.type, "credit_card"));
+  const ccWallets = allCcWallets.filter((w) => w.isActive);
   if (ccWallets.length === 0) return 0;
 
   const settings = await getSettings(db);
+  if (settings.legacySettledBeforeCycle && cycleKey <= settings.legacySettledBeforeCycle) {
+    return 0;
+  }
+
+  const isSingleCc = allCcWallets.length <= 1;
 
   const [bankFeeCategory] = await db
     .select({ id: categories.id })
@@ -30,22 +43,80 @@ export async function ensureMonthlyBankFees(db: AppDb, cycleKey: string): Promis
     const cutoffDay = ccWallet.cutoffDay ?? settings.cardCutoffDay;
     const feeDate = periodBounds(cycleKey, "cc", settings.gajianStartDay, cutoffDay).end;
 
-    // Fetch recurring fees configured for this wallet
-    const fees = await db
-      .select()
-      .from(walletRecurringFees)
-      .where(
-        and(eq(walletRecurringFees.walletId, ccWallet.id), eq(walletRecurringFees.isActive, true)),
-      );
+    const existingRows = await db
+      .select({
+        type: transactions.type,
+        merchant: transactions.merchant,
+        amount: transactions.amount,
+        source: transactions.source,
+        sourceRef: transactions.sourceRef,
+        isConvertedToInstallment: transactions.isConvertedToInstallment,
+      })
+      .from(transactions)
+      .where(and(eq(transactions.walletId, ccWallet.id), eq(transactions.ccCycleKey, cycleKey)));
 
+    const [allocRow, settlementTxRows, allWalletFees] = await Promise.all([
+      db
+        .select({
+          total: sql<number>`COALESCE(SUM(${settlementAllocations.allocatedAmount}), 0)`,
+        })
+        .from(settlementAllocations)
+        .where(
+          and(
+            eq(settlementAllocations.targetType, "cc_cycle"),
+            eq(settlementAllocations.ccCycleKey, cycleKey),
+            isSingleCc
+              ? or(
+                  eq(settlementAllocations.ccWalletId, ccWallet.id),
+                  isNull(settlementAllocations.ccWalletId),
+                )
+              : eq(settlementAllocations.ccWalletId, ccWallet.id),
+          ),
+        ),
+      db
+        .select({ id: transactions.id })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.type, "settlement"),
+            eq(transactions.ccCycleKey, cycleKey),
+            isSingleCc
+              ? or(eq(transactions.toWalletId, ccWallet.id), isNull(transactions.toWalletId))
+              : eq(transactions.toWalletId, ccWallet.id),
+          ),
+        )
+        .limit(1),
+      db
+        .select()
+        .from(walletRecurringFees)
+        .where(eq(walletRecurringFees.walletId, ccWallet.id)),
+    ]);
+
+    const settledAmount = Number(allocRow[0]?.total ?? 0);
+    const hasSettlementTx = settlementTxRows.length > 0;
+    const dailySpend = existingRows
+      .filter((r) => r.type === "expense" && !r.isConvertedToInstallment)
+      .reduce((sum, r) => sum + r.amount, 0);
+
+    // Do not insert fees into an already-settled cycle or an untouched prior cycle lookback.
+    if ((settledAmount > 0 && dailySpend <= settledAmount) || hasSettlementTx) {
+      continue;
+    }
+    if (options.requireActivityForWallets && existingRows.length === 0) {
+      continue;
+    }
+
+    // Only fall back to DEFAULT_BANK_FEES when zero fee rows exist; disabling all rows yields Rp 0.
     const activeFees =
-      fees.length > 0
-        ? fees.map((f) => ({
-            id: f.id,
-            key: `fee-${f.id}`,
-            merchant: f.name,
-            amount: f.amount,
-          }))
+      allWalletFees.length > 0
+        ? allWalletFees
+            .filter((f) => f.isActive)
+            .map((f) => ({
+              id: f.id,
+              key: `fee-${f.id}`,
+              merchant: f.name,
+              amount: f.amount,
+            }))
         : DEFAULT_BANK_FEES.map((f) => ({
             id: null,
             key: f.key,
@@ -53,15 +124,7 @@ export async function ensureMonthlyBankFees(db: AppDb, cycleKey: string): Promis
             amount: f.amount,
           }));
 
-    const existingRows = await db
-      .select({
-        merchant: transactions.merchant,
-        amount: transactions.amount,
-        source: transactions.source,
-        sourceRef: transactions.sourceRef,
-      })
-      .from(transactions)
-      .where(and(eq(transactions.walletId, ccWallet.id), eq(transactions.ccCycleKey, cycleKey)));
+    if (activeFees.length === 0) continue;
 
     for (const fee of activeFees) {
       // Support both new wallet-scoped sourceRef and legacy sourceRef

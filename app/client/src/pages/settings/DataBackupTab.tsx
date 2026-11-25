@@ -22,9 +22,11 @@ function formatFileSize(bytes: number): string {
 
 export function DataBackupTab({
   data,
+  onDataRestored,
   onToast,
 }: {
   data: DashboardDto;
+  onDataRestored?: () => void;
   onToast: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -133,6 +135,7 @@ export function DataBackupTab({
         localStorage.removeItem("ft-onboarding-completed");
       }
       localStorage.removeItem("ft-last-wallet-id");
+      onDataRestored?.();
       await queryClient.invalidateQueries();
       setShowImportModal(false);
       clearSelectedFile();
@@ -152,6 +155,7 @@ export function DataBackupTab({
         localStorage.removeItem("ft-last-wallet-id");
         localStorage.removeItem("ft-hide-onboarding-banner");
       }
+      onDataRestored?.();
       await queryClient.invalidateQueries();
       setShowResetModal(false);
       setResetConfirmInput("");

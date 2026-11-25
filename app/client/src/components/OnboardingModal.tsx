@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { WalletProvider } from "../../../shared/src/types";
 import { api, ApiError, type SettingsDto, type WalletDto } from "../lib/api";
@@ -7,6 +7,7 @@ import {
   jakartaToday,
   parsePositiveInt,
 } from "../lib/format";
+import { budgetKeys } from "../lib/queryKeys";
 import { BankBadge } from "./BankBadge";
 import { SparkIcon } from "./Icons";
 import { Button, ModalSheet } from "./UI";
@@ -108,6 +109,28 @@ export function OnboardingModal({
       : "8.000.000",
   );
   const [error, setError] = useState("");
+  const prevOpenRef = useRef(false);
+
+  useEffect(() => {
+    if (!open) {
+      prevOpenRef.current = false;
+      return;
+    }
+    if (!prevOpenRef.current) {
+      prevOpenRef.current = true;
+      const liquidExisting = existingWallets.filter((w) => w.type !== "credit_card");
+      setStep(1);
+      setGajianDay(settings?.gajianStartDay ?? 25);
+      setSelectedWalletId(liquidExisting[0]?.id ?? null);
+      setIsCreatingNew(liquidExisting.length === 0);
+      setIncomeEstimateInput(
+        settings?.netSalary && settings.netSalary > 0
+          ? settings.netSalary.toLocaleString("id-ID")
+          : "8.000.000",
+      );
+      setError("");
+    }
+  }, [open, settings, existingWallets]);
 
   const estimatedIncome = parsePositiveInt(incomeEstimateInput);
 
@@ -127,6 +150,14 @@ export function OnboardingModal({
     mutationFn: async () => {
       // 1. Buat atau sesuaikan rekening utama
       const initialBalance = parsePositiveInt(initialBalanceInput);
+      const ccLimit = hasCc ? parsePositiveInt(ccLimitInput) : 0;
+      if (
+        initialBalance > 2_147_483_647 ||
+        ccLimit > 2_147_483_647 ||
+        estimatedIncome > 2_147_483_647
+      ) {
+        throw new Error("Nominal maksimal Rp 2.147.483.647.");
+      }
       let primaryWalletId: number | null = null;
 
       if (isCreatingNew || existingWallets.length === 0) {
@@ -173,7 +204,6 @@ export function OnboardingModal({
 
       // 3. Buat Kartu Kredit jika user mencentang
       if (hasCc) {
-        const ccLimit = parsePositiveInt(ccLimitInput);
         const validCutoff = Math.min(28, Math.max(1, ccCutoffDay));
         const validPayment = Math.min(28, Math.max(1, ccPaymentDay));
         const validStatement = Math.min(28, validCutoff + 1);
@@ -202,6 +232,10 @@ export function OnboardingModal({
       await queryClient.invalidateQueries({ queryKey: ["debts"] });
       await queryClient.invalidateQueries({ queryKey: ["budgets"] });
       await queryClient.invalidateQueries({ queryKey: ["settings"] });
+      await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+      await queryClient.invalidateQueries({ queryKey: ["goals"] });
+      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
       onComplete();
     },
     onError: (err) => {
@@ -611,9 +645,9 @@ export function OnboardingModal({
             <div className="rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface)] p-4 text-xs text-[var(--muted-foreground)] leading-relaxed space-y-1">
               <p className="font-bold text-[var(--foreground)]">Anggaran Kategori Kustom</p>
               <p>
-                Anda bebas menentukan pagu anggaran sesuai kebutuhan untuk masing-masing kategori belanja (custom budget) kapan saja melalui menu{" "}
-                <strong className="text-[var(--foreground)]">Anggaran</strong> atau{" "}
-                <strong className="text-[var(--foreground)]">Pengaturan</strong>.
+                Anda bebas menentukan batas anggaran sesuai kebutuhan untuk masing-masing kategori
+                belanja (custom budget) kapan saja melalui menu{" "}
+                <strong className="text-[var(--foreground)]">Anggaran</strong>.
               </p>
             </div>
           </div>

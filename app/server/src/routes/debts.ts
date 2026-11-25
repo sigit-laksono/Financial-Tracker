@@ -14,11 +14,11 @@ import {
   debtAccounts,
   installments,
   settlementAllocations,
-  transactionSplits,
   transactions,
   wallets,
 } from "../db/schema";
 import { recordAuditLog } from "../lib/auditService";
+import { getCreditCardLimitStatus } from "../lib/ccLimit";
 import { ccCycleForDate } from "../lib/dates";
 import { NotFoundError, ValidationError } from "../lib/errors";
 import {
@@ -111,7 +111,9 @@ export function createDebtRoutes(db: AppDb) {
         const paidAmount = accountInstallments
           .filter((item) => item.status === "paid")
           .reduce((sum, item) => sum + (item.actualAmount ?? item.plannedAmount), 0);
-        if (account.initialBalance - paidAmount > 0) {
+        const totalPlanned = accountInstallments.reduce((sum, item) => sum + item.plannedAmount, 0);
+        const targetObligation = Math.max(account.initialBalance, totalPlanned);
+        if (targetObligation - paidAmount > 0) {
           throw new ValidationError("Akun hanya bisa ditutup setelah lunas (sisa Rp0).");
         }
         if (!account.closedAt) {
@@ -140,52 +142,57 @@ export function createDebtRoutes(db: AppDb) {
     if (!existing) return c.json({ error: "Akun utang tidak ditemukan." }, 404);
 
     await db.transaction(async (tx) => {
-      // 1. Get installments
       const accInstallments = await tx
         .select()
         .from(installments)
         .where(eq(installments.accountId, id));
       const installmentIds = accInstallments.map((i) => i.id);
-      const settlementTxIds = accInstallments
-        .map((i) => i.settlementTransactionId)
-        .filter((tid): tid is number => tid != null);
+      const paidAmount = accInstallments
+        .filter((i) => i.status === "paid")
+        .reduce((sum, i) => sum + (i.actualAmount ?? i.plannedAmount), 0);
 
-      // 2. Delete settlement allocations linked to these installments
+      // Keep ledger transactions and wallet balances intact; unlink deleted debt references only.
+      await tx
+        .update(transactions)
+        .set({ debtAccountId: null })
+        .where(eq(transactions.debtAccountId, id));
+
       if (installmentIds.length > 0) {
         await tx
-          .delete(settlementAllocations)
+          .update(transactions)
+          .set({ installmentId: null })
+          .where(inArray(transactions.installmentId, installmentIds));
+
+        await tx
+          .update(settlementAllocations)
+          .set({ installmentId: null })
           .where(inArray(settlementAllocations.installmentId, installmentIds));
       }
 
-      // 3. Delete settlement transactions and their splits/allocations
-      for (const stxId of settlementTxIds) {
+      if (paidAmount === 0) {
         await tx
-          .delete(settlementAllocations)
-          .where(eq(settlementAllocations.settlementTransactionId, stxId));
-        await tx.delete(transactionSplits).where(eq(transactionSplits.transactionId, stxId));
-        await tx.delete(transactions).where(eq(transactions.id, stxId));
+          .update(transactions)
+          .set({
+            isConvertedToInstallment: false,
+            convertedAccountId: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(transactions.convertedAccountId, id));
+      } else {
+        // Keep conversion flag when installments were paid so CC bills are not double-billed.
+        await tx
+          .update(transactions)
+          .set({
+            isConvertedToInstallment: true,
+            convertedAccountId: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(transactions.convertedAccountId, id));
       }
 
-      // 4. Delete related disbursement transactions (e.g. loan_disbursement / debt_disbursement)
-      const relatedTxs = await tx
-        .select()
-        .from(transactions)
-        .where(eq(transactions.debtAccountId, id));
-      for (const rtx of relatedTxs) {
-        await tx
-          .delete(settlementAllocations)
-          .where(eq(settlementAllocations.settlementTransactionId, rtx.id));
-        await tx.delete(transactionSplits).where(eq(transactionSplits.transactionId, rtx.id));
-        await tx.delete(transactions).where(eq(transactions.id, rtx.id));
-      }
-
-      // 5. Delete installments
       await tx.delete(installments).where(eq(installments.accountId, id));
-
-      // 6. Delete debt account
       await tx.delete(debtAccounts).where(eq(debtAccounts.id, id));
 
-      // 7. Record audit log
       await recordAuditLog(tx, {
         entityType: "debt_account",
         entityId: id,
@@ -244,35 +251,66 @@ export function createInstallmentRoutes(db: AppDb) {
       return c.json({ error: parsed.error.issues[0]?.message ?? "Data update tidak valid." }, 400);
     }
 
-    const [existing] = await db.select().from(installments).where(eq(installments.id, id)).limit(1);
-    if (!existing) return c.json({ error: "Cicilan tidak ditemukan." }, 404);
-    if (existing.status === "paid") {
-      return c.json({ error: "Cicilan yang sudah lunas tidak dapat diubah nominalnya." }, 400);
-    }
+    const updated = await db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(installments).where(eq(installments.id, id)).limit(1);
+      if (!existing) throw new NotFoundError("Cicilan tidak ditemukan.");
+      if (existing.status === "paid") {
+        throw new ValidationError("Cicilan yang sudah lunas tidak dapat diubah nominalnya.");
+      }
 
-    const updates: Partial<typeof installments.$inferInsert> = {};
-    if (parsed.data.plannedAmount !== undefined) {
-      updates.plannedAmount = parsed.data.plannedAmount;
-      updates.principalAmount = parsed.data.plannedAmount;
-    }
-    if (parsed.data.dueDate !== undefined) {
-      updates.dueDate = parsed.data.dueDate;
-      let nextPeriod = parsed.data.dueDate.slice(0, 7);
-      if (existing.accountId) {
-        const [acc] = await db
-          .select({
-            kind: debtAccounts.kind,
-            walletId: debtAccounts.walletId,
-            sourceTransactionId: debtAccounts.sourceTransactionId,
-          })
-          .from(debtAccounts)
-          .where(eq(debtAccounts.id, existing.accountId))
-          .limit(1);
+      const [acc] = existing.accountId
+        ? await tx
+            .select({
+              kind: debtAccounts.kind,
+              walletId: debtAccounts.walletId,
+              sourceTransactionId: debtAccounts.sourceTransactionId,
+              closedAt: debtAccounts.closedAt,
+            })
+            .from(debtAccounts)
+            .where(eq(debtAccounts.id, existing.accountId))
+            .limit(1)
+        : [null];
+
+      if (
+        parsed.data.plannedAmount !== undefined &&
+        acc &&
+        acc.kind === "card_installment" &&
+        !acc.closedAt
+      ) {
+        let targetCcWalletId = acc.walletId;
+        if (!targetCcWalletId) {
+          const ccRows = await tx
+            .select({ id: wallets.id })
+            .from(wallets)
+            .where(eq(wallets.type, "credit_card"));
+          if (ccRows.length === 1) {
+            targetCcWalletId = ccRows[0]!.id;
+          }
+        }
+        if (targetCcWalletId) {
+          const limitStatus = await getCreditCardLimitStatus(tx, targetCcWalletId);
+          const delta = parsed.data.plannedAmount - existing.plannedAmount;
+          if (delta > limitStatus.availableLimit) {
+            throw new ValidationError(
+              `Perubahan cicilan melebihi sisa limit ${limitStatus.walletName} (Sisa limit: Rp${limitStatus.availableLimit.toLocaleString("id-ID")}).`,
+            );
+          }
+        }
+      }
+
+      const updates: Partial<typeof installments.$inferInsert> = {};
+      if (parsed.data.plannedAmount !== undefined) {
+        updates.plannedAmount = parsed.data.plannedAmount;
+        updates.principalAmount = parsed.data.plannedAmount;
+      }
+      if (parsed.data.dueDate !== undefined) {
+        updates.dueDate = parsed.data.dueDate;
+        let nextPeriod = parsed.data.dueDate.slice(0, 7);
         if (acc && acc.kind === "card_installment" && !acc.sourceTransactionId) {
           const settings = await getSettings(db);
           let cutoffDay = settings.cardCutoffDay;
           if (acc.walletId) {
-            const [w] = await db
+            const [w] = await tx
               .select({ cutoffDay: wallets.cutoffDay })
               .from(wallets)
               .where(eq(wallets.id, acc.walletId))
@@ -281,27 +319,36 @@ export function createInstallmentRoutes(db: AppDb) {
           }
           nextPeriod = ccCycleForDate(parsed.data.dueDate, cutoffDay);
         }
+        updates.period = nextPeriod;
       }
-      updates.period = nextPeriod;
-    }
 
-    const [updated] = await db
-      .update(installments)
-      .set(updates)
-      .where(eq(installments.id, id))
-      .returning();
+      const [saved] = await tx
+        .update(installments)
+        .set(updates)
+        .where(eq(installments.id, id))
+        .returning();
 
-    if (parsed.data.plannedAmount !== undefined && existing.accountId) {
-      const allInsts = await db
-        .select({ plannedAmount: installments.plannedAmount })
-        .from(installments)
-        .where(eq(installments.accountId, existing.accountId));
-      const newInitialBalance = allInsts.reduce((sum, r) => sum + r.plannedAmount, 0);
-      await db
-        .update(debtAccounts)
-        .set({ initialBalance: newInitialBalance })
-        .where(eq(debtAccounts.id, existing.accountId));
-    }
+      if (parsed.data.plannedAmount !== undefined && existing.accountId) {
+        const allInsts = await tx
+          .select({
+            status: installments.status,
+            plannedAmount: installments.plannedAmount,
+            actualAmount: installments.actualAmount,
+          })
+          .from(installments)
+          .where(eq(installments.accountId, existing.accountId));
+        const newInitialBalance = allInsts.reduce(
+          (sum, r) => sum + (r.status === "paid" ? (r.actualAmount ?? r.plannedAmount) : r.plannedAmount),
+          0,
+        );
+        await tx
+          .update(debtAccounts)
+          .set({ initialBalance: newInitialBalance })
+          .where(eq(debtAccounts.id, existing.accountId));
+      }
+
+      return saved;
+    });
 
     return c.json({ ok: true, installment: updated });
   });

@@ -1,60 +1,98 @@
-import { getDb } from "../app/server/src/db/index";
-import { wallets, transactions, debtAccounts, installments, goals, assets, budgets, appSettings } from "../app/server/src/db/schema";
+import { eq, sql } from "drizzle-orm";
+import { closeDb, getDb } from "../app/server/src/db/index";
+import {
+  appSettings,
+  assets,
+  auditLogs,
+  budgets,
+  debtAccounts,
+  goals,
+  installments,
+  recurringRules,
+  settlementAllocations,
+  transactionSplits,
+  transactions,
+  walletRecurringFees,
+  wallets,
+} from "../app/server/src/db/schema";
 
-const { sqlite, db } = getDb();
+const TABLES_TO_RESET = [
+  "settlement_allocations",
+  "transaction_splits",
+  "transactions",
+  "installments",
+  "debt_accounts",
+  "goals",
+  "assets",
+  "budgets",
+  "recurring_rules",
+  "wallet_recurring_fees",
+  "audit_logs",
+  "wallets",
+] as const;
 
-sqlite.exec("PRAGMA foreign_keys = OFF;");
+const { db } = getDb();
 
-sqlite.exec("DELETE FROM settlement_allocations;");
-sqlite.exec("DELETE FROM transaction_splits;");
-sqlite.exec("DELETE FROM transactions;");
-sqlite.exec("DELETE FROM installments;");
-sqlite.exec("DELETE FROM debt_accounts;");
-sqlite.exec("DELETE FROM goals;");
-sqlite.exec("DELETE FROM assets;");
-sqlite.exec("DELETE FROM budgets;");
-sqlite.exec("DELETE FROM recurring_rules;");
-sqlite.exec("DELETE FROM wallet_recurring_fees;");
-sqlite.exec("DELETE FROM audit_logs;");
+try {
+  await db.transaction(async (tx) => {
+    await tx.insert(appSettings).values({ id: 1 }).onConflictDoNothing();
+    await tx
+      .update(appSettings)
+      .set({
+        grossSalary: 0,
+        netSalary: 0,
+        payrollDeduction: 0,
+        defaultSalaryWalletId: null,
+        cardLimit: 0,
+        cardCutoffDay: 20,
+        cardPaymentDay: 25,
+        statementDay: 21,
+        legacySettledBeforeCycle: null,
+        lastAutoSyncDate: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(appSettings.id, 1));
 
-sqlite.exec(`DELETE FROM sqlite_sequence WHERE name IN (
-  'settlement_allocations', 'transaction_splits', 'transactions',
-  'installments', 'debt_accounts', 'goals', 'assets', 'budgets',
-  'recurring_rules', 'wallet_recurring_fees', 'audit_logs'
-);`);
+    await tx.delete(settlementAllocations);
+    await tx.delete(transactionSplits);
+    await tx.delete(transactions);
+    await tx.delete(installments);
+    await tx.delete(debtAccounts);
+    await tx.delete(goals);
+    await tx.delete(assets);
+    await tx.delete(budgets);
+    await tx.delete(recurringRules);
+    await tx.delete(walletRecurringFees);
+    await tx.delete(auditLogs);
+    await tx.delete(wallets);
 
-sqlite.exec("DELETE FROM wallets;");
-sqlite.exec("DELETE FROM sqlite_sequence WHERE name = 'wallets';");
+    for (const tableName of TABLES_TO_RESET) {
+      await tx.execute(
+        sql.raw(`SELECT setval(pg_get_serial_sequence('${tableName}', 'id'), 1, false)`),
+      );
+    }
+  });
 
-sqlite.exec(`
-  UPDATE app_settings SET
-    gross_salary = 0,
-    net_salary = 0,
-    payroll_deduction = 0,
-    default_salary_wallet_id = NULL,
-    card_limit = 0,
-    card_cutoff_day = 20,
-    card_payment_day = 25,
-    statement_day = 21,
-    legacy_settled_before_cycle = NULL
-  WHERE id = 1;
-`);
+  const [remainingWallets, txRows, debtRows, goalRows, assetRows, budgetRows] = await Promise.all([
+    db.select().from(wallets),
+    db.select().from(transactions),
+    db.select().from(debtAccounts),
+    db.select().from(goals),
+    db.select().from(assets),
+    db.select().from(budgets),
+  ]);
 
-sqlite.exec("PRAGMA foreign_keys = ON;");
-sqlite.exec("VACUUM;");
-
-const remainingWallets = await db.select().from(wallets);
-const txCount = (await db.select().from(transactions)).length;
-const debtCount = (await db.select().from(debtAccounts)).length;
-const goalCount = (await db.select().from(goals)).length;
-const assetCount = (await db.select().from(assets)).length;
-const budgetCount = (await db.select().from(budgets)).length;
-
-console.log("=== RESET SUMMARY ===");
-console.log("Remaining Wallets:", remainingWallets.map(w => `${w.name} (Saldo: ${w.openingBalance})`));
-console.log("Transactions Count:", txCount);
-console.log("Debts Count:", debtCount);
-console.log("Goals Count:", goalCount);
-console.log("Assets Count:", assetCount);
-console.log("Budgets Count:", budgetCount);
-console.log("Database reset completed successfully!");
+  console.log("=== RESET SUMMARY ===");
+  console.log(
+    "Remaining Wallets:",
+    remainingWallets.map((w) => `${w.name} (Saldo: ${w.openingBalance})`),
+  );
+  console.log("Transactions Count:", txRows.length);
+  console.log("Debts Count:", debtRows.length);
+  console.log("Goals Count:", goalRows.length);
+  console.log("Assets Count:", assetRows.length);
+  console.log("Budgets Count:", budgetRows.length);
+  console.log("Database reset completed successfully!");
+} finally {
+  await closeDb();
+}

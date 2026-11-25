@@ -247,6 +247,7 @@ export const api = {
     provider?: WalletProvider;
     role?: WalletRole;
     openingBalance: number;
+    initialUsage?: number;
     color: string;
     accountNumber?: string | null;
     creditLimit?: number | null;
@@ -501,6 +502,7 @@ export const api = {
       settledCount: number;
       totalAmount: number;
       settlementTransactionId: number | null;
+      closedAccountIds?: number[];
     }>("/api/installments/settle", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -598,6 +600,11 @@ export const api = {
     }),
   deleteBudget: (id: number) =>
     request<{ ok: boolean }>(`/api/budgets/${id}`, { method: "DELETE" }),
+  copyPreviousBudgets: (targetPeriod: string) =>
+    request<{ ok: boolean; copiedCount: number }>("/api/budgets/copy-previous", {
+      method: "POST",
+      body: JSON.stringify({ targetPeriod }),
+    }),
 
   getGoals: () =>
     request<{ goals: GoalDto[]; emergencyFund: EmergencyFundRunwayDto }>("/api/goals"),
@@ -614,12 +621,21 @@ export const api = {
   deleteGoal: (id: number) => request<{ ok: boolean }>(`/api/goals/${id}`, { method: "DELETE" }),
   contributeGoal: (
     id: number,
-    payload: { amount: number; walletId: number; date?: string; note?: string },
+    payload: {
+      amount: number;
+      walletId: number;
+      date?: string;
+      note?: string;
+      preventOverdraft?: boolean;
+    },
   ) =>
-    request<{ ok: boolean; transactionId: number; goal: GoalDto }>(`/api/goals/${id}/contribute`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
+    request<{ ok: boolean; transactionId: number | null; goal: GoalDto }>(
+      `/api/goals/${id}/contribute`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
 
   getAssets: () => request<{ assets: AssetDto[] }>("/api/assets"),
   createAsset: (payload: CreateAssetDto) =>

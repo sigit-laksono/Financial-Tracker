@@ -8,6 +8,7 @@ import { appSettings } from "../db/schema";
 const SESSION_COOKIE_NAME = "ft_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const RATE_LIMIT_MAX_ATTEMPTS = 5;
+const RATE_LIMIT_GLOBAL_MAX_ATTEMPTS = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const DEV_FALLBACK_SECRET = "dev-local-financial-tracker-secret-key";
 const KNOWN_PLACEHOLDER_SECRETS = new Set([
@@ -18,7 +19,9 @@ const KNOWN_PLACEHOLDER_SECRETS = new Set([
 ]);
 
 export class LoginRateLimiter {
+  static readonly MAX_ENTRIES = 1000;
   private attempts = new Map<string, { count: number; resetAt: number }>();
+  private globalEntry: { count: number; resetAt: number } | null = null;
 
   private prune(now: number): void {
     for (const [key, entry] of this.attempts.entries()) {
@@ -28,7 +31,26 @@ export class LoginRateLimiter {
     }
   }
 
+  checkGlobal(now = Date.now()): { allowed: boolean; retryAfterSeconds: number } {
+    if (!this.globalEntry || now >= this.globalEntry.resetAt) {
+      this.globalEntry = null;
+      return { allowed: true, retryAfterSeconds: 0 };
+    }
+    if (this.globalEntry.count >= RATE_LIMIT_GLOBAL_MAX_ATTEMPTS) {
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.max(1, Math.ceil((this.globalEntry.resetAt - now) / 1000)),
+      };
+    }
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
   check(key: string, now = Date.now()): { allowed: boolean; retryAfterSeconds: number } {
+    const globalCheck = this.checkGlobal(now);
+    if (!globalCheck.allowed) {
+      return globalCheck;
+    }
+
     const entry = this.attempts.get(key);
     if (!entry || now >= entry.resetAt) {
       if (entry) this.attempts.delete(key);
@@ -44,9 +66,21 @@ export class LoginRateLimiter {
   }
 
   recordFailure(key: string, now = Date.now()): void {
-    if (this.attempts.size > 200) {
-      this.prune(now);
+    if (!this.globalEntry || now >= this.globalEntry.resetAt) {
+      this.globalEntry = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    } else {
+      this.globalEntry.count += 1;
     }
+
+    if (!this.attempts.has(key) && this.attempts.size >= LoginRateLimiter.MAX_ENTRIES) {
+      this.prune(now);
+      while (this.attempts.size >= LoginRateLimiter.MAX_ENTRIES) {
+        const oldestKey = this.attempts.keys().next().value;
+        if (oldestKey === undefined) break;
+        this.attempts.delete(oldestKey);
+      }
+    }
+
     const entry = this.attempts.get(key);
     if (!entry || now >= entry.resetAt) {
       this.attempts.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
@@ -242,12 +276,19 @@ export function createAuthMiddleware(db: AppDb, secret = getSessionSecret()): Mi
 }
 
 export function clientRateKey(c: Context): string {
-  // Trust forwarding headers only behind an explicitly configured reverse proxy.
+  // Trust forwarding headers only behind an explicitly configured reverse proxy; prefer proxy-set IP over spoofable leftmost hops.
   if (process.env.TRUST_PROXY === "true") {
-    const forwarded = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
     const realIp = c.req.header("x-real-ip")?.trim();
-    if (forwarded) return forwarded;
     if (realIp) return realIp;
+    const xff = c.req.header("x-forwarded-for");
+    if (xff) {
+      const hops = xff
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const rightmost = hops[hops.length - 1];
+      if (rightmost) return rightmost;
+    }
   }
   return "local";
 }

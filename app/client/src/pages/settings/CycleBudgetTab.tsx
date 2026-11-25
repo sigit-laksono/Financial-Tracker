@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "../../components/UI";
 import { api, ApiError, type DashboardDto } from "../../lib/api";
 import { formatDigitsInput, formatRupiah, parsePositiveInt } from "../../lib/format";
+import { budgetKeys } from "../../lib/queryKeys";
 
 export function CycleBudgetTab({
   data,
@@ -39,17 +40,31 @@ export function CycleBudgetTab({
     await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     await queryClient.invalidateQueries({ queryKey: ["wallets"] });
     await queryClient.invalidateQueries({ queryKey: ["budgets"] });
+    await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+    await queryClient.invalidateQueries({ queryKey: ["goals"] });
+    await queryClient.invalidateQueries({ queryKey: ["salary-preview"] });
   };
 
   const settingsMutation = useMutation({
-    mutationFn: () =>
-      api.updateSettings({
-        grossSalary: parsePositiveInt(grossSalary),
-        payrollDeduction: parsePositiveInt(payrollDeduction),
-        netSalary: parsePositiveInt(netSalary),
+    mutationFn: () => {
+      const parsedGross = parsePositiveInt(grossSalary);
+      const parsedDeduction = parsePositiveInt(payrollDeduction);
+      const parsedNet = parsePositiveInt(netSalary);
+      if (
+        parsedGross > 2_147_483_647 ||
+        parsedDeduction > 2_147_483_647 ||
+        parsedNet > 2_147_483_647
+      ) {
+        throw new Error("Nominal gaji maksimal Rp 2.147.483.647.");
+      }
+      return api.updateSettings({
+        grossSalary: parsedGross,
+        payrollDeduction: parsedDeduction,
+        netSalary: parsedNet,
         gajianStartDay: Number(gajianStartDay),
         defaultSalaryWalletId: defaultSalaryWalletId || null,
-      }),
+      });
+    },
     onSuccess: async () => {
       await invalidateAll();
       onToast("Pengaturan gaji & siklus disimpan");

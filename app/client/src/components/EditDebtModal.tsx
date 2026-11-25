@@ -9,7 +9,13 @@ import {
   type InstallmentDto,
   type WalletDto,
 } from "../lib/api";
-import { formatDigitsInput, formatMonthTitle, formatRupiah, parsePositiveInt } from "../lib/format";
+import {
+  MAX_IDR_AMOUNT,
+  formatDigitsInput,
+  formatMonthTitle,
+  formatRupiah,
+  parsePositiveInt,
+} from "../lib/format";
 import { AlertIcon, CalendarIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
 
@@ -191,6 +197,11 @@ export function EditDebtModal({
           }
           if (row.amount <= 0) {
             throw new Error(`Nominal cicilan bulan ke-${row.monthIndex} harus lebih dari Rp0.`);
+          }
+          if (row.amount > MAX_IDR_AMOUNT) {
+            throw new Error(
+              `Nominal cicilan bulan ke-${row.monthIndex} maksimal Rp 2.147.483.647.`,
+            );
           }
         }
       }

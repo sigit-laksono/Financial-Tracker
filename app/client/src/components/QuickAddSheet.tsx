@@ -14,6 +14,7 @@ import {
   formatRupiah,
   formatShortDate,
   jakartaToday,
+  MAX_IDR_AMOUNT,
   parsePositiveInt,
   spellOutRupiah,
 } from "../lib/format";
@@ -242,6 +243,7 @@ export function QuickAddSheet({
   categories,
   debts,
   initialMode = "expense",
+  initialWalletId = null,
   editingTx = null,
   preselectedInstallmentIds = [],
   preselectedCcCycleKey = "",
@@ -255,6 +257,7 @@ export function QuickAddSheet({
   categories: CategoryDto[];
   debts: DebtsDto | undefined;
   initialMode?: QuickAddMode;
+  initialWalletId?: number | null;
   editingTx?: TransactionDto | null;
   preselectedInstallmentIds?: number[];
   preselectedCcCycleKey?: string;
@@ -395,15 +398,25 @@ export function QuickAddSheet({
     setAmountInput("");
     setAdminFeeInput("");
     setDate(jakartaToday());
+    const requestedWallet =
+      initialWalletId != null
+        ? activeWallets.find(
+            (w) =>
+              w.id === initialWalletId && (initialMode === "expense" || w.type !== "credit_card"),
+          )
+        : undefined;
     const savedWalletId = Number(localStorage.getItem("ft-last-wallet-id"));
     const rememberedWallet =
+      requestedWallet ??
       activeWallets.find(
         (w) => w.id === savedWalletId && (initialMode !== "transfer" || w.type !== "credit_card"),
       ) ??
       cashWallets[0] ??
       activeWallets[0];
     setWalletId(rememberedWallet?.id ?? 1);
-    setToWalletId(cashWallets[1]?.id ?? cashWallets[0]?.id ?? 1);
+    const defaultToWallet =
+      cashWallets.find((w) => w.id !== rememberedWallet?.id) ?? cashWallets[0];
+    setToWalletId(defaultToWallet?.id ?? 1);
     setNote("");
     setIsSplit(false);
     setSplits([
@@ -448,6 +461,7 @@ export function QuickAddSheet({
     open,
     editingTx,
     initialMode,
+    initialWalletId,
     preselectedCcCycleKey,
     preselectedCcWalletId,
     preselectedInstKey,
@@ -474,19 +488,60 @@ export function QuickAddSheet({
   );
   const splitDelta = parsedTotalAmount - parsedSplitSum;
 
+  const selectedSettleInstIds = useMemo(() => {
+    if (!settleTarget.startsWith("inst:")) return [];
+    return settleTarget
+      .slice(5)
+      .split(",")
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n > 0);
+  }, [settleTarget]);
+
+  const selectedInsts = useMemo(() => {
+    if (selectedSettleInstIds.length === 0) return [];
+    const idSet = new Set(selectedSettleInstIds);
+    return upcomingInstallments.filter((i) => idSet.has(i.id));
+  }, [selectedSettleInstIds, upcomingInstallments]);
+
+  const isReceivableSettle =
+    selectedInsts.length > 0 && selectedInsts.every((i) => i.direction === "receivable");
+
   const selectedSettleBillAmount = useMemo(() => {
     if (settleTarget.startsWith("cc:")) {
       const cycle = unpaidCcCycles.find((c) => c.key === settleTarget);
       return cycle?.totalBill ?? 0;
     }
-    const instId = Number(settleTarget.slice(5));
-    const inst = upcomingInstallments.find((i) => i.id === instId);
-    return inst?.plannedAmount ?? 0;
-  }, [settleTarget, unpaidCcCycles, upcomingInstallments]);
+    return selectedInsts.reduce((sum, i) => sum + i.plannedAmount, 0);
+  }, [settleTarget, unpaidCcCycles, selectedInsts]);
+
+  const selectableWallets = useMemo(() => {
+    const base = mode === "expense" ? activeWallets : cashWallets;
+    if (editingTx && !base.some((w) => w.id === editingTx.walletId)) {
+      const existingWallet = wallets.find((w) => w.id === editingTx.walletId);
+      if (existingWallet) return [existingWallet, ...base];
+    }
+    return base;
+  }, [mode, activeWallets, cashWallets, editingTx, wallets]);
+
+  const transferToWallets = useMemo(() => {
+    if (
+      editingTx &&
+      editingTx.type === "transfer" &&
+      editingTx.toWalletId &&
+      !cashWallets.some((w) => w.id === editingTx.toWalletId)
+    ) {
+      const existingTo = wallets.find((w) => w.id === editingTx.toWalletId);
+      if (existingTo) return [existingTo, ...cashWallets];
+    }
+    return cashWallets;
+  }, [cashWallets, editingTx, wallets]);
 
   const selectedExpenseWallet = useMemo(
-    () => activeWallets.find((w) => w.id === walletId) ?? null,
-    [activeWallets, walletId],
+    () =>
+      selectableWallets.find((w) => w.id === walletId) ??
+      wallets.find((w) => w.id === walletId) ??
+      null,
+    [selectableWallets, wallets, walletId],
   );
 
   const selectedCcCard = useMemo(() => {
@@ -526,21 +581,35 @@ export function QuickAddSheet({
 
   const isSettleInsufficient = Boolean(
     mode === "settle" &&
+      !isReceivableSettle &&
       selectedSettleWallet &&
       selectedSettleBillAmount > 0 &&
       selectedSettleWallet.balance < selectedSettleBillAmount,
   );
 
   const selectedTransferWallet = useMemo(() => {
-    return cashWallets.find((w) => w.id === walletId) ?? cashWallets[0] ?? null;
-  }, [cashWallets, walletId]);
+    return selectableWallets.find((w) => w.id === walletId) ?? cashWallets[0] ?? null;
+  }, [selectableWallets, cashWallets, walletId]);
+
+  const effectiveTransferBalance = useMemo(() => {
+    if (!selectedTransferWallet) return 0;
+    let available = selectedTransferWallet.balance;
+    if (
+      editingTx &&
+      editingTx.type === "transfer" &&
+      editingTx.walletId === selectedTransferWallet.id
+    ) {
+      available += editingTx.amount + (editingTx.linkedFeeTransaction?.amount ?? 0);
+    }
+    return available;
+  }, [selectedTransferWallet, editingTx]);
 
   const transferTotalNeeded = parsedTotalAmount + parsePositiveInt(adminFeeInput);
   const isTransferInsufficient = Boolean(
     mode === "transfer" &&
       selectedTransferWallet &&
       transferTotalNeeded > 0 &&
-      selectedTransferWallet.balance < transferTotalNeeded,
+      effectiveTransferBalance < transferTotalNeeded,
   );
 
   const invalidateAll = async () => {
@@ -559,6 +628,9 @@ export function QuickAddSheet({
       if (mode === "expense" || mode === "income") {
         const amount = parsePositiveInt(amountInput);
         if (amount <= 0) throw new Error("Masukkan nominal lebih dari Rp0.");
+        if (amount > MAX_IDR_AMOUNT) {
+          throw new Error(`Nominal transaksi maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
+        }
         if (!merchant.trim()) throw new Error("Nama merchant atau keterangan wajib diisi.");
         if (isCcLimitExceeded && selectedExpenseWallet) {
           throw new Error(
@@ -580,6 +652,11 @@ export function QuickAddSheet({
             const splitAmt = parsePositiveInt(s.amountInput);
             if (splitAmt <= 0)
               throw new Error(`Nominal pecahan untuk ${s.category} harus lebih dari Rp0.`);
+            if (splitAmt > MAX_IDR_AMOUNT) {
+              throw new Error(
+                `Nominal pecahan untuk ${s.category} maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`,
+              );
+            }
           }
           payloadSplits = splits.map((s) => ({
             category: s.category,
@@ -616,12 +693,18 @@ export function QuickAddSheet({
       if (mode === "transfer") {
         if (isTransferInsufficient) {
           throw new Error(
-            `Saldo dompet ${selectedTransferWallet?.name ?? "asal"} tidak mencukupi untuk transfer (Saldo: ${formatRupiah(selectedTransferWallet?.balance ?? 0)}, Dibutuhkan: ${formatRupiah(transferTotalNeeded)}).`,
+            `Saldo dompet ${selectedTransferWallet?.name ?? "asal"} tidak mencukupi untuk transfer (Saldo: ${formatRupiah(effectiveTransferBalance)}, Dibutuhkan: ${formatRupiah(transferTotalNeeded)}).`,
           );
         }
         const amount = parsePositiveInt(amountInput);
         const adminFee = parsePositiveInt(adminFeeInput);
         if (amount <= 0) throw new Error("Masukkan nominal transfer lebih dari Rp0.");
+        if (amount > MAX_IDR_AMOUNT) {
+          throw new Error(`Nominal transfer maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
+        }
+        if (adminFee > MAX_IDR_AMOUNT) {
+          throw new Error(`Biaya admin maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
+        }
         if (walletId === toWalletId) throw new Error("Dompet asal dan tujuan harus berbeda.");
 
         if (editingTx) {
@@ -670,30 +753,35 @@ export function QuickAddSheet({
           preventOverdraft: true,
         });
       }
-      const ids = settleTarget
-        .slice(5)
-        .split(",")
-        .map(Number)
-        .filter((n) => Number.isInteger(n) && n > 0);
+      if (selectedSettleInstIds.length === 0) {
+        throw new Error("Pilih cicilan atau tagihan yang valid.");
+      }
       return api.settleInstallments({
-        installmentIds: ids,
+        installmentIds: selectedSettleInstIds,
         fromWalletId: walletId,
         paymentDate: date,
         note: note.trim() || undefined,
-        preventOverdraft: true,
+        preventOverdraft: !isReceivableSettle,
       });
     },
-    onSuccess: async () => {
+    onSuccess: async (res) => {
       setIsSavedSuccess(true);
       if (walletId) {
         localStorage.setItem("ft-last-wallet-id", String(walletId));
       }
       await invalidateAll();
+      const closedAccountIds =
+        res && typeof res === "object" && "closedAccountIds" in res
+          ? (res as { closedAccountIds?: number[] }).closedAccountIds
+          : undefined;
       const labels: Record<QuickAddMode, string> = {
         expense: editingTx ? "Transaksi diperbarui" : "Pengeluaran dicatat",
         income: editingTx ? "Pemasukan diperbarui" : "Pemasukan dicatat",
         transfer: editingTx ? "Transfer diperbarui" : "Transfer antar dompet dicatat",
-        settle: "Tagihan berhasil dilunasi",
+        settle:
+          closedAccountIds && closedAccountIds.length > 0
+            ? "Pelunasan dicatat dan akun lunas otomatis dipindahkan ke arsip"
+            : "Tagihan berhasil dilunasi",
       };
       onSuccessMessage(labels[mode]);
       window.setTimeout(() => {
@@ -770,18 +858,29 @@ export function QuickAddSheet({
 
   // Merchant suggestion matching
   const matchingSuggestions = useMemo(() => {
-    if (!merchant.trim() || editingTx) return [];
+    if (!merchant.trim() || editingTx || (mode !== "expense" && mode !== "income")) return [];
     const query = merchant.trim().toLowerCase();
+    const activeWalletIds = new Set(selectableWallets.filter((w) => w.isActive).map((w) => w.id));
     return (presets?.merchantSuggestions ?? []).filter(
-      (m) => m.merchant.toLowerCase().includes(query) && m.merchant.toLowerCase() !== query,
+      (m) =>
+        m.type === mode &&
+        activeWalletIds.has(m.walletId) &&
+        m.merchant.toLowerCase().includes(query) &&
+        m.merchant.toLowerCase() !== query,
     );
-  }, [merchant, presets, editingTx]);
+  }, [merchant, presets, editingTx, mode, selectableWallets]);
 
   const handleMerchantChange = (val: string) => {
     setMerchant(val);
-    if (!editingTx && presets?.merchantSuggestions) {
+    if (!editingTx && (mode === "expense" || mode === "income") && presets?.merchantSuggestions) {
+      const activeWalletIds = new Set(
+        selectableWallets.filter((w) => w.isActive).map((w) => w.id),
+      );
       const match = presets.merchantSuggestions.find(
-        (m) => m.merchant.toLowerCase() === val.trim().toLowerCase(),
+        (m) =>
+          m.type === mode &&
+          activeWalletIds.has(m.walletId) &&
+          m.merchant.toLowerCase() === val.trim().toLowerCase(),
       );
       if (match) {
         setCategory(match.category);
@@ -793,7 +892,6 @@ export function QuickAddSheet({
     }
   };
 
-  const selectableWallets = mode === "expense" ? activeWallets : cashWallets;
   const currentCategories = useMemo(() => {
     const base = mode === "income" ? incomeCategories : expenseCategories;
     if (
@@ -1014,6 +1112,11 @@ export function QuickAddSheet({
                       onChange={(e) => setSettleTarget(e.target.value)}
                       className={selectClass}
                     >
+                      {selectedInsts.length > 1 && settleTarget.startsWith("inst:") && (
+                        <option value={settleTarget}>
+                          {selectedInsts.length} Angsuran Terpilih ({formatRupiah(selectedSettleBillAmount)})
+                        </option>
+                      )}
                       {unpaidCcCycles.length > 0 && (
                         <optgroup label="Tagihan Kartu Kredit">
                           {unpaidCcCycles.map((c) => (
@@ -1043,7 +1146,7 @@ export function QuickAddSheet({
 
                   <div className="space-y-1.5">
                     <label htmlFor="settle-wallet" className={labelClass}>
-                      Bayar Dari Dompet
+                      {isReceivableSettle ? "Terima ke Dompet" : "Bayar Dari Dompet"}
                     </label>
                     <select
                       id="settle-wallet"
@@ -1178,9 +1281,10 @@ export function QuickAddSheet({
                             onChange={(e) => setWalletId(Number(e.target.value))}
                             className={selectClass}
                           >
-                            {cashWallets.map((w) => (
+                            {selectableWallets.map((w) => (
                               <option key={w.id} value={w.id}>
-                                {w.name} ({formatRupiah(w.balance)})
+                                {w.name}
+                                {!w.isActive ? " (Nonaktif)" : ""} ({formatRupiah(w.balance)})
                               </option>
                             ))}
                           </select>
@@ -1195,9 +1299,10 @@ export function QuickAddSheet({
                             onChange={(e) => setToWalletId(Number(e.target.value))}
                             className={selectClass}
                           >
-                            {cashWallets.map((w) => (
+                            {transferToWallets.map((w) => (
                               <option key={w.id} value={w.id}>
-                                {w.name} ({formatRupiah(w.balance)})
+                                {w.name}
+                                {!w.isActive ? " (Nonaktif)" : ""} ({formatRupiah(w.balance)})
                               </option>
                             ))}
                           </select>
@@ -1261,7 +1366,7 @@ export function QuickAddSheet({
                             <p className="font-bold">Saldo Dompet Tidak Mencukupi!</p>
                             <p className="mt-0.5">
                               Saldo {selectedTransferWallet.name} saat ini{" "}
-                              {formatRupiah(selectedTransferWallet.balance)}, sedangkan kebutuhan
+                              {formatRupiah(effectiveTransferBalance)}, sedangkan kebutuhan
                               transfer + admin sebesar {formatRupiah(transferTotalNeeded)}.
                             </p>
                           </div>
@@ -1325,7 +1430,8 @@ export function QuickAddSheet({
                             {selectableWallets.map((w) => (
                               <option key={w.id} value={w.id}>
                                 [{w.provider ? w.provider.toUpperCase() : w.type.toUpperCase()}]{" "}
-                                {w.name} (
+                                {w.name}
+                                {!w.isActive ? " (Nonaktif)" : ""} (
                                 {w.type === "credit_card"
                                   ? `Sisa Limit ${formatRupiah(w.balance)}`
                                   : formatRupiah(w.balance)}
@@ -1560,6 +1666,14 @@ export function QuickAddSheet({
                               }}
                               className="h-11 w-full rounded-[10px] bg-[var(--surface)] border border-[var(--control-border)] px-3 text-xs font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)]"
                             >
+                              {s.category &&
+                                !expenseCategories.some((cat) => cat.name === s.category) && (
+                                  <option value={s.category}>
+                                    {categories.find((c) => c.name === s.category)?.isArchived
+                                      ? `${s.category} (Diarsipkan)`
+                                      : s.category}
+                                  </option>
+                                )}
                               {expenseCategories.map((cat) => (
                                 <option key={cat.id} value={cat.name}>
                                   {cat.name}
