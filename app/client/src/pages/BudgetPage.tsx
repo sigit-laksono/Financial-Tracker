@@ -732,11 +732,11 @@ export function BudgetPage({
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 w-full sm:flex sm:w-auto sm:items-center">
+          <div className="grid grid-cols-3 gap-2 w-full sm:flex sm:w-auto sm:items-center">
             <Button
               variant="secondary"
               onClick={openIncomeArchiveModal}
-              className="w-full sm:w-auto justify-center gap-1.5"
+              className="w-full sm:w-auto justify-center gap-1.5 px-2 text-xs leading-tight sm:px-4 sm:text-sm"
             >
               <span>Pemasukan &amp; Arsip</span>
               {archivedCategories.length > 0 && (
@@ -747,8 +747,18 @@ export function BudgetPage({
             </Button>
 
             <Button
+              variant="secondary"
+              disabled={copyPreviousMutation.isPending}
+              onClick={() => copyPreviousMutation.mutate()}
+              title="Salin budget kategori dari siklus sebelumnya"
+              className="w-full sm:w-auto justify-center px-2 text-xs leading-tight sm:px-4 sm:text-sm"
+            >
+              {copyPreviousMutation.isPending ? "Menyalin..." : "Salin Siklus Lalu"}
+            </Button>
+
+            <Button
               onClick={() => openCreateModal(activeBucketTab)}
-              className="w-full sm:w-auto justify-center gap-1.5"
+              className="w-full sm:w-auto justify-center gap-1.5 px-2 text-xs leading-tight sm:px-4 sm:text-sm"
             >
               <PlusIcon className="w-4 h-4" />
               <span>Tambah Kategori</span>
@@ -900,7 +910,7 @@ export function BudgetPage({
       </div>
 
       {/* Tab kelompok: Kebutuhan | Keinginan | Tabungan & Utang */}
-      <div className="flex flex-col gap-2 border-b border-[var(--border)] pb-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="border-b border-[var(--border)] pb-3">
         <div
           role="tablist"
           aria-label="Kelompok anggaran"
@@ -926,15 +936,6 @@ export function BudgetPage({
             );
           })}
         </div>
-
-        <Button
-          variant="secondary"
-          disabled={copyPreviousMutation.isPending}
-          onClick={() => copyPreviousMutation.mutate()}
-          className="min-h-[44px] self-end text-xs px-3.5"
-        >
-          {copyPreviousMutation.isPending ? "Menyalin..." : "Salin dari Siklus Lalu"}
-        </Button>
       </div>
 
       {/* 3 Main Envelopes */}
