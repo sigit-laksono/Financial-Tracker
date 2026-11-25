@@ -18,7 +18,7 @@ import {
   parsePositiveInt,
   spellOutRupiah,
 } from "../lib/format";
-import { budgetKeys } from "../lib/queryKeys";
+import { budgetKeys, goalKeys } from "../lib/queryKeys";
 import { AlertIcon, SplitPayIcon, TrashIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
 
@@ -621,6 +621,7 @@ export function QuickAddSheet({
     await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
     await queryClient.invalidateQueries({ queryKey: ["quick-presets"] });
     await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
+    await queryClient.invalidateQueries({ queryKey: goalKeys.all });
   };
 
   const saveMutation = useMutation({
@@ -666,6 +667,8 @@ export function QuickAddSheet({
         }
 
         if (editingTx) {
+          // Unticking "Pecah Kategori" must send an empty list; `undefined` means "keep splits".
+          const hadSplits = (editingTx.splits?.length ?? 0) > 0;
           return api.updateTransaction(editingTx.id, {
             type: mode,
             merchant: merchant.trim(),
@@ -674,7 +677,7 @@ export function QuickAddSheet({
             category: payloadSplits ? payloadSplits[0]!.category : category,
             walletId,
             note: note.trim() || null,
-            splits: payloadSplits,
+            splits: payloadSplits ?? (hadSplits ? [] : undefined),
           });
         }
 

@@ -2,7 +2,7 @@ import { useEffect, useId, useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type WalletDto } from "../lib/api";
 import { formatRupiah, formatSignedDigitsInput, jakartaToday, parseSignedInt } from "../lib/format";
-import { budgetKeys } from "../lib/queryKeys";
+import { budgetKeys, goalKeys } from "../lib/queryKeys";
 import { AlertIcon } from "./Icons";
 import { Button, ModalSheet } from "./UI";
 
@@ -52,6 +52,7 @@ export function ReconcileModal({
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+      await queryClient.invalidateQueries({ queryKey: goalKeys.all });
       if (res?.adjusted) {
         onSuccess(`Saldo ${wallet?.name} disesuaikan (${formatRupiah(res.delta)})`);
       } else {

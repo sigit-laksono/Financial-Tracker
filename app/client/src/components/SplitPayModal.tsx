@@ -10,7 +10,7 @@ import {
   parsePositiveInt,
   shiftMonth,
 } from "../lib/format";
-import { budgetKeys } from "../lib/queryKeys";
+import { budgetKeys, goalKeys } from "../lib/queryKeys";
 import { AlertIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
 
@@ -94,6 +94,7 @@ export function SplitPayModal({
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+      await queryClient.invalidateQueries({ queryKey: goalKeys.all });
       onSuccess("Transaksi berhasil diubah menjadi cicilan bulanan");
       onClose();
     },

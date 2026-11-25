@@ -629,11 +629,12 @@ export function WalletFormModal({
           <span className={labelClass}>TIPE</span>
           <button
             type="button"
+            disabled={isEditing}
             onClick={() => {
               setTypeDropdownOpen((prev) => !prev);
               setProviderDropdownOpen(false);
             }}
-            className={`min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] flex items-center justify-between transition-all ${
+            className={`min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] flex items-center justify-between transition-all disabled:opacity-60 ${
               typeDropdownOpen
                 ? "border-[var(--primary)] ring-2 ring-[var(--primary)]/20"
                 : "border-[var(--control-border)]"
@@ -646,8 +647,13 @@ export function WalletFormModal({
               <ChevronDownIcon className="text-[var(--muted-foreground)]" />
             )}
           </button>
+          {isEditing && (
+            <p className="text-[11px] text-[var(--muted-foreground)]">
+              Tipe dompet tidak dapat diubah setelah dibuat.
+            </p>
+          )}
 
-          {typeDropdownOpen && (
+          {!isEditing && typeDropdownOpen && (
             <div className="absolute left-0 right-0 top-full z-40 mt-1.5 rounded-[18px] border border-[var(--control-border)] bg-[var(--card)] shadow-2xl p-1.5 space-y-1">
               {WALLET_UI_TYPES.map((t) => {
                 const isSelected = uiType === t.id;

@@ -142,6 +142,24 @@ export function App() {
     }, 2800);
   }, []);
 
+  const [lockPending, setLockPending] = useState(false);
+  const lockSession = async () => {
+    if (lockPending) return;
+    setLockPending(true);
+    try {
+      await api.logout();
+      queryClient.removeQueries({
+        predicate: (q) => q.queryKey[0] !== "auth-status",
+      });
+      await queryClient.invalidateQueries({ queryKey: ["auth-status"] });
+    } catch {
+      // The session cookie is still valid if the request failed; say so instead of looking locked.
+      showToast("Gagal mengunci sesi. Periksa koneksi lalu coba lagi.");
+    } finally {
+      setLockPending(false);
+    }
+  };
+
   const authQuery = useQuery({
     queryKey: ["auth-status"],
     queryFn: api.getAuthStatus,
@@ -712,15 +730,10 @@ export function App() {
           {pinConfigured && (
             <button
               type="button"
-              onClick={async () => {
-                await api.logout();
-                queryClient.removeQueries({
-                  predicate: (q) => q.queryKey[0] !== "auth-status",
-                });
-                await queryClient.invalidateQueries({ queryKey: ["auth-status"] });
-              }}
+              onClick={lockSession}
+              disabled={lockPending}
               aria-label="Kunci aplikasi"
-              className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] px-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] ${
+              className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] px-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] disabled:opacity-45 ${
                 railCollapsed ? "justify-center px-0" : ""
               }`}
             >
@@ -758,15 +771,10 @@ export function App() {
             {pinConfigured && (
               <button
                 type="button"
-                onClick={async () => {
-                  await api.logout();
-                  queryClient.removeQueries({
-                    predicate: (q) => q.queryKey[0] !== "auth-status",
-                  });
-                  await queryClient.invalidateQueries({ queryKey: ["auth-status"] });
-                }}
+                onClick={lockSession}
+                disabled={lockPending}
                 aria-label="Kunci aplikasi"
-                className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--control-border)] bg-[var(--card)]"
+                className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--control-border)] bg-[var(--card)] disabled:opacity-45"
               >
                 <LockIcon className="w-5 h-5" />
               </button>

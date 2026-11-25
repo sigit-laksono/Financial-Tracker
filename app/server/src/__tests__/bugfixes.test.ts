@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
-import { debtAccounts, installments, transactions, wallets } from "../db/schema";
+import { debtAccounts, installments, transactions, transactionSplits, wallets } from "../db/schema";
 import { LoginRateLimiter } from "../lib/auth";
 import { buildDebtsData } from "../lib/dashboardQuery";
 import { computeLedgerSnapshot } from "../lib/ledger";
@@ -449,6 +449,52 @@ describe("Regression: installments cannot be marked paid in a way that breaks th
       expect(res.status).toBe(400);
       const [after] = await db.select().from(installments).where(eq(installments.id, inst!.id));
       expect(after!.status).toBe("upcoming");
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("Regression: unticking Pecah Kategori removes the splits", () => {
+  it("an update with splits: [] clears existing splits", async () => {
+    const { db, app, cleanup } = await setupTestContext();
+    try {
+      const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+      const createRes = await app.request("/api/transactions", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          type: "expense",
+          merchant: "Supermarket",
+          amount: 100_000,
+          transactionDate: "2026-11-20",
+          category: "Makanan & Belanja Dapur",
+          walletId: bni!.id,
+          splits: [
+            { category: "Makanan & Belanja Dapur", amount: 60_000 },
+            { category: "Belanja Pribadi & Hobi", amount: 40_000 },
+          ],
+        }),
+      });
+      expect(createRes.status).toBe(201);
+      const { id } = (await createRes.json()) as { id: number };
+      expect(await db.select().from(transactionSplits).where(eq(transactionSplits.transactionId, id))).toHaveLength(2);
+
+      const updateRes = await app.request(`/api/transactions/${id}`, {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          type: "expense",
+          merchant: "Supermarket",
+          amount: 100_000,
+          transactionDate: "2026-11-20",
+          category: "Makanan & Belanja Dapur",
+          walletId: bni!.id,
+          splits: [],
+        }),
+      });
+      expect(updateRes.status).toBe(200);
+      expect(await db.select().from(transactionSplits).where(eq(transactionSplits.transactionId, id))).toHaveLength(0);
     } finally {
       await cleanup();
     }

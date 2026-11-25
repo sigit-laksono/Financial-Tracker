@@ -21,7 +21,7 @@ import {
   parsePositiveInt,
   shiftMonth,
 } from "../lib/format";
-import { budgetKeys, dashboardKeys } from "../lib/queryKeys";
+import { budgetKeys, dashboardKeys, goalKeys, transactionKeys } from "../lib/queryKeys";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
 
 type BucketFilterTab = "all" | CategoryBucket;
@@ -133,6 +133,10 @@ export function BudgetPage({
     await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
     await queryClient.invalidateQueries({ queryKey: ["categories"] });
     await queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+    // Category rename/archive also rewrites transactions, splits and recurring rules on the server.
+    await queryClient.invalidateQueries({ queryKey: transactionKeys.all });
+    await queryClient.invalidateQueries({ queryKey: ["recurring-rules"] });
+    await queryClient.invalidateQueries({ queryKey: goalKeys.all });
   };
 
   const saveBudgetMutation = useMutation({

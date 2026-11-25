@@ -47,8 +47,11 @@ export function GoalsPage({ onToast }: { onToast: (msg: string) => void }) {
 
   const goals = goalsData?.goals ?? [];
   const emergencyFund = goalsData?.emergencyFund;
-  const activeWallets = (walletsData?.wallets ?? []).filter(
-    (w) => w.isActive && w.type !== "credit_card",
+  // Memoized: the goal modals reset their form when this array changes identity, so a fresh
+  // array on every render would wipe what the user is typing.
+  const activeWallets = useMemo(
+    () => (walletsData?.wallets ?? []).filter((w) => w.isActive && w.type !== "credit_card"),
+    [walletsData],
   );
 
   const deleteGoalMutation = useMutation({

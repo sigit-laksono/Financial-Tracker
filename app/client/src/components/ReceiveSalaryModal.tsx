@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type DashboardDto } from "../lib/api";
 import { formatDigitsInput, formatRupiah, formatShortDate, parsePositiveInt } from "../lib/format";
-import { budgetKeys } from "../lib/queryKeys";
+import { budgetKeys, goalKeys } from "../lib/queryKeys";
 import { AlertIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
 
@@ -82,6 +82,7 @@ export function ReceiveSalaryModal({
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
       await queryClient.invalidateQueries({ queryKey: ["salary-preview"] });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+      await queryClient.invalidateQueries({ queryKey: goalKeys.all });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
       onSuccess(`Gaji periode ${period} berhasil dicatat (${formatRupiah(netSalary)})`);
       onClose();

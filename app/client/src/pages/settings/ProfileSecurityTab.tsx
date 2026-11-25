@@ -53,6 +53,25 @@ export function ProfileSecurityTab({
     }
   };
 
+  const runLock = async (request: () => Promise<void>) => {
+    setPinError("");
+    setIsPending(true);
+    try {
+      await request();
+      queryClient.removeQueries({
+        predicate: (q) => q.queryKey[0] !== "auth-status",
+      });
+      onAuthChanged();
+    } catch (err) {
+      // Request failed, so the session is still valid on the server; don't pretend it's locked.
+      setPinError(
+        err instanceof ApiError ? err.message : "Gagal mengunci sesi. Periksa koneksi lalu coba lagi.",
+      );
+    } finally {
+      setIsPending(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -164,13 +183,12 @@ export function ProfileSecurityTab({
                   <Button
                     variant="secondary"
                     type="button"
-                    onClick={async () => {
-                      await api.logout();
-                      queryClient.removeQueries({
-                        predicate: (q) => q.queryKey[0] !== "auth-status",
-                      });
-                      onAuthChanged();
-                    }}
+                    disabled={isPending}
+                    onClick={() =>
+                      runLock(async () => {
+                        await api.logout();
+                      })
+                    }
                     className="min-h-[44px] flex-1 sm:flex-initial rounded-[14px] font-semibold"
                   >
                     Kunci Sekarang
@@ -178,14 +196,13 @@ export function ProfileSecurityTab({
                   <Button
                     variant="ghost"
                     type="button"
-                    onClick={async () => {
-                      await api.logoutAll();
-                      queryClient.removeQueries({
-                        predicate: (q) => q.queryKey[0] !== "auth-status",
-                      });
-                      onAuthChanged();
-                      onToast("Semua sesi perangkat lain dicabut");
-                    }}
+                    disabled={isPending}
+                    onClick={() =>
+                      runLock(async () => {
+                        await api.logoutAll();
+                        onToast("Semua sesi perangkat lain dicabut");
+                      })
+                    }
                     className="min-h-[44px] flex-1 sm:flex-initial rounded-[14px] font-semibold"
                   >
                     Kunci Semua Sesi

@@ -4,7 +4,7 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import { periodForDate } from "../../../shared/src/dates";
 import { api, ApiError, type DashboardDto, type TransactionDto } from "../lib/api";
 import type { TransactionFiltersState } from "../lib/filters";
-import { budgetKeys } from "../lib/queryKeys";
+import { budgetKeys, goalKeys } from "../lib/queryKeys";
 import {
   buildWeekSlices,
   formatCompactRupiah,
@@ -140,6 +140,7 @@ export function TransactionsPage({
     onSuccess: async (_, vars) => {
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+      await queryClient.invalidateQueries({ queryKey: goalKeys.all });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
       setEditingBudgetCat(null);
       setBudgetError("");
@@ -161,6 +162,7 @@ export function TransactionsPage({
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+      await queryClient.invalidateQueries({ queryKey: goalKeys.all });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
       onToast("Override periode dihapus, kembali ke template default");
     },
@@ -178,6 +180,7 @@ export function TransactionsPage({
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+      await queryClient.invalidateQueries({ queryKey: goalKeys.all });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
       setConfirmDeleteTxId(null);
       setSelectedIds((prev) => prev.filter((id) => id !== deletedId));
@@ -212,6 +215,7 @@ export function TransactionsPage({
       await queryClient.invalidateQueries({ queryKey: ["wallets"] });
       await queryClient.invalidateQueries({ queryKey: ["net-worth-summary"] });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+      await queryClient.invalidateQueries({ queryKey: goalKeys.all });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
       setBulkDeleteConfirmOpen(false);
       setSelectedIds([]);
