@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { WalletRole, WalletType } from "../../../../shared/src/types";
 import { EditIcon, TrashIcon } from "../../components/Icons";
-import { Badge, Button, Card } from "../../components/UI";
+import { Badge, Button } from "../../components/UI";
 import { api, ApiError, type DashboardDto, type WalletDto } from "../../lib/api";
 import {
   formatDigitsInput,
@@ -11,6 +11,13 @@ import {
   parsePositiveInt,
   parseSignedInt,
 } from "../../lib/format";
+
+const WALLET_TYPE_LABELS: Record<WalletType, string> = {
+  bank: "Bank",
+  ewallet: "E-Wallet",
+  cash: "Tunai",
+  credit_card: "Kartu Kredit",
+};
 
 function CardRecurringFeesManager({
   walletId,
@@ -176,10 +183,12 @@ function CardRecurringFeesManager({
 export function WalletsConfigTab({
   data,
   onReconcileWallet,
+  onOpenWallets,
   onToast,
 }: {
   data: DashboardDto;
   onReconcileWallet: (wallet: WalletDto) => void;
+  onOpenWallets?: () => void;
   onToast: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -285,30 +294,46 @@ export function WalletsConfigTab({
   };
 
   return (
-    <div className="rounded-[18px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-5 sm:p-6 shadow-xs space-y-5">
-      <div>
-        <h2 className="text-base font-bold text-neutral-900 dark:text-white">
-          Dompet & Rekonsiliasi Saldo
-        </h2>
-        <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-          Atur saldo awal, limit kartu kredit, peran akun (harian vs tabungan), dan biaya rutin
-          bank.
-        </p>
+    <div className="rounded-[18px] border border-[var(--border)] bg-[var(--card)] p-5 sm:p-6 shadow-xs space-y-5">
+      <div className="space-y-3">
+        <div>
+          <h2 className="text-base font-bold text-[var(--foreground)]">
+            Dompet & Rekonsiliasi Saldo
+          </h2>
+          <p className="text-xs text-[var(--muted-foreground)] mt-0.5">
+            Atur saldo awal, limit kartu kredit, peran akun (harian vs tabungan), dan biaya rutin
+            bank.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[12px] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5 text-xs text-[var(--muted-foreground)]">
+          <span>
+            Untuk transfer antar dompet dan ringkasan saldo operasional harian, buka halaman{" "}
+            <strong className="font-semibold text-[var(--foreground)]">Dompet</strong> di menu utama.
+          </span>
+          {onOpenWallets && (
+            <button
+              type="button"
+              onClick={onOpenWallets}
+              className="inline-flex min-h-[36px] items-center font-bold text-[var(--primary)] hover:underline whitespace-nowrap"
+            >
+              Buka Halaman Dompet →
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="divide-y divide-neutral-200 dark:divide-neutral-700 rounded-[14px] border border-neutral-200 dark:border-neutral-700 overflow-hidden bg-white dark:bg-neutral-900">
+      <div className="divide-y divide-[var(--border)] rounded-[14px] border border-[var(--border)] overflow-hidden bg-[var(--card)]">
         {data.wallets.map((w) => {
           const isEditing = editingWalletId === w.id;
           const isFeesOpen = expandedFeesWalletId === w.id;
           return (
             <div key={w.id} className="space-y-3 px-3.5 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
+                <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <strong className="text-sm">{w.name}</strong>
-                    <Badge tone="neutral">
-                      {w.type === "credit_card" ? "Kartu Kredit" : w.type}
-                    </Badge>
+                    <strong className="text-sm text-[var(--foreground)]">{w.name}</strong>
+                    <Badge tone="neutral">{WALLET_TYPE_LABELS[w.type] ?? w.type}</Badge>
                     {w.type !== "credit_card" && (
                       <Badge tone={w.role === "savings" ? "highlight" : "soft"}>
                         {w.role === "savings" ? "Tabungan" : "Harian"}
@@ -318,7 +343,7 @@ export function WalletsConfigTab({
                   </div>
                   <p className="tabular-nums text-xs text-[var(--muted-foreground)]">
                     {w.type === "credit_card"
-                      ? `Terpakai ${formatRupiah(w.limitUsed)} / Limit ${formatRupiah(w.creditLimit ?? 0)} · Cutoff ${w.cutoffDay ?? data.settings.cardCutoffDay} · Cetak ${w.statementDay ?? data.settings.statementDay} · Tempo ${w.paymentDay ?? data.settings.cardPaymentDay}`
+                      ? `Terpakai ${formatRupiah(w.limitUsed)} / Limit ${formatRupiah(w.creditLimit ?? 0)} · Tutup Buku Tgl ${w.cutoffDay ?? data.settings.cardCutoffDay} · Cetak Tgl ${w.statementDay ?? data.settings.statementDay} · Jatuh Tempo Tgl ${w.paymentDay ?? data.settings.cardPaymentDay}`
                       : `Saldo sistem ${formatRupiah(w.balance)} · Saldo awal ${formatRupiah(w.openingBalance)}`}
                   </p>
                 </div>
@@ -346,7 +371,7 @@ export function WalletsConfigTab({
                       onClick={() => onReconcileWallet(w)}
                       className="min-h-[44px] px-3 text-xs"
                     >
-                      Sesuaikan Saldo
+                      Cocokkan Saldo
                     </Button>
                   )}
                 </div>
@@ -473,7 +498,7 @@ export function WalletsConfigTab({
                         id={`edit-wallet-role-${w.id}`}
                         value={editWalletRole}
                         onChange={(e) => setEditWalletRole(e.target.value as WalletRole)}
-                        className="min-h-[44px] w-full rounded-[10px] border border-[var(--control-border)] bg-[var(--card)] px-3 text-sm font-semibold"
+                        className="h-11 w-full rounded-[10px] border border-[var(--control-border)] bg-[var(--card)] px-3 text-sm font-semibold"
                       >
                         <option value="spending">Harian (Safe to Spend)</option>
                         <option value="savings">Tabungan / Dana Darurat</option>
@@ -552,14 +577,17 @@ export function WalletsConfigTab({
           setWalletFormError("");
           walletMutation.mutate();
         }}
-        className="space-y-4 rounded-[18px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-4 sm:p-5 shadow-xs"
+        className="space-y-4 rounded-[18px] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
       >
-        <h4 className="text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+        <h4 className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
           Tambah Dompet Baru
         </h4>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <label htmlFor="new-wallet-name" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+            <label
+              htmlFor="new-wallet-name"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
               Nama Dompet Baru
             </label>
             <input
@@ -573,18 +601,21 @@ export function WalletsConfigTab({
               placeholder={
                 newWalletType === "credit_card" ? "Contoh: CC BCA Everyday" : "Contoh: SeaBank"
               }
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className="min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             />
           </div>
           <div className="space-y-1.5">
-            <label htmlFor="new-wallet-type" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+            <label
+              htmlFor="new-wallet-type"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
               Jenis Dompet
             </label>
             <select
               id="new-wallet-type"
               value={newWalletType}
               onChange={(e) => setNewWalletType(e.target.value as WalletType)}
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className="h-11 w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             >
               <option value="bank">Bank</option>
               <option value="ewallet">E-Wallet</option>
@@ -597,11 +628,14 @@ export function WalletsConfigTab({
         {newWalletType === "credit_card" ? (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
             <div className="space-y-1.5">
-              <label htmlFor="new-wallet-limit" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+              <label
+                htmlFor="new-wallet-limit"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+              >
                 Limit Kartu (Rp)
               </label>
               <div className="relative">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-neutral-400 select-none">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-[var(--muted-foreground)] select-none">
                   Rp
                 </span>
                 <input
@@ -610,13 +644,16 @@ export function WalletsConfigTab({
                   value={newWalletLimit}
                   onChange={(e) => setNewWalletLimit(formatDigitsInput(e.target.value))}
                   placeholder="10.000.000"
-                  className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-9 pr-3 py-2.5 text-sm font-bold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+                  className="tabular-nums min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-9 pr-3 py-2.5 text-sm font-bold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
                 />
               </div>
             </div>
             <div className="space-y-1.5">
-              <label htmlFor="new-wallet-cutoff" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                Cutoff (Tgl 1-28)
+              <label
+                htmlFor="new-wallet-cutoff"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+              >
+                Tutup Buku (Tgl 1-28)
               </label>
               <input
                 id="new-wallet-cutoff"
@@ -625,11 +662,14 @@ export function WalletsConfigTab({
                 max={28}
                 value={newWalletCutoffDay}
                 onChange={(e) => setNewWalletCutoffDay(e.target.value)}
-                className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                className="tabular-nums min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
               />
             </div>
             <div className="space-y-1.5">
-              <label htmlFor="new-wallet-stmt" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+              <label
+                htmlFor="new-wallet-stmt"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+              >
                 Cetak Tagihan (Tgl 1-28)
               </label>
               <input
@@ -639,11 +679,14 @@ export function WalletsConfigTab({
                 max={28}
                 value={newWalletStatementDay}
                 onChange={(e) => setNewWalletStatementDay(e.target.value)}
-                className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                className="tabular-nums min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
               />
             </div>
             <div className="space-y-1.5">
-              <label htmlFor="new-wallet-payment" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+              <label
+                htmlFor="new-wallet-payment"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+              >
                 Jatuh Tempo (Tgl 1-28)
               </label>
               <input
@@ -653,32 +696,38 @@ export function WalletsConfigTab({
                 max={28}
                 value={newWalletPaymentDay}
                 onChange={(e) => setNewWalletPaymentDay(e.target.value)}
-                className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                className="tabular-nums min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
               />
             </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <label htmlFor="new-wallet-role" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+              <label
+                htmlFor="new-wallet-role"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+              >
                 Peran Dompet
               </label>
               <select
                 id="new-wallet-role"
                 value={newWalletRole}
                 onChange={(e) => setNewWalletRole(e.target.value as WalletRole)}
-                className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                className="h-11 w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
               >
                 <option value="spending">Harian (Safe to Spend)</option>
                 <option value="savings">Tabungan / Dana Darurat</option>
               </select>
             </div>
             <div className="space-y-1.5">
-              <label htmlFor="new-wallet-open" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+              <label
+                htmlFor="new-wallet-open"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+              >
                 Saldo Awal (Rp)
               </label>
               <div className="relative">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-neutral-400 select-none">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-[var(--muted-foreground)] select-none">
                   Rp
                 </span>
                 <input
@@ -686,27 +735,28 @@ export function WalletsConfigTab({
                   inputMode="text"
                   value={newWalletOpening}
                   onChange={(e) => setNewWalletOpening(formatSignedDigitsInput(e.target.value))}
-                  className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-9 pr-3 py-2.5 text-sm font-bold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+                  className="tabular-nums min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-9 pr-3 py-2.5 text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
                 />
               </div>
             </div>
           </div>
         )}
 
-        <div className="flex justify-end pt-1">
-          <button
-            type="submit"
-            disabled={walletMutation.isPending}
-            className="min-h-[44px] px-6 py-2.5 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-          >
-            Tambah Dompet
-          </button>
-        </div>
         {walletFormError && (
           <p role="alert" className="text-xs text-[var(--destructive)]">
             {walletFormError}
           </p>
         )}
+
+        <div className="flex border-t border-[var(--border)] pt-3">
+          <Button
+            type="submit"
+            disabled={walletMutation.isPending}
+            className="w-full sm:w-auto sm:ml-auto min-h-[44px] rounded-[14px] px-5 font-bold"
+          >
+            {walletMutation.isPending ? "Menambahkan..." : "Tambah Dompet"}
+          </Button>
+        </div>
       </form>
     </div>
   );

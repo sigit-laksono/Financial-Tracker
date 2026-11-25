@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 export type HelpTooltipProps = {
   content: ReactNode;
@@ -14,7 +14,10 @@ export function HelpTooltip({
   align = "center",
 }: HelpTooltipProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [shiftX, setShiftX] = useState(0);
+  const [placeBelow, setPlaceBelow] = useState(false);
   const containerRef = useRef<HTMLSpanElement>(null);
+  const tooltipRef = useRef<HTMLSpanElement>(null);
   const tooltipId = useId();
 
   useEffect(() => {
@@ -41,6 +44,29 @@ export function HelpTooltip({
       document.removeEventListener("touchstart", handleClickOutside);
       document.removeEventListener("keydown", handleKeyDown);
     };
+  }, [isOpen]);
+
+  useLayoutEffect(() => {
+    if (!isOpen || !tooltipRef.current || !containerRef.current) {
+      setShiftX(0);
+      setPlaceBelow(false);
+      return;
+    }
+
+    const tooltipRect = tooltipRef.current.getBoundingClientRect();
+    const triggerRect = containerRef.current.getBoundingClientRect();
+    const viewportW = window.innerWidth;
+    const edgePadding = 12;
+
+    let nextShiftX = 0;
+    if (tooltipRect.left < edgePadding) {
+      nextShiftX = edgePadding - tooltipRect.left;
+    } else if (tooltipRect.right > viewportW - edgePadding) {
+      nextShiftX = viewportW - edgePadding - tooltipRect.right;
+    }
+
+    setShiftX(Math.round(nextShiftX));
+    setPlaceBelow(triggerRect.top < tooltipRect.height + 24);
   }, [isOpen]);
 
   const alignmentClasses = {
@@ -71,17 +97,19 @@ export function HelpTooltip({
 
       {isOpen && (
         <span
+          ref={tooltipRef}
           id={tooltipId}
           role="tooltip"
-          className={`absolute bottom-full mb-2 ${alignmentClasses} z-50 w-64 max-w-[85vw] rounded-[12px] border border-[var(--border)] bg-[var(--card)] p-3 text-xs leading-relaxed text-[var(--foreground)] shadow-lg animate-in fade-in zoom-in-95 duration-150`}
+          style={{
+            boxShadow: "var(--elevation-float)",
+            marginLeft: shiftX ? `${shiftX}px` : undefined,
+          }}
+          className={`absolute ${
+            placeBelow ? "top-full mt-2" : "bottom-full mb-2"
+          } ${alignmentClasses} z-50 w-64 max-w-[calc(100vw-24px)] rounded-[12px] border border-[var(--border)] bg-[var(--card)] p-3 text-xs leading-relaxed text-[var(--foreground)] animate-in fade-in zoom-in-95 duration-150`}
         >
           {title && <span className="block font-bold mb-1 text-[var(--primary)]">{title}</span>}
           <span className="block text-[var(--muted-foreground)] font-normal">{content}</span>
-          {/* Tooltip triangle arrow */}
-          <span
-            className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-4 border-transparent border-t-[var(--border)]"
-            aria-hidden="true"
-          />
         </span>
       )}
     </span>

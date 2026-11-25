@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { addMonthsToDate, ccCycleForDate, isValidIsoDate } from "../../../shared/src/dates";
 import type { DebtKind } from "../../../shared/src/types";
@@ -37,6 +37,7 @@ export function EditDebtModal({
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const formId = useId();
 
   const [name, setName] = useState("");
   const [lender, setLender] = useState("");
@@ -57,8 +58,16 @@ export function EditDebtModal({
     [creditCardWallets, ccWalletId],
   );
 
+  const prevAccountIdRef = useRef<number | null>(null);
+
   useEffect(() => {
-    if (!account) return;
+    if (!account) {
+      prevAccountIdRef.current = null;
+      return;
+    }
+    if (prevAccountIdRef.current === account.id) return;
+    prevAccountIdRef.current = account.id;
+
     setName(account.name);
     setLender(account.lender);
     setKind(account.kind);
@@ -85,9 +94,7 @@ export function EditDebtModal({
     const firstUpcoming = accountRows.find((r) => r.status === "upcoming") ?? accountRows[0];
     setAnchorDueDate(firstUpcoming?.dueDate ?? "");
     setError("");
-    // Only re-initialize form state when opening/switching the target account.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account?.id]);
+  }, [account, installments, wallets]);
 
   const upcomingCount = rows.filter((r) => r.status === "upcoming").length;
 
@@ -124,7 +131,7 @@ export function EditDebtModal({
     () =>
       rows
         .filter((r) => r.status === "upcoming")
-        .reduce((sum, r) => sum + (r.amount > 0 ? r.amount : 0), 0),
+        .reduce((sum, r) => sum + Math.max(r.amount, 0), 0),
     [rows],
   );
 
@@ -132,7 +139,7 @@ export function EditDebtModal({
     () =>
       rows.reduce(
         (sum, r) =>
-          sum + (r.status === "paid" ? (r.actualAmount ?? r.amount) : r.amount > 0 ? r.amount : 0),
+          sum + (r.status === "paid" ? (r.actualAmount ?? r.amount) : Math.max(r.amount, 0)),
         0,
       ),
     [rows],
@@ -224,6 +231,12 @@ export function EditDebtModal({
 
   const isSplitPayAccount = Boolean(account.sourceTransactionId);
   const isReceivable = account.direction === "receivable";
+  const inputClass =
+    "w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all";
+  const selectClass =
+    "h-11 w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all disabled:opacity-60";
+  const labelClass =
+    "block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]";
 
   return (
     <ModalSheet
@@ -231,46 +244,51 @@ export function EditDebtModal({
       onClose={onClose}
       title={isReceivable ? `Edit Piutang: ${account.name}` : `Edit Utang & Cicilan: ${account.name}`}
       subtitle="Ubah detail akun, tautkan ke kartu kredit, atau perbaiki tanggal & nominal cicilan yang belum lunas."
-    >
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="space-y-1.5">
-          <label
-            htmlFor="edit-debt-name"
-            className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Batal
+          </Button>
+          <Button
+            type="submit"
+            form={formId}
+            disabled={mutation.isPending || missingCcWallet || isCardLimitExceeded}
           >
-            {isReceivable ? "Keterangan Piutang / Talangan" : "Nama Utang / Cicilan"}
+            {mutation.isPending ? "Menyimpan..." : "Simpan Perubahan"}
+          </Button>
+        </div>
+      }
+    >
+      <form id={formId} onSubmit={handleSubmit} className="space-y-4">
+        <div className="space-y-1.5">
+          <label htmlFor="edit-debt-name" className={labelClass}>
+            {isReceivable ? "Keterangan Piutang" : "Nama Utang / Cicilan"}
           </label>
           <input
             id="edit-debt-name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+            className={inputClass}
           />
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <label
-              htmlFor="edit-debt-lender"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
-            >
-              {isReceivable ? "Peminjam / Pihak Berutang" : "Pemberi Pinjaman"}
+            <label htmlFor="edit-debt-lender" className={labelClass}>
+              {isReceivable ? "Peminjam" : "Pemberi Pinjaman"}
             </label>
             <input
               id="edit-debt-lender"
               type="text"
               value={lender}
               onChange={(e) => setLender(e.target.value)}
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className={inputClass}
             />
           </div>
 
           <div className="space-y-1.5">
-            <label
-              htmlFor="edit-debt-kind"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
-            >
+            <label htmlFor="edit-debt-kind" className={labelClass}>
               Jenis
             </label>
             {isReceivable ? (
@@ -279,7 +297,7 @@ export function EditDebtModal({
                 type="text"
                 disabled
                 value="Piutang Pribadi / Talangan"
-                className="w-full rounded-[14px] border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 px-4 py-3 text-sm font-semibold text-neutral-400 cursor-not-allowed"
+                className="w-full rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 text-sm font-semibold text-[var(--muted-foreground)] cursor-not-allowed"
               />
             ) : (
               <select
@@ -293,7 +311,7 @@ export function EditDebtModal({
                     setPaymentMethod("Tagihan kartu");
                   }
                 }}
-                className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all disabled:opacity-60"
+                className={selectClass}
               >
                 <option value="loan">Pinjaman Tunai</option>
                 <option value="card_installment">Cicilan Kartu Kredit</option>
@@ -305,11 +323,8 @@ export function EditDebtModal({
 
         {/* Link / Change Credit Card for card_installment */}
         {isCardInstallment && (
-          <div className="space-y-2.5 rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 p-3.5">
-            <label
-              htmlFor="edit-debt-cc-wallet"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
-            >
+          <div className="space-y-2.5 rounded-[16px] border border-[var(--border)] bg-[var(--surface)] p-3.5">
+            <label htmlFor="edit-debt-cc-wallet" className={labelClass}>
               Kartu Kredit Penanggung Cicilan
             </label>
             {missingCcWallet ? (
@@ -334,7 +349,7 @@ export function EditDebtModal({
                       setLender(nextCard.name);
                     }
                   }}
-                  className="w-full rounded-[14px] bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all disabled:opacity-60"
+                  className={selectClass}
                 >
                   {creditCardWallets.map((w) => (
                     <option key={w.id} value={w.id}>
@@ -345,14 +360,14 @@ export function EditDebtModal({
                 </select>
                 {selectedCcWallet && (
                   <div className="grid grid-cols-2 gap-2 text-[11px]">
-                    <div className="rounded-[10px] bg-white dark:bg-neutral-900 px-3 py-2 border border-neutral-200 dark:border-neutral-700">
-                      <span className="text-neutral-400 block">Kapasitas Limit Tersedia</span>
-                      <strong className="font-mono text-xs text-neutral-900 dark:text-white">
+                    <div className="rounded-[10px] bg-[var(--card)] px-3 py-2 border border-dashed border-[var(--border)]">
+                      <span className="text-[var(--muted-foreground)] block">Kapasitas Limit Tersedia</span>
+                      <strong className="font-mono text-xs text-[var(--foreground)]">
                         {formatRupiah(effectiveAvailableLimit)}
                       </strong>
                     </div>
-                    <div className="rounded-[10px] bg-white dark:bg-neutral-900 px-3 py-2 border border-neutral-200 dark:border-neutral-700">
-                      <span className="text-neutral-400 block">Sisa Limit Setelah Simpan</span>
+                    <div className="rounded-[10px] bg-[var(--card)] px-3 py-2 border border-dashed border-[var(--border)]">
+                      <span className="text-[var(--muted-foreground)] block">Sisa Limit Setelah Simpan</span>
                       <strong
                         className={`font-mono text-xs ${
                           isCardLimitExceeded
@@ -380,10 +395,7 @@ export function EditDebtModal({
         )}
 
         <div className="space-y-1.5">
-          <label
-            htmlFor="edit-debt-method"
-            className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
-          >
+          <label htmlFor="edit-debt-method" className={labelClass}>
             Metode Bayar
           </label>
           <input
@@ -391,19 +403,19 @@ export function EditDebtModal({
             type="text"
             value={paymentMethod}
             onChange={(e) => setPaymentMethod(e.target.value)}
-            className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+            className={inputClass}
           />
         </div>
 
         {/* Installment Schedule Editor (Preserves Custom Amounts when shifting dates!) */}
         {rows.length > 0 && (
-          <div className="rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 p-3.5 space-y-3">
+          <div className="rounded-[16px] border border-[var(--border)] bg-[var(--surface)] p-3.5 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <span className="block text-xs font-bold text-neutral-800 dark:text-neutral-200">
+                <span className="block text-xs font-bold text-[var(--foreground)]">
                   Jadwal Angsuran ({rows.length} Bulan)
                 </span>
-                <span className="text-[11px] text-neutral-500">
+                <span className="text-[11px] text-[var(--muted-foreground)]">
                   Ubah tanggal jatuh tempo atau nominal per bulan tanpa kehilangan custom cicilan.
                 </span>
               </div>
@@ -413,10 +425,10 @@ export function EditDebtModal({
             </div>
 
             {upcomingCount > 0 && (
-              <div className="rounded-[12px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-2.5 space-y-2">
+              <div className="rounded-[12px] border border-[var(--border)] bg-[var(--card)] p-2.5 space-y-2">
                 <label
                   htmlFor="edit-debt-anchor-date"
-                  className="flex items-center gap-1.5 text-[11px] font-bold text-neutral-600 dark:text-neutral-300"
+                  className="flex items-center gap-1.5 text-[11px] font-bold text-[var(--muted-foreground)]"
                 >
                   <CalendarIcon className="w-3.5 h-3.5 text-[var(--primary)]" />
                   <span>Geser Semua Jatuh Tempo Belum Lunas Mulai Tanggal:</span>
@@ -427,13 +439,13 @@ export function EditDebtModal({
                     type="date"
                     value={anchorDueDate}
                     onChange={(e) => setAnchorDueDate(e.target.value)}
-                    className="tabular-nums flex-1 min-w-[150px] rounded-[10px] bg-[#f8f9fa] dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 px-3 py-2 text-xs font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)]"
+                    className="tabular-nums flex-1 min-w-[150px] rounded-[10px] bg-[var(--surface)] border border-[var(--control-border)] px-3 py-2 text-xs font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)]"
                   />
                   <Button
                     type="button"
                     variant="secondary"
                     onClick={handleShiftDatesFromAnchor}
-                    className="min-h-[36px] px-3 text-xs font-bold"
+                    className="min-h-[44px] px-3 text-xs font-bold"
                   >
                     Geser Tanggal (Nominal Tetap)
                   </Button>
@@ -441,7 +453,7 @@ export function EditDebtModal({
               </div>
             )}
 
-            <div className="max-h-60 overflow-y-auto space-y-2 pr-1 pt-1 border-t border-neutral-200 dark:border-neutral-700">
+            <div className="max-h-60 overflow-y-auto space-y-2 pr-1 pt-1 border-t border-[var(--border)]">
               {rows.map((row) => {
                 const isPaid = row.status === "paid";
                 return (
@@ -449,17 +461,17 @@ export function EditDebtModal({
                     key={row.id}
                     className={`flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-[10px] border ${
                       isPaid
-                        ? "bg-neutral-100/80 dark:bg-neutral-900/30 border-neutral-200 dark:border-neutral-800 opacity-80"
-                        : "bg-white dark:bg-neutral-900 border-neutral-200 dark:border-neutral-700"
+                        ? "bg-[var(--surface)] border-[var(--border)] opacity-80"
+                        : "bg-[var(--card)] border-[var(--border)]"
                     }`}
                   >
                     <div className="flex items-center gap-2">
-                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-neutral-100 dark:bg-neutral-800 text-[10px] font-extrabold text-neutral-800 dark:text-neutral-200 shrink-0">
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--surface)] text-[10px] font-extrabold text-[var(--foreground)] shrink-0">
                         {row.monthIndex}
                       </span>
                       <div>
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-xs font-bold text-neutral-800 dark:text-neutral-200">
+                          <span className="text-xs font-bold text-[var(--foreground)]">
                             Bulan ke-{row.monthIndex}
                           </span>
                           <Badge tone={isPaid ? "soft" : "neutral"}>
@@ -484,10 +496,10 @@ export function EditDebtModal({
                         disabled={isPaid}
                         value={row.dueDate}
                         onChange={(e) => handleRowDateChange(row.id, e.target.value)}
-                        className="tabular-nums rounded-[8px] bg-[#f8f9fa] dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 px-2.5 py-1.5 text-xs font-semibold text-neutral-900 dark:text-white disabled:opacity-60"
+                        className="tabular-nums rounded-[8px] bg-[var(--surface)] border border-[var(--control-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--foreground)] disabled:opacity-60"
                       />
                       <div className="relative w-32">
-                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-neutral-400 select-none">
+                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-[var(--muted-foreground)] select-none">
                           Rp
                         </span>
                         <input
@@ -501,7 +513,7 @@ export function EditDebtModal({
                               : row.amountInput
                           }
                           onChange={(e) => handleRowAmountChange(row.id, e.target.value)}
-                          className="tabular-nums font-mono w-full rounded-[8px] bg-[#f8f9fa] dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 pl-8 pr-2 py-1.5 text-xs font-bold text-neutral-900 dark:text-white text-right disabled:opacity-60"
+                          className="tabular-nums font-mono w-full rounded-[8px] bg-[var(--surface)] border border-[var(--control-border)] pl-8 pr-2 py-1.5 text-xs font-bold text-[var(--foreground)] text-right disabled:opacity-60"
                         />
                       </div>
                     </div>
@@ -521,23 +533,6 @@ export function EditDebtModal({
             <span>{error}</span>
           </div>
         )}
-
-        <div className="flex justify-end gap-2 pt-2 border-t border-neutral-200 dark:border-neutral-700">
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] text-sm font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-          >
-            Batal
-          </button>
-          <button
-            type="submit"
-            disabled={mutation.isPending || missingCcWallet || isCardLimitExceeded}
-            className="min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-          >
-            {mutation.isPending ? "Menyimpan..." : "Simpan Perubahan"}
-          </button>
-        </div>
       </form>
     </ModalSheet>
   );

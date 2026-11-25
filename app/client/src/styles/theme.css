@@ -21,6 +21,9 @@
   --muted-foreground: #566361;
   --primary: #00797a;
   --primary-foreground: #ffffff;
+  --primary-solid: #00797a;
+  --primary-solid-hover: #006667;
+  --primary-solid-foreground: #ffffff;
   --highlight: #ff8a00;
   --highlight-foreground: #1f1100;
   --highlight-text: #b45309;
@@ -45,7 +48,7 @@
   --hero-muted: #9aa8a5;
   --hero-bg: #121514;
   --hero-card-foreground: #ecf2f0;
-  --hero-card-muted: #9aa8a5;
+  --hero-card-muted: #a4b2af;
   --hero-border: #262c2b;
   --hero-surface: #1b2220;
   --hero-inner-border: #262c2b;
@@ -55,6 +58,9 @@
   --muted-foreground: #9aa8a5;
   --primary: #19a3a4;
   --primary-foreground: #031414;
+  --primary-solid: #0d7d7e;
+  --primary-solid-hover: #0f9091;
+  --primary-solid-foreground: #ffffff;
   --highlight: #ff9a1f;
   --highlight-foreground: #1f1100;
   --highlight-text: #ffaa33;
@@ -65,6 +71,10 @@
   --chart-income: #24ab7e;
   --chart-expense: #de7515;
   --elevation-float: 0 14px 36px -10px rgb(0 0 0 / 0.65), 0 2px 8px rgb(0 0 0 / 0.45);
+}
+
+html.dark {
+  color-scheme: dark;
 }
 
 @layer base {
@@ -109,9 +119,18 @@
     cursor: not-allowed;
   }
 
+  input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="range"]):not([type="color"]),
+  textarea {
+    min-height: 44px;
+    line-height: 1.25;
+    border-color: var(--control-border);
+  }
+
   select {
     height: 44px;
+    min-height: 44px;
     line-height: 1.25;
+    border-color: var(--control-border);
   }
 
   :focus-visible {
@@ -126,6 +145,43 @@
   font-feature-settings:
     "tnum" 1,
     "lnum" 1;
+}
+
+.metric-value-compact {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1;
+  font-size: clamp(0.875rem, 3.8vw, 1.125rem);
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.scroll-fade-x {
+  scroll-padding-inline: 16px;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    #000 calc(100% - 20px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    #000 calc(100% - 20px),
+    transparent 100%
+  );
 }
 
 .safe-bottom-pad {

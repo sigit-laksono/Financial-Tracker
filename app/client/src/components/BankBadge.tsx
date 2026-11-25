@@ -227,7 +227,7 @@ export function BankBadge({
           color: config.text,
           boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
         }}
-        className={`inline-flex items-center justify-center select-none shadow-sm transition-transform active:scale-95 ${sizeClasses}`}
+        className={`inline-flex items-center justify-center select-none border border-black/10 dark:border-white/15 shadow-sm transition-transform active:scale-95 ${sizeClasses}`}
       >
         {config.code}
       </span>

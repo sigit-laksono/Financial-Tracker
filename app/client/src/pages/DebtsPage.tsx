@@ -310,21 +310,6 @@ export function DebtsPage({
       .reduce((sum, i) => sum + i.plannedAmount, 0);
   }, [data.installments]);
 
-  // Monthly Receivable Target
-  const monthlyReceivableTarget = useMemo(() => {
-    const today = jakartaToday();
-    const currentYearMonth = today.slice(0, 7);
-    return data.installments
-      .filter(
-        (i) =>
-          !i.accountClosed &&
-          i.direction === "receivable" &&
-          i.status === "upcoming" &&
-          (i.period === currentYearMonth || i.dueDate.slice(0, 7) === currentYearMonth),
-      )
-      .reduce((sum, i) => sum + i.plannedAmount, 0);
-  }, [data.installments]);
-
   const groupedSchedule = useMemo(() => {
     const map = new Map<string, typeof data.installments>();
     for (const item of data.installments) {
@@ -352,8 +337,19 @@ export function DebtsPage({
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [data.installments, activeTab]);
 
+  const upcomingObligations = useMemo(() => {
+    return data.installments
+      .filter((i) => !i.accountClosed && i.status === "upcoming")
+      .slice()
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  }, [data.installments]);
+
   const renderAccountCards = (accounts: DebtAccountDto[]) => (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+    <div
+      className={`grid gap-4 ${
+        accounts.length === 1 ? "grid-cols-1" : "grid-cols-1 md:grid-cols-2"
+      }`}
+    >
       {accounts.map((acc) => {
         const pct = acc.initialBalance ? Math.round((acc.paidAmount / acc.initialBalance) * 100) : 0;
         const isReceivable = acc.direction === "receivable";
@@ -376,9 +372,12 @@ export function DebtsPage({
                 </p>
               </div>
 
-              <Badge tone={acc.kind === "payroll" ? "neutral" : "primary"}>
+              <Badge
+                tone={acc.kind === "payroll" ? "neutral" : "primary"}
+                className="whitespace-nowrap shrink-0"
+              >
                 {acc.totalInstallments > 0
-                  ? `Bulan ${acc.paidInstallments} dari ${acc.totalInstallments} bln`
+                  ? `${acc.paidInstallments}/${acc.totalInstallments} angsuran`
                   : "Tenor Bebas"}
               </Badge>
             </div>
@@ -463,128 +462,94 @@ export function DebtsPage({
     { id: "summary", label: "Ringkasan" },
     { id: "loan", label: `Pinjaman Tunai (${activeLoanAccounts.length})` },
     { id: "cards", label: `Kartu Kredit (${cards.length})` },
-    { id: "payroll", label: `Hutang Kantor (${activePayrollAccounts.length})` },
+    { id: "payroll", label: `Utang Kantor (${activePayrollAccounts.length})` },
     { id: "receivable", label: `Piutang Teman (${activeReceivableAccounts.length})` },
   ];
 
-  const showLoanSection = activeTab === "summary" || activeTab === "loan";
-  const showCardsSection = activeTab === "summary" || activeTab === "cards";
-  const showPayrollSection = activeTab === "summary" || activeTab === "payroll";
-  const showReceivableSection = activeTab === "summary" || activeTab === "receivable";
+  const contextualHeaderCta: { label: string; onClick: () => void } =
+    activeTab === "loan"
+      ? {
+          label: "Tambah Pinjaman Tunai",
+          onClick: () => onOpenAddDebt({ direction: "payable", kind: "loan" }),
+        }
+      : activeTab === "cards"
+        ? {
+            label: "Tambah Cicilan CC",
+            onClick: () => onOpenAddDebt({ direction: "payable", kind: "card_installment" }),
+          }
+        : activeTab === "payroll"
+          ? {
+              label: "Tambah Utang Kantor",
+              onClick: () => onOpenAddDebt({ direction: "payable", kind: "payroll" }),
+            }
+          : activeTab === "receivable"
+            ? {
+                label: "Catat Piutang Teman",
+                onClick: () => onOpenAddDebt({ direction: "receivable", kind: "receivable" }),
+              }
+            : {
+                label: "Tambah Utang / Piutang",
+                onClick: () => onOpenAddDebt(),
+              };
+
+  const showLoanSection = activeTab === "loan";
+  const showCardsSection = activeTab === "cards";
+  const showPayrollSection = activeTab === "payroll";
+  const showReceivableSection = activeTab === "receivable";
 
   return (
     <div className="space-y-6">
       {/* Top Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Hutang, Piutang & CC</h1>
-          <p className="text-sm text-[var(--muted-foreground)]">
-            Manajemen pinjaman tunai, kartu kredit & cicilan limit, potongan gaji kantor, dan piutang teman.
-          </p>
-        </div>
-        <Button onClick={() => onOpenAddDebt()} className="gap-2">
+        <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Kartu & Utang</h1>
+        <Button onClick={contextualHeaderCta.onClick} className="gap-2">
           <PlusIcon className="w-4 h-4" />
-          <span>Tambah Utang / Piutang</span>
+          <span>{contextualHeaderCta.label}</span>
         </Button>
       </div>
 
       {/* Debts Summary Hero Card */}
       <div className="relative overflow-hidden rounded-[24px] border border-[var(--hero-border)] bg-[var(--hero-bg)] text-[var(--hero-card-foreground)] p-6 sm:p-8 shadow-sm transition-all">
-        <div className="relative z-10 flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-2">
+        <div className="relative z-10 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--hero-border)] bg-[var(--hero-surface)] px-2.5 py-1 text-xs font-semibold text-[var(--hero-card-foreground)]">
               <CardDebtIcon className="w-3.5 h-3.5 text-[var(--primary)]" />
               <span>Total Kewajiban Utang</span>
             </div>
-            <div className="flex items-baseline gap-2">
-              <h2 className="font-mono text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-[var(--hero-card-foreground)] tabular-nums">
-                {formatRupiah(totalKewajiban, isMasked)}
-              </h2>
-            </div>
-            <p className="text-xs sm:text-sm text-[var(--hero-card-muted)] max-w-md">
-              {hasDebt
-                ? "Gabungan sisa pinjaman tunai, potongan gaji kantor, dan total pemakaian limit kartu kredit (harian + cicilan)."
-                : "Semua pinjaman dan kewajiban kartu kredit sudah lunas."}
-            </p>
+            <Badge
+              tone={isMasked ? "neutral" : hasDebt ? "highlight" : "soft"}
+              className="text-[11px] font-bold px-2 py-0.5"
+            >
+              {isMasked ? "Mode Privasi" : hasDebt ? "Ada Kewajiban" : "Lunas"}
+            </Badge>
           </div>
-
-          <div className="flex flex-col items-start sm:items-end gap-2.5">
-            <div className="rounded-[16px] border border-[var(--hero-inner-border)] bg-[var(--hero-surface)] p-4 text-left sm:text-right max-w-sm">
-              <div className="flex items-center justify-between sm:justify-end gap-2 mb-1.5">
-                <span className="text-[11px] font-semibold text-[var(--hero-card-muted)] uppercase tracking-wider">
-                  Status Utang
-                </span>
-                <Badge tone={hasDebt ? "highlight" : "soft"} className="text-xs font-bold">
-                  {hasDebt ? "Ada Kewajiban" : "Bebas Utang"}
-                </Badge>
-              </div>
-              <p className="text-xs text-[var(--hero-card-muted)] leading-relaxed">
-                {hasDebt
-                  ? "Pantau sisa limit CC sebelum transaksi harian dan prioritaskan angsuran terdekat."
-                  : "Kondisi arus kas sehat, tidak ada tagihan utang tertunggak."}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* 4 Pillar Grid Metric Cards inside Hero */}
-        <div className="mt-6 grid grid-cols-2 gap-3 border-t border-[var(--hero-border)] pt-5 md:grid-cols-4">
-          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)] min-w-0">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--hero-card-muted)]">
-              1. Tunai & Kantor
-            </span>
-            <p className="font-mono text-base sm:text-lg font-bold text-[var(--hero-card-foreground)] tabular-nums mt-1 truncate">
-              {formatRupiah(nonCcRemainingDebt, isMasked)}
-            </p>
-            <p className="text-[11px] text-[var(--hero-card-muted)] tabular-nums">
-              Tunai {formatCompactRupiah(loanRemaining, isMasked)} · Kantor{" "}
-              {formatCompactRupiah(payrollRemaining, isMasked)}
-            </p>
-          </div>
-
-          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)] min-w-0">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--hero-card-muted)]">
-              2. Limit CC Terpakai
-            </span>
-            <p className="font-mono text-base sm:text-lg font-bold text-[var(--destructive)] tabular-nums mt-1 truncate">
-              {formatRupiah(data.totals.ccLimitUsed, isMasked)}
-            </p>
-            <p className="text-[11px] text-[var(--hero-card-muted)] tabular-nums">
-              Sisa {formatCompactRupiah(data.totals.ccLimitAvailable, isMasked)}
-            </p>
-          </div>
-
-          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)] min-w-0">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--hero-card-muted)]">
-              3. Beban Bulan Ini
-            </span>
-            <p className="font-mono text-base sm:text-lg font-bold text-[var(--highlight-text)] tabular-nums mt-1 truncate">
-              {formatRupiah(monthlyDebtBurden, isMasked)}
-            </p>
-            <p className="text-[11px] text-[var(--hero-card-muted)] tabular-nums">
-              Target tagih {formatCompactRupiah(monthlyReceivableTarget, isMasked)}
-            </p>
-          </div>
-
-          <div className="rounded-[14px] bg-[var(--hero-surface)] p-3.5 border border-[var(--hero-inner-border)] min-w-0">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--hero-card-muted)]">
-              4. Sisa Piutang Teman
-            </span>
-            <p className="font-mono text-base sm:text-lg font-bold text-[var(--chart-income)] tabular-nums mt-1 truncate">
-              {formatRupiah(data.totals.remainingReceivable, isMasked)}
-            </p>
-            <p className="text-[11px] text-[var(--hero-card-muted)] tabular-nums">
-              Tertagih {formatCompactRupiah(data.totals.paidReceivable, isMasked)}
-            </p>
+          <div className="flex items-baseline gap-2">
+            <h2 className="font-mono text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-[var(--hero-card-foreground)] tabular-nums">
+              {formatRupiah(totalKewajiban, isMasked)}
+            </h2>
           </div>
         </div>
       </div>
 
-      {/* 5 Navigation Filter Tabs */}
+      {/* Beban Bulan Ini Summary Strip */}
+      <div className="rounded-[18px] border border-[var(--border)] bg-[var(--card)] px-4 py-3.5 sm:px-5 sm:py-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <span className="text-[11px] font-bold text-[var(--muted-foreground)] uppercase tracking-wide">
+          Beban Bulan Ini
+        </span>
+        <p
+          className={`metric-value-compact font-extrabold whitespace-nowrap tabular-nums ${
+            isMasked ? "text-[var(--foreground)]" : "text-[var(--highlight-text)]"
+          }`}
+        >
+          {formatRupiah(monthlyDebtBurden, isMasked)}
+        </p>
+      </div>
+
+      {/* 5 Navigation Filter Tabs (1-Row Horizontal Scroll) */}
       <div
         role="tablist"
-        aria-label="Kategori hutang, kartu kredit, dan piutang"
-        className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] pb-3 text-sm"
+        aria-label="Kategori utang, kartu kredit, dan piutang"
+        className="flex flex-nowrap overflow-x-auto no-scrollbar scroll-fade-x items-center gap-2 border-b border-[var(--border)] pb-3 text-sm"
       >
         {tabs.map((tabItem) => {
           const isActive = activeTab === tabItem.id;
@@ -595,9 +560,9 @@ export function DebtsPage({
               role="tab"
               aria-selected={isActive}
               onClick={() => setActiveTab(tabItem.id)}
-              className={`min-h-[42px] rounded-[12px] px-4 font-bold transition-all ${
+              className={`min-h-[42px] whitespace-nowrap shrink-0 rounded-[12px] px-4 font-bold transition-all ${
                 isActive
-                  ? "bg-[var(--hero)] text-white shadow-sm"
+                  ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-sm"
                   : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
               }`}
             >
@@ -607,43 +572,237 @@ export function DebtsPage({
         })}
       </div>
 
+      {/* TAB: RINGKASAN */}
+      {activeTab === "summary" && (
+        <div className="space-y-6">
+          {/* Ringkasan per Kategori */}
+          <section className="space-y-3">
+            <h2 className="text-base font-extrabold text-[var(--foreground)]">
+              Ringkasan per Kategori
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {/* Pinjaman Tunai */}
+              <Card className="rounded-[18px] p-4 sm:p-5 flex flex-col justify-between gap-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-bold text-[var(--foreground)]">
+                        Pinjaman Tunai
+                      </h3>
+                      <Badge tone="neutral" className="whitespace-nowrap">
+                        {activeLoanAccounts.length} akun aktif
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-[var(--muted-foreground)]">Total sisa pinjaman</p>
+                  </div>
+                  <strong className="metric-value-compact shrink-0 text-right whitespace-nowrap font-extrabold text-[var(--foreground)]">
+                    {formatRupiah(loanRemaining, isMasked)}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-end border-t border-[var(--border)] pt-3">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setActiveTab("loan")}
+                    className="min-h-[38px] px-3.5 text-xs font-bold"
+                  >
+                    Lihat Detail →
+                  </Button>
+                </div>
+              </Card>
+
+              {/* Kartu Kredit */}
+              <Card className="rounded-[18px] p-4 sm:p-5 flex flex-col justify-between gap-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-bold text-[var(--foreground)]">Kartu Kredit</h3>
+                      <Badge tone="highlight" className="whitespace-nowrap">
+                        {cards.length} kartu aktif
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-[var(--muted-foreground)] tabular-nums">
+                      Sisa limit {formatCompactRupiah(data.totals.ccLimitAvailable, isMasked)} dari{" "}
+                      {formatCompactRupiah(data.totals.ccLimit, isMasked)}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right whitespace-nowrap">
+                    <span className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+                      Limit Terpakai
+                    </span>
+                    <strong
+                      className={`metric-value-compact block whitespace-nowrap font-extrabold ${
+                        isMasked ? "text-[var(--foreground)]" : "text-[var(--destructive)]"
+                      }`}
+                    >
+                      {formatRupiah(data.totals.ccLimitUsed, isMasked)}
+                    </strong>
+                  </div>
+                </div>
+                <div className="flex items-center justify-end border-t border-[var(--border)] pt-3">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setActiveTab("cards")}
+                    className="min-h-[38px] px-3.5 text-xs font-bold"
+                  >
+                    Kelola CC →
+                  </Button>
+                </div>
+              </Card>
+
+              {/* Utang Kantor */}
+              <Card className="rounded-[18px] p-4 sm:p-5 flex flex-col justify-between gap-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-bold text-[var(--foreground)]">Utang Kantor</h3>
+                      <Badge tone="neutral" className="whitespace-nowrap">
+                        {activePayrollAccounts.length} akun aktif
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-[var(--muted-foreground)]">
+                      Total sisa potong gaji
+                    </p>
+                  </div>
+                  <strong className="metric-value-compact shrink-0 text-right whitespace-nowrap font-extrabold text-[var(--foreground)]">
+                    {formatRupiah(payrollRemaining, isMasked)}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-end border-t border-[var(--border)] pt-3">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setActiveTab("payroll")}
+                    className="min-h-[38px] px-3.5 text-xs font-bold"
+                  >
+                    Lihat Detail →
+                  </Button>
+                </div>
+              </Card>
+
+              {/* Piutang Teman */}
+              <Card className="rounded-[18px] p-4 sm:p-5 flex flex-col justify-between gap-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-bold text-[var(--foreground)]">Piutang Teman</h3>
+                      <Badge tone="soft" className="whitespace-nowrap">
+                        {activeReceivableAccounts.length} akun aktif
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-[var(--muted-foreground)]">Total sisa piutang</p>
+                  </div>
+                  <strong
+                    className={`metric-value-compact shrink-0 text-right whitespace-nowrap font-extrabold ${
+                      isMasked
+                        ? "text-[var(--foreground)]"
+                        : "text-emerald-600 dark:text-emerald-400"
+                    }`}
+                  >
+                    {formatRupiah(data.totals.remainingReceivable, isMasked)}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-end border-t border-[var(--border)] pt-3">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setActiveTab("receivable")}
+                    className="min-h-[38px] px-3.5 text-xs font-bold"
+                  >
+                    Lihat Detail →
+                  </Button>
+                </div>
+              </Card>
+            </div>
+          </section>
+
+          {/* Tagihan Terdekat / Kewajiban Bulan Ini */}
+          <section className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-base font-extrabold text-[var(--foreground)]">
+                Tagihan Terdekat
+              </h2>
+              {upcomingObligations.length > 5 && (
+                <span className="text-xs font-medium text-[var(--muted-foreground)]">
+                  Menampilkan 5 dari {upcomingObligations.length} jadwal mendatang
+                </span>
+              )}
+            </div>
+
+            {upcomingObligations.length === 0 ? (
+              <Card className="p-4 text-xs text-[var(--muted-foreground)]">
+                Tidak ada tagihan atau cicilan jatuh tempo terdekat.
+              </Card>
+            ) : (
+              <Card className="p-0 overflow-hidden rounded-[18px]">
+                <div className="divide-y divide-[var(--border)]">
+                  {upcomingObligations.slice(0, 5).map((item) => {
+                    const isReceivable = item.direction === "receivable";
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 hover:bg-[var(--surface)] transition-colors"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-bold text-[var(--foreground)]">
+                              {item.accountName}
+                            </span>
+                            {item.accountKind === "payroll" ? (
+                              <Badge tone="neutral">Auto Potong Gaji</Badge>
+                            ) : (
+                              <Badge tone={isReceivable ? "soft" : "neutral"}>
+                                {KIND_BADGE_LABEL[item.accountKind] ??
+                                  (isReceivable ? "Piutang" : "Utang")}
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="text-xs text-[var(--muted-foreground)]">
+                            Jatuh tempo {formatShortDate(item.dueDate)} · {item.lender}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2.5">
+                          <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
+                            {formatRupiah(item.plannedAmount, isMasked)}
+                          </span>
+                          {item.accountKind !== "payroll" && (
+                            <Button
+                              onClick={() => onPayInstallment(item.id)}
+                              className="min-h-[36px] px-3 text-xs"
+                            >
+                              {isReceivable ? "Terima" : "Bayar"}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+            )}
+          </section>
+        </div>
+      )}
+
       {/* GROUP 1: PINJAMAN TUNAI */}
       {showLoanSection && (
         <section className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-base font-extrabold text-[var(--foreground)]">
-                Pinjaman Tunai ({activeLoanAccounts.length})
-              </h2>
-              <p className="text-xs text-[var(--muted-foreground)]">
-                KTA, pinjaman bank, atau pinjaman tunai dengan jadwal angsuran mandiri.
-              </p>
-            </div>
-            <Button
-              variant="secondary"
-              onClick={() => onOpenAddDebt({ direction: "payable", kind: "loan" })}
-              className="min-h-[36px] px-3 text-xs gap-1.5"
-            >
-              <PlusIcon className="w-3.5 h-3.5" />
-              <span>Tambah Pinjaman Tunai</span>
-            </Button>
+          <div>
+            <h2 className="text-base font-extrabold text-[var(--foreground)]">
+              Pinjaman Tunai ({activeLoanAccounts.length})
+            </h2>
+            <p className="text-xs text-[var(--muted-foreground)]">
+              KTA, pinjaman bank, atau pinjaman tunai dengan jadwal angsuran mandiri.
+            </p>
           </div>
 
           {activeLoanAccounts.length === 0 ? (
-            activeTab === "loan" ? (
-              <StateView
-                kind="empty"
-                icon={<CardDebtIcon className="w-6 h-6" />}
-                title="Tidak Ada Pinjaman Tunai Aktif"
-                description="Semua pinjaman tunai sudah lunas atau belum ada yang dicatat."
-                actionLabel="Catat Pinjaman Tunai"
-                onAction={() => onOpenAddDebt({ direction: "payable", kind: "loan" })}
-              />
-            ) : (
-              <Card className="p-4 text-xs text-[var(--muted-foreground)]">
-                Tidak ada pinjaman tunai aktif saat ini.
-              </Card>
-            )
+            <StateView
+              kind="empty"
+              icon={<CardDebtIcon className="w-6 h-6" />}
+              title="Tidak Ada Pinjaman Tunai Aktif"
+              description="Semua pinjaman tunai sudah lunas atau belum ada yang dicatat."
+              actionLabel="Catat Pinjaman Tunai"
+              onAction={() => onOpenAddDebt({ direction: "payable", kind: "loan" })}
+            />
           ) : (
             renderAccountCards(activeLoanAccounts)
           )}
@@ -653,23 +812,13 @@ export function DebtsPage({
       {/* GROUP 2: KARTU KREDIT (Transaksi Harian + Cicilan Kartu Kredit) */}
       {showCardsSection && (
         <section className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-base font-extrabold text-[var(--foreground)]">
-                Kartu Kredit & Cicilan Limit ({cards.length})
-              </h2>
-              <p className="text-xs text-[var(--muted-foreground)]">
-                Transaksi harian dan cicilan kartu kredit berbagi satu batas limit kartu yang sama.
-              </p>
-            </div>
-            <Button
-              variant="secondary"
-              onClick={() => onOpenAddDebt({ direction: "payable", kind: "card_installment" })}
-              className="min-h-[36px] px-3 text-xs gap-1.5"
-            >
-              <PlusIcon className="w-3.5 h-3.5" />
-              <span>Tambah Cicilan CC</span>
-            </Button>
+          <div>
+            <h2 className="text-base font-extrabold text-[var(--foreground)]">
+              Kartu Kredit & Cicilan Limit ({cards.length})
+            </h2>
+            <p className="text-xs text-[var(--muted-foreground)]">
+              Transaksi harian dan cicilan kartu kredit berbagi satu batas limit kartu yang sama.
+            </p>
           </div>
 
           {cards.length === 0 ? (
@@ -743,7 +892,7 @@ export function DebtsPage({
 
                   {/* Limit Usage Pill Badge */}
                   <Badge
-                    tone={ccPercent >= 80 ? "highlight" : ccPercent >= 50 ? "neutral" : "soft"}
+                    tone={ccPercent >= 80 ? "danger" : ccPercent >= 30 ? "highlight" : "soft"}
                     className="text-xs font-bold"
                   >
                     {ccPercent}% Terpakai · Sisa Limit{" "}
@@ -764,7 +913,13 @@ export function DebtsPage({
                     {ccInstallmentPct > 0 && (
                       <div
                         style={{ width: `${ccInstallmentPct}%` }}
-                        className="h-full bg-amber-500 transition-all duration-300"
+                        className={`h-full transition-all duration-300 ${
+                          ccPercent >= 80
+                            ? "bg-[var(--destructive)]"
+                            : ccPercent >= 30
+                              ? "bg-amber-500"
+                              : "bg-emerald-500"
+                        }`}
                         title={`Terkunci Cicilan: ${formatRupiah(activeCardInstallmentUsed, isMasked)}`}
                       />
                     )}
@@ -772,7 +927,11 @@ export function DebtsPage({
                       <div
                         style={{ width: `${ccDailyPct}%` }}
                         className={`h-full transition-all duration-300 ${
-                          ccPercent >= 80 ? "bg-[var(--destructive)]" : "bg-[var(--primary)]"
+                          ccPercent >= 80
+                            ? "bg-[var(--destructive)]/80"
+                            : ccPercent >= 30
+                              ? "bg-amber-400"
+                              : "bg-[var(--primary)]"
                         }`}
                         title={`Belanja Harian: ${formatRupiah(activeCardDailyUsed, isMasked)}`}
                       />
@@ -783,7 +942,15 @@ export function DebtsPage({
                   <div className="grid grid-cols-1 gap-2 pt-1 text-xs sm:grid-cols-3">
                     <div className="flex items-center justify-between rounded-[10px] border border-[var(--border)] bg-[var(--card)] px-3 py-2">
                       <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]">
-                        <span className="h-2.5 w-2.5 rounded-full bg-amber-500 shrink-0" />
+                        <span
+                          className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                            ccPercent >= 80
+                              ? "bg-[var(--destructive)]"
+                              : ccPercent >= 30
+                                ? "bg-amber-500"
+                                : "bg-emerald-500"
+                          }`}
+                        />
                         Terkunci Cicilan
                       </span>
                       <strong className="font-mono tabular-nums text-[var(--foreground)]">
@@ -794,7 +961,11 @@ export function DebtsPage({
                       <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]">
                         <span
                           className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                            ccPercent >= 80 ? "bg-[var(--destructive)]" : "bg-[var(--primary)]"
+                            ccPercent >= 80
+                              ? "bg-[var(--destructive)]/80"
+                              : ccPercent >= 30
+                                ? "bg-amber-400"
+                                : "bg-[var(--primary)]"
                           }`}
                         />
                         Belanja Harian
@@ -808,7 +979,13 @@ export function DebtsPage({
                         <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 shrink-0" />
                         Sisa Limit Harian
                       </span>
-                      <strong className="font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                      <strong
+                        className={`font-mono tabular-nums ${
+                          isMasked
+                            ? "text-[var(--foreground)]"
+                            : "text-emerald-600 dark:text-emerald-400"
+                        }`}
+                      >
                         {formatRupiah(activeCardAvailable, isMasked)}
                       </strong>
                     </div>
@@ -929,8 +1106,23 @@ export function DebtsPage({
                 </div>
               )}
 
-              {/* Sub-section A: CC Daily Transactions in Cycle */}
-              <div className="space-y-2 pt-2">
+              {/* Sub-section A: Cicilan Kartu Kredit Aktif on this card */}
+              <div className="space-y-3 border-t border-[var(--border)] pt-4">
+                <h3 className="text-sm font-bold text-[var(--foreground)]">
+                  Cicilan Kartu Kredit Aktif ({activeCardSpecificInstallments.length})
+                </h3>
+
+                {activeCardSpecificInstallments.length === 0 ? (
+                  <p className="text-xs text-[var(--muted-foreground)] py-1">
+                    Belum ada cicilan kartu kredit aktif pada kartu ini.
+                  </p>
+                ) : (
+                  renderAccountCards(activeCardSpecificInstallments)
+                )}
+              </div>
+
+              {/* Sub-section B: CC Daily Transactions in Cycle */}
+              <div className="space-y-2 border-t border-[var(--border)] pt-4">
                 <h3 className="text-sm font-bold text-[var(--foreground)]">
                   Transaksi Harian {activeCard?.walletName ?? "CC"} ({cycleTransactions.length})
                 </h3>
@@ -986,28 +1178,6 @@ export function DebtsPage({
                   </div>
                 )}
               </div>
-
-              {/* Sub-section B: Cicilan Kartu Kredit Aktif on this card */}
-              <div className="space-y-3 border-t border-[var(--border)] pt-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h3 className="text-sm font-bold text-[var(--foreground)]">
-                      Cicilan Kartu Kredit Aktif ({activeCardSpecificInstallments.length})
-                    </h3>
-                    <p className="text-xs text-[var(--muted-foreground)]">
-                      Sisa pokok cicilan di bawah ini langsung memotong limit {activeCard?.walletName ?? "kartu"} hingga lunas.
-                    </p>
-                  </div>
-                </div>
-
-                {activeCardSpecificInstallments.length === 0 ? (
-                  <p className="text-xs text-[var(--muted-foreground)] py-1">
-                    Belum ada cicilan kartu kredit aktif pada kartu ini.
-                  </p>
-                ) : (
-                  renderAccountCards(activeCardSpecificInstallments)
-                )}
-              </div>
             </Card>
           )}
 
@@ -1023,43 +1193,27 @@ export function DebtsPage({
         </section>
       )}
 
-      {/* GROUP 3: HUTANG KANTOR / POTONGAN GAJI */}
+      {/* GROUP 3: UTANG KANTOR / POTONGAN GAJI */}
       {showPayrollSection && (
         <section className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-base font-extrabold text-[var(--foreground)]">
-                Hutang Kantor / Potongan Gaji ({activePayrollAccounts.length})
-              </h2>
-              <p className="text-xs text-[var(--muted-foreground)]">
-                Kasbon atau pinjaman koperasi kantor yang otomatis dipotong dari gaji setiap bulan.
-              </p>
-            </div>
-            <Button
-              variant="secondary"
-              onClick={() => onOpenAddDebt({ direction: "payable", kind: "payroll" })}
-              className="min-h-[36px] px-3 text-xs gap-1.5"
-            >
-              <PlusIcon className="w-3.5 h-3.5" />
-              <span>Tambah Hutang Kantor</span>
-            </Button>
+          <div>
+            <h2 className="text-base font-extrabold text-[var(--foreground)]">
+              Utang Kantor / Potongan Gaji ({activePayrollAccounts.length})
+            </h2>
+            <p className="text-xs text-[var(--muted-foreground)]">
+              Kasbon atau pinjaman koperasi kantor yang otomatis dipotong dari gaji setiap bulan.
+            </p>
           </div>
 
           {activePayrollAccounts.length === 0 ? (
-            activeTab === "payroll" ? (
-              <StateView
-                kind="empty"
-                icon={<CardDebtIcon className="w-6 h-6" />}
-                title="Tidak Ada Hutang Kantor Aktif"
-                description="Belum ada potongan gaji atau pinjaman kantor aktif saat ini."
-                actionLabel="Catat Hutang Kantor"
-                onAction={() => onOpenAddDebt({ direction: "payable", kind: "payroll" })}
-              />
-            ) : (
-              <Card className="p-4 text-xs text-[var(--muted-foreground)]">
-                Tidak ada potongan gaji / hutang kantor aktif saat ini.
-              </Card>
-            )
+            <StateView
+              kind="empty"
+              icon={<CardDebtIcon className="w-6 h-6" />}
+              title="Tidak Ada Utang Kantor Aktif"
+              description="Belum ada potongan gaji atau pinjaman kantor aktif saat ini."
+              actionLabel="Catat Utang Kantor"
+              onAction={() => onOpenAddDebt({ direction: "payable", kind: "payroll" })}
+            />
           ) : (
             renderAccountCards(activePayrollAccounts)
           )}
@@ -1069,40 +1223,24 @@ export function DebtsPage({
       {/* GROUP 4: PIUTANG TEMAN */}
       {showReceivableSection && (
         <section className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-base font-extrabold text-[var(--foreground)]">
-                Piutang Teman & Talangan ({activeReceivableAccounts.length})
-              </h2>
-              <p className="text-xs text-[var(--muted-foreground)]">
-                Dana yang Anda pinjamkan atau talangkan ke pihak lain dan menunggu pengembalian.
-              </p>
-            </div>
-            <Button
-              variant="secondary"
-              onClick={() => onOpenAddDebt({ direction: "receivable", kind: "receivable" })}
-              className="min-h-[36px] px-3 text-xs gap-1.5"
-            >
-              <PlusIcon className="w-3.5 h-3.5" />
-              <span>Catat Piutang Teman</span>
-            </Button>
+          <div>
+            <h2 className="text-base font-extrabold text-[var(--foreground)]">
+              Piutang Teman & Talangan ({activeReceivableAccounts.length})
+            </h2>
+            <p className="text-xs text-[var(--muted-foreground)]">
+              Dana yang Anda pinjamkan atau talangkan ke pihak lain dan menunggu pengembalian.
+            </p>
           </div>
 
           {activeReceivableAccounts.length === 0 ? (
-            activeTab === "receivable" ? (
-              <StateView
-                kind="empty"
-                icon={<CardDebtIcon className="w-6 h-6" />}
-                title="Tidak Ada Piutang Aktif"
-                description="Semua pinjaman atau talangan teman sudah lunas, atau Anda belum pernah mencatat piutang."
-                actionLabel="Catat Piutang / Talangan"
-                onAction={() => onOpenAddDebt({ direction: "receivable", kind: "receivable" })}
-              />
-            ) : (
-              <Card className="p-4 text-xs text-[var(--muted-foreground)]">
-                Tidak ada piutang teman aktif saat ini.
-              </Card>
-            )
+            <StateView
+              kind="empty"
+              icon={<CardDebtIcon className="w-6 h-6" />}
+              title="Tidak Ada Piutang Aktif"
+              description="Semua pinjaman atau talangan teman sudah lunas, atau Anda belum pernah mencatat piutang."
+              actionLabel="Catat Piutang / Talangan"
+              onAction={() => onOpenAddDebt({ direction: "receivable", kind: "receivable" })}
+            />
           ) : (
             renderAccountCards(activeReceivableAccounts)
           )}
@@ -1167,95 +1305,107 @@ export function DebtsPage({
       {/* Monthly Installment Schedule Accordion */}
       {groupedSchedule.length > 0 && (
         <details className="group rounded-[18px] border border-[var(--border)] bg-[var(--card)] overflow-hidden shadow-xs mt-6">
-          <summary className="flex cursor-pointer items-center justify-between p-4 font-bold text-base hover:bg-[var(--surface)] transition-colors select-none">
-            <span className="flex items-center gap-2">
-              <ClockIcon className="w-4 h-4 text-[var(--primary)]" />
-              Jadwal Angsuran Bulanan ({groupedSchedule.length} Bulan)
+          <summary className="flex cursor-pointer items-center justify-between gap-2 p-4 font-bold text-base hover:bg-[var(--surface)] transition-colors select-none">
+            <span className="flex flex-wrap items-center gap-2 min-w-0">
+              <ClockIcon className="w-4 h-4 text-[var(--primary)] shrink-0" />
+              <span>Jadwal Angsuran Bulanan ({groupedSchedule.length} Bulan)</span>
               <HelpTooltip
                 title="Jadwal Angsuran Bulanan"
                 content="Rincian jadwal cicilan kewajiban atau piutang yang jatuh tempo pada bulan-bulan mendatang."
               />
             </span>
-            <span className="text-xs font-semibold text-[var(--primary)] group-open:hidden">
+            <span className="text-xs font-semibold text-[var(--primary)] whitespace-nowrap shrink-0 group-open:hidden">
               Buka Jadwal ▼
             </span>
-            <span className="text-xs font-semibold text-[var(--muted-foreground)] hidden group-open:inline">
+            <span className="text-xs font-semibold text-[var(--muted-foreground)] whitespace-nowrap shrink-0 hidden group-open:inline">
               Tutup ▲
             </span>
           </summary>
-          <div className="p-4 pt-1 space-y-3 border-t border-[var(--border)]">
-            {groupedSchedule.map(([period, rows]) => {
-              const totalMonth = rows.reduce((sum, r) => sum + r.plannedAmount, 0);
-              return (
-                <Card key={period} className="p-0 overflow-hidden rounded-[14px]">
-                  <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
-                    <strong className="text-sm font-bold text-[var(--foreground)]">
-                      {formatMonthTitle(period)}
-                    </strong>
-                    <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
-                      {formatRupiah(totalMonth, isMasked)}
-                    </span>
-                  </div>
-                  <div className="divide-y divide-[var(--border)]">
-                    {rows.map((item) => {
-                      const isReceivable = item.direction === "receivable";
-                      return (
-                        <div
-                          key={item.id}
-                          className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 hover:bg-[var(--surface)] transition-colors"
-                        >
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-sm font-bold text-[var(--foreground)]">
-                                {item.accountName}
-                              </span>
-                              <Badge tone={isReceivable ? "soft" : "neutral"}>
-                                {KIND_BADGE_LABEL[item.accountKind] ??
-                                  (isReceivable ? "Tagih Piutang" : "Bayar Utang")}
-                              </Badge>
-                              {item.accountKind === "payroll" ? (
-                                <Badge tone="neutral">Auto Potong Gaji</Badge>
-                              ) : item.status === "paid" ? (
-                                <Badge tone="soft">Lunas</Badge>
-                              ) : (
-                                <Badge tone="highlight">Belum Lunas</Badge>
-                              )}
-                            </div>
-                            <p className="text-xs text-[var(--muted-foreground)]">
-                              Jatuh tempo {formatShortDate(item.dueDate)} · {item.lender}
-                            </p>
-                          </div>
+          <div className="p-4 pt-3 border-t border-[var(--border)]">
+            <div className="border-l-2 border-[var(--border)] pl-4 space-y-4">
+              {groupedSchedule.map(([period, rows]) => {
+                const totalMonth = rows.reduce((sum, r) => sum + r.plannedAmount, 0);
+                return (
+                  <div key={period} className="relative">
+                    <span
+                      aria-hidden="true"
+                      className="absolute -left-[23px] top-3 h-3 w-3 rounded-full border-2 border-[var(--card)] bg-[var(--primary)]"
+                    />
+                    <Card className="p-0 overflow-hidden rounded-[14px]">
+                      <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
+                        <strong className="text-sm font-bold text-[var(--foreground)]">
+                          {formatMonthTitle(period)}
+                        </strong>
+                        <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
+                          {formatRupiah(totalMonth, isMasked)}
+                        </span>
+                      </div>
+                      <div className="divide-y divide-[var(--border)]">
+                        {rows.map((item) => {
+                          const isReceivable = item.direction === "receivable";
+                          return (
+                            <div
+                              key={item.id}
+                              className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 hover:bg-[var(--surface)] transition-colors"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm font-bold text-[var(--foreground)]">
+                                    {item.accountName}
+                                  </span>
+                                  {item.accountKind === "payroll" ? (
+                                    <Badge tone="neutral">Auto Potong Gaji</Badge>
+                                  ) : (
+                                    <>
+                                      <Badge tone={isReceivable ? "soft" : "neutral"}>
+                                        {KIND_BADGE_LABEL[item.accountKind] ??
+                                          (isReceivable ? "Tagih Piutang" : "Bayar Utang")}
+                                      </Badge>
+                                      {item.status === "paid" ? (
+                                        <Badge tone="soft">Lunas</Badge>
+                                      ) : (
+                                        <Badge tone="highlight">Belum Lunas</Badge>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                                <p className="text-xs text-[var(--muted-foreground)]">
+                                  Jatuh tempo {formatShortDate(item.dueDate)} · {item.lender}
+                                </p>
+                              </div>
 
-                          <div className="flex items-center gap-2.5">
-                            <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
-                              {formatRupiah(item.actualAmount ?? item.plannedAmount, isMasked)}
-                            </span>
-                            {item.accountKind !== "payroll" && item.status === "upcoming" && (
-                              <Button
-                                onClick={() => onPayInstallment(item.id)}
-                                className="min-h-[36px] px-3 text-xs"
-                              >
-                                {isReceivable ? "Terima" : "Bayar"}
-                              </Button>
-                            )}
-                            {item.accountKind !== "payroll" && item.status === "paid" && (
-                              <Button
-                                variant="secondary"
-                                disabled={unsettleMutation.isPending}
-                                onClick={() => unsettleMutation.mutate(item.id)}
-                                className="min-h-[36px] px-3 text-xs"
-                              >
-                                Batal Lunas
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
+                              <div className="flex items-center gap-2.5">
+                                <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
+                                  {formatRupiah(item.actualAmount ?? item.plannedAmount, isMasked)}
+                                </span>
+                                {item.accountKind !== "payroll" && item.status === "upcoming" && (
+                                  <Button
+                                    onClick={() => onPayInstallment(item.id)}
+                                    className="min-h-[36px] px-3 text-xs"
+                                  >
+                                    {isReceivable ? "Terima" : "Bayar"}
+                                  </Button>
+                                )}
+                                {item.accountKind !== "payroll" && item.status === "paid" && (
+                                  <Button
+                                    variant="secondary"
+                                    disabled={unsettleMutation.isPending}
+                                    onClick={() => unsettleMutation.mutate(item.id)}
+                                    className="min-h-[36px] px-3 text-xs"
+                                  >
+                                    Batal Lunas
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </Card>
                   </div>
-                </Card>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         </details>
       )}
@@ -1266,6 +1416,27 @@ export function DebtsPage({
           open={Boolean(payoffTarget)}
           onClose={() => setPayoffTarget(null)}
           title={`Pelunasan Dipercepat: ${payoffTarget.name}`}
+          footer={
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setPayoffTarget(null)}>
+                Batal
+              </Button>
+              <Button
+                onClick={() => payoffMutation.mutate()}
+                disabled={
+                  payoffMutation.isPending ||
+                  (payoffTarget.direction !== "receivable" &&
+                    Boolean(
+                      selectedPayoffWallet &&
+                        selectedPayoffWallet.balance <
+                          (parsePositiveInt(payoffAmountInput) || payoffTarget.remaining),
+                    ))
+                }
+              >
+                {payoffMutation.isPending ? "Memproses..." : "Konfirmasi Lunasi Sekarang"}
+              </Button>
+            </div>
+          }
         >
           <div className="space-y-4">
             <p className="text-xs sm:text-sm text-[var(--muted-foreground)]">
@@ -1290,7 +1461,7 @@ export function DebtsPage({
             <div className="space-y-1.5">
               <label
                 htmlFor="payoff-wallet"
-                className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
               >
                 {payoffTarget.direction === "receivable"
                   ? "Pilih Dompet Penerima Dana (Saldo bertambah):"
@@ -1300,7 +1471,7 @@ export function DebtsPage({
                 id="payoff-wallet"
                 value={payoffWalletId}
                 onChange={(e) => setPayoffWalletId(Number(e.target.value))}
-                className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
               >
                 {liquidWallets.map((w) => (
                   <option key={w.id} value={w.id}>
@@ -1337,12 +1508,12 @@ export function DebtsPage({
               <div className="space-y-1.5">
                 <label
                   htmlFor="payoff-amount"
-                  className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+                  className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
                 >
                   Nominal Pelunasan (Rp)
                 </label>
                 <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                     Rp
                   </span>
                   <input
@@ -1350,7 +1521,7 @@ export function DebtsPage({
                     inputMode="numeric"
                     value={payoffAmountInput}
                     onChange={(e) => setPayoffAmountInput(formatDigitsInput(e.target.value))}
-                    className="tabular-nums font-mono w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-sm font-bold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                    className="tabular-nums font-mono h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] pl-11 pr-3.5 text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
                   />
                 </div>
               </div>
@@ -1358,7 +1529,7 @@ export function DebtsPage({
               <div className="space-y-1.5">
                 <label
                   htmlFor="payoff-date"
-                  className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+                  className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
                 >
                   Tanggal Pelunasan
                 </label>
@@ -1367,7 +1538,7 @@ export function DebtsPage({
                   type="date"
                   value={payoffDate}
                   onChange={(e) => setPayoffDate(e.target.value)}
-                  className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                  className="tabular-nums h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
                 />
               </div>
             </div>
@@ -1375,32 +1546,6 @@ export function DebtsPage({
             {payoffError && (
               <p className="text-xs text-[var(--destructive)] font-semibold">{payoffError}</p>
             )}
-
-            <div className="flex justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-700">
-              <button
-                type="button"
-                onClick={() => setPayoffTarget(null)}
-                className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] text-sm font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-              >
-                Batal
-              </button>
-              <button
-                type="button"
-                onClick={() => payoffMutation.mutate()}
-                disabled={
-                  payoffMutation.isPending ||
-                  (payoffTarget.direction !== "receivable" &&
-                    Boolean(
-                      selectedPayoffWallet &&
-                        selectedPayoffWallet.balance <
-                          (parsePositiveInt(payoffAmountInput) || payoffTarget.remaining),
-                    ))
-                }
-                className="min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-              >
-                {payoffMutation.isPending ? "Memproses..." : "Konfirmasi Lunasi Sekarang"}
-              </button>
-            </div>
           </div>
         </ModalSheet>
       )}
@@ -1420,20 +1565,8 @@ export function DebtsPage({
           open={Boolean(deletingAccount)}
           onClose={() => setDeletingAccount(null)}
           title={`Hapus ${deletingAccount.direction === "receivable" ? "Piutang" : "Utang"}?`}
-        >
-          <div className="space-y-4">
-            <div className="rounded-[14px] border border-[var(--destructive)]/20 bg-[var(--destructive)]/5 p-4 text-sm text-[var(--foreground)] space-y-2">
-              <p>
-                Apakah Anda yakin ingin menghapus akun <strong>{deletingAccount.name}</strong> (
-                {deletingAccount.lender})?
-              </p>
-              <p className="text-xs text-[var(--muted-foreground)]">
-                Seluruh jadwal angsuran dan riwayat terkait akun ini akan dihapus secara permanen
-                dari sistem. Tindakan ini tidak dapat dibatalkan.
-              </p>
-            </div>
-
-            <div className="flex items-center justify-end gap-2.5 pt-2">
+          footer={
+            <div className="flex items-center justify-end gap-2.5">
               <Button
                 variant="ghost"
                 onClick={() => setDeletingAccount(null)}
@@ -1449,6 +1582,17 @@ export function DebtsPage({
                 {deleteMutation.isPending ? "Menghapus..." : "Ya, Hapus Akun"}
               </Button>
             </div>
+          }
+        >
+          <div className="rounded-[14px] border border-[var(--destructive)]/20 bg-[var(--destructive)]/5 p-4 text-sm text-[var(--foreground)] space-y-2">
+            <p>
+              Apakah Anda yakin ingin menghapus akun <strong>{deletingAccount.name}</strong> (
+              {deletingAccount.lender})?
+            </p>
+            <p className="text-xs text-[var(--muted-foreground)]">
+              Seluruh jadwal angsuran dan riwayat terkait akun ini akan dihapus secara permanen dari
+              sistem. Tindakan ini tidak dapat dibatalkan.
+            </p>
           </div>
         </ModalSheet>
       )}

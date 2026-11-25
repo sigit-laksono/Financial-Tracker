@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type DashboardDto } from "../lib/api";
 import { formatDigitsInput, formatRupiah, formatShortDate, parsePositiveInt } from "../lib/format";
@@ -20,6 +20,7 @@ export function ReceiveSalaryModal({
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const formId = useId();
 
   const liquidWallets = useMemo(
     () => data.wallets.filter((w) => w.isActive && w.type !== "credit_card"),
@@ -108,8 +109,25 @@ export function ReceiveSalaryModal({
       onClose={onClose}
       title={`Terima Gaji Siklus ${period}`}
       subtitle="Catat penerimaan gaji bulanan dan lunasi potongan cicilan kantor periode ini secara otomatis."
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Batal
+          </Button>
+          <Button
+            type="submit"
+            form={formId}
+            disabled={receiveMutation.isPending || preview?.alreadyReceived}
+            className="flex-1 sm:flex-none"
+          >
+            {receiveMutation.isPending
+              ? "Menyimpan..."
+              : `Catat Terima Gaji (${formatRupiah(netSalary)})`}
+          </Button>
+        </div>
+      }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form id={formId} onSubmit={handleSubmit} className="space-y-4">
         {error && (
           <div className="flex items-center gap-2 rounded-[14px] border border-[var(--destructive)] bg-[var(--destructive)]/10 p-3 text-xs text-[var(--destructive)]">
             <AlertIcon className="h-4 w-4 shrink-0" />
@@ -127,12 +145,12 @@ export function ReceiveSalaryModal({
         <div className="space-y-1.5">
           <label
             htmlFor="salary-gross"
-            className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+            className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
           >
             Gaji Kotor (Rp)
           </label>
           <div className="relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
               Rp
             </span>
             <input
@@ -140,11 +158,11 @@ export function ReceiveSalaryModal({
               inputMode="numeric"
               value={grossSalaryInput}
               onChange={(e) => setGrossSalaryInput(formatDigitsInput(e.target.value))}
-              className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-xl font-black text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
-              placeholder="10.481.625"
+              className="tabular-nums w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-3 text-xl font-black text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
+              placeholder="10.000.000"
             />
           </div>
-          <p className="text-[11px] text-neutral-400">
+          <p className="text-[11px] text-[var(--muted-foreground)]">
             Bisa diubah bila ada tambahan bonus atau lembur pada slip gaji.
           </p>
         </div>
@@ -152,7 +170,7 @@ export function ReceiveSalaryModal({
         <div className="space-y-1.5">
           <label
             htmlFor="salary-wallet"
-            className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+            className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
           >
             Dompet Penerima Gaji
           </label>
@@ -160,7 +178,7 @@ export function ReceiveSalaryModal({
             id="salary-wallet"
             value={selectedWalletId}
             onChange={(e) => setSelectedWalletId(Number(e.target.value))}
-            className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+            className="h-11 w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
           >
             {liquidWallets.map((w) => (
               <option key={w.id} value={w.id}>
@@ -171,9 +189,9 @@ export function ReceiveSalaryModal({
           </select>
         </div>
 
-        <div className="space-y-2 rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 p-3.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+        <div className="space-y-2 rounded-[16px] border border-dashed border-[var(--border)] bg-[var(--surface)] p-3.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
               Potongan Cicilan Kantor (Payroll)
             </span>
             <Badge tone={totalPayrollDue > 0 ? "highlight" : "soft"}>
@@ -182,56 +200,41 @@ export function ReceiveSalaryModal({
           </div>
 
           {preview?.payrollInstallments && preview.payrollInstallments.length > 0 ? (
-            <div className="divide-y divide-neutral-200 dark:divide-neutral-700 pt-1 text-xs">
+            <div className="divide-y divide-[var(--border)] pt-1 text-xs">
               {preview.payrollInstallments.map((inst) => (
-                <div key={inst.id} className="flex items-center justify-between py-2">
+                <div key={inst.id} className="flex items-center justify-between gap-2 py-2">
                   <div>
-                    <strong className="block text-neutral-900 dark:text-white">{inst.accountName}</strong>
-                    <span className="text-[11px] text-neutral-400">
+                    <strong className="block text-[var(--foreground)]">{inst.accountName}</strong>
+                    <span className="text-[11px] text-[var(--muted-foreground)]">
                       Jatuh tempo {formatShortDate(inst.dueDate)} · {inst.lender}
                     </span>
                   </div>
-                  <span className="tabular-nums font-bold text-[var(--destructive)]">
+                  <span className="tabular-nums font-bold text-[var(--destructive)] shrink-0">
                     -{formatRupiah(inst.plannedAmount)}
                   </span>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="text-xs text-neutral-400">
+            <p className="text-xs text-[var(--muted-foreground)]">
               Tidak ada cicilan utang kantor yang jatuh tempo pada siklus ini.
             </p>
           )}
         </div>
 
-        <div className="rounded-[16px] border border-[var(--primary)] bg-[var(--soft)] p-4 text-[var(--soft-foreground)]">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold">Gaji Bersih Diterima (Net)</span>
+        <div className="rounded-[16px] border border-dashed border-[var(--primary)]/50 bg-[var(--surface)] p-4 text-[var(--foreground)]">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-[var(--muted-foreground)]">
+              Gaji Bersih Diterima (Net)
+            </span>
             <Badge tone="soft">Masuk ke Kas</Badge>
           </div>
-          <p className="tabular-nums mt-1 text-2xl font-black">{formatRupiah(netSalary)}</p>
-          <p className="mt-1 text-[11px] opacity-85">
+          <p className="tabular-nums mt-1 text-2xl font-black text-[var(--foreground)]">
+            {formatRupiah(netSalary)}
+          </p>
+          <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
             {formatRupiah(parsedGross)} (Kotor) - {formatRupiah(totalPayrollDue)} (Potongan Kantor)
           </p>
-        </div>
-
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-200 dark:border-neutral-700">
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] text-sm font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-          >
-            Batal
-          </button>
-          <button
-            type="submit"
-            disabled={receiveMutation.isPending || preview?.alreadyReceived}
-            className="flex-1 sm:flex-none min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-          >
-            {receiveMutation.isPending
-              ? "Menyimpan..."
-              : `Catat Terima Gaji (${formatRupiah(netSalary)})`}
-          </button>
         </div>
       </form>
     </ModalSheet>

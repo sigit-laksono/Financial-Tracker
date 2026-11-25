@@ -31,15 +31,17 @@ describe("Client & shared formatting helpers", () => {
   });
 
   it("formats compact Rupiah and parses signed overdraft amounts", () => {
-    expect(formatCompactRupiah(20_000_000)).toBe("Rp20 jt");
-    expect(formatCompactRupiah(1_500_000)).toBe("Rp1,5 jt");
-    expect(formatCompactRupiah(-250_000)).toBe("-Rp250 rb");
-    expect(formatCompactRupiah(1_500_000_000)).toBe("Rp1,5 M");
-    expect(formatCompactRupiah(2_500_000_000)).toBe("Rp2,5 M");
-    expect(formatCompactRupiah(10_000_000_000)).toBe("Rp10 M");
-    expect(formatCompactRupiah(1_000_000_000_000)).toBe("Rp1 T");
-    expect(formatCompactRupiah(2_500_000_000_000)).toBe("Rp2,5 T");
-    expect(formatCompactRupiah(-5_000_000_000)).toBe("-Rp5 M");
+    expect(formatCompactRupiah(20_000_000)).toBe("Rp\u00A020\u00A0jt");
+    expect(formatCompactRupiah(1_500_000)).toBe("Rp\u00A01,5\u00A0jt");
+    expect(formatCompactRupiah(-250_000)).toBe("-Rp\u00A0250\u00A0rb");
+    expect(formatCompactRupiah(8_000)).toBe("Rp\u00A08\u00A0rb");
+    expect(formatCompactRupiah(1_500_000_000)).toBe("Rp\u00A01,5\u00A0M");
+    expect(formatCompactRupiah(2_500_000_000)).toBe("Rp\u00A02,5\u00A0M");
+    expect(formatCompactRupiah(10_000_000_000)).toBe("Rp\u00A010\u00A0M");
+    expect(formatCompactRupiah(1_000_000_000_000)).toBe("Rp\u00A01\u00A0T");
+    expect(formatCompactRupiah(2_500_000_000_000)).toBe("Rp\u00A02,5\u00A0T");
+    expect(formatCompactRupiah(-5_000_000_000)).toBe("-Rp\u00A05\u00A0M");
+    expect(formatCompactRupiah(500, true)).toBe("Rp\u00A0•••••••");
     expect(parseSignedInt("-150.000")).toBe(-150_000);
     expect(formatSignedDigitsInput("-150000")).toBe("-150.000");
     expect(formatRupiah(-50_000)).toContain("\u2212");

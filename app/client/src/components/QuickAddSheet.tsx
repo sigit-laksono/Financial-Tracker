@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -23,11 +23,15 @@ import { Badge, Button, ModalSheet } from "./UI";
 
 export type QuickAddMode = "expense" | "income" | "transfer" | "settle";
 
-const MODE_TABS: ReadonlyArray<readonly [QuickAddMode, string]> = [
-  ["expense", "Pengeluaran"],
-  ["income", "Pemasukan"],
-  ["transfer", "Transfer"],
-  ["settle", "Bayar Kewajiban"],
+const MODE_TABS: ReadonlyArray<{
+  id: QuickAddMode;
+  shortLabel: string;
+  fullLabel: string;
+}> = [
+  { id: "expense", shortLabel: "Keluar", fullLabel: "Pengeluaran" },
+  { id: "income", shortLabel: "Masuk", fullLabel: "Pemasukan" },
+  { id: "transfer", shortLabel: "Transfer", fullLabel: "Transfer" },
+  { id: "settle", shortLabel: "Bayar", fullLabel: "Bayar Tagihan" },
 ];
 
 type SplitItemState = {
@@ -36,6 +40,200 @@ type SplitItemState = {
   amountInput: string;
   note: string;
 };
+
+function CategoryPicker({
+  id,
+  mode,
+  value,
+  onChange,
+  categories,
+  needsCategories,
+  wantsCategories,
+  savingsCategories,
+}: {
+  id: string;
+  mode: "expense" | "income";
+  value: string;
+  onChange: (name: string) => void;
+  categories: CategoryDto[];
+  needsCategories: CategoryDto[];
+  wantsCategories: CategoryDto[];
+  savingsCategories: CategoryDto[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setSearch("");
+    const timer = window.setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 10);
+    const handleOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutside);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("mousedown", handleOutside);
+    };
+  }, [open]);
+
+  const query = search.trim().toLowerCase();
+  const filterList = (list: CategoryDto[]) =>
+    query ? list.filter((c) => c.name.toLowerCase().includes(query)) : list;
+
+  const filteredNeeds = filterList(needsCategories);
+  const filteredWants = filterList(wantsCategories);
+  const filteredSavings = filterList(savingsCategories);
+  const filteredIncome = filterList(categories);
+
+  const hasMatches =
+    mode === "expense"
+      ? filteredNeeds.length > 0 || filteredWants.length > 0 || filteredSavings.length > 0
+      : filteredIncome.length > 0;
+
+  const selectedCat = categories.find((c) => c.name === value);
+
+  const renderGroup = (label: string, items: CategoryDto[]) => {
+    if (items.length === 0) return null;
+    return (
+      <div className="space-y-0.5">
+        <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
+          {label}
+        </div>
+        {items.map((cat) => {
+          const isSelected = cat.name === value;
+          return (
+            <button
+              key={`${cat.id}-${cat.name}`}
+              type="button"
+              role="option"
+              aria-selected={isSelected}
+              onClick={() => {
+                onChange(cat.name);
+                setOpen(false);
+              }}
+              className={`flex w-full items-center justify-between gap-2 rounded-[10px] px-3 py-2 text-left text-sm transition-colors ${
+                isSelected
+                  ? "bg-[var(--soft)] text-[var(--soft-foreground)] font-bold"
+                  : "text-[var(--foreground)] font-medium hover:bg-[var(--surface)]"
+              }`}
+            >
+              <span className="truncate">
+                {cat.isArchived ? `${cat.name} (Diarsipkan)` : cat.name}
+              </span>
+              {isSelected && <span className="text-xs font-extrabold">✓</span>}
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        id={id}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && open) {
+            e.stopPropagation();
+            setOpen(false);
+          }
+        }}
+        className="flex h-11 w-full items-center justify-between gap-2 rounded-[14px] border border-[var(--control-border)] bg-[var(--card)] px-3.5 text-left text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
+      >
+        <span className="truncate">
+          {selectedCat?.isArchived ? `${selectedCat.name} (Diarsipkan)` : value}
+        </span>
+        <svg
+          aria-hidden="true"
+          className="h-4 w-4 shrink-0 text-[var(--muted-foreground)]"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d={open ? "m18 15-6-6-6 6" : "m6 9 6 6 6-6"} />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          aria-label="Pilih kategori"
+          style={{ boxShadow: "var(--elevation-float)" }}
+          className="absolute left-0 right-0 top-full z-40 mt-1.5 rounded-[16px] border border-[var(--control-border)] bg-[var(--card)] p-2 space-y-2"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              setOpen(false);
+            }
+          }}
+        >
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Cari kategori..."
+            aria-label="Cari kategori"
+            className="h-10 w-full rounded-[10px] border border-[var(--control-border)] bg-[var(--surface)] px-3 text-sm font-medium text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
+          />
+          <div className="max-h-56 overflow-y-auto space-y-1 pr-0.5">
+            {!hasMatches ? (
+              <p className="py-4 text-center text-xs text-[var(--muted-foreground)]">
+                Kategori tidak ditemukan
+              </p>
+            ) : mode === "expense" ? (
+              <>
+                {renderGroup("Kebutuhan (50% - Needs)", filteredNeeds)}
+                {renderGroup("Keinginan (30% - Wants)", filteredWants)}
+                {renderGroup("Tabungan & Utang (20% - Savings)", filteredSavings)}
+              </>
+            ) : (
+              filteredIncome.map((cat) => {
+                const isSelected = cat.name === value;
+                return (
+                  <button
+                    key={`${cat.id}-${cat.name}`}
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    onClick={() => {
+                      onChange(cat.name);
+                      setOpen(false);
+                    }}
+                    className={`flex w-full items-center justify-between gap-2 rounded-[10px] px-3 py-2 text-left text-sm transition-colors ${
+                      isSelected
+                        ? "bg-[var(--soft)] text-[var(--soft-foreground)] font-bold"
+                        : "text-[var(--foreground)] font-medium hover:bg-[var(--surface)]"
+                    }`}
+                  >
+                    <span className="truncate">
+                      {cat.isArchived ? `${cat.name} (Diarsipkan)` : cat.name}
+                    </span>
+                    {isSelected && <span className="text-xs font-extrabold">✓</span>}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function QuickAddSheet({
   open,
@@ -66,6 +264,7 @@ export function QuickAddSheet({
 }) {
   const queryClient = useQueryClient();
   const baseId = useId();
+  const formId = `${baseId}-form`;
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const { data: presets } = useQuery({
@@ -291,12 +490,12 @@ export function QuickAddSheet({
   );
 
   const selectedCcCard = useMemo(() => {
-    if (!selectedExpenseWallet || selectedExpenseWallet.type !== "credit_card") return null;
+    if (selectedExpenseWallet?.type !== "credit_card") return null;
     return debts?.cards?.find((c) => c.walletId === selectedExpenseWallet.id) ?? null;
   }, [debts, selectedExpenseWallet]);
 
   const effectiveCcAvailableLimit = useMemo(() => {
-    if (!selectedExpenseWallet || selectedExpenseWallet.type !== "credit_card") return 0;
+    if (selectedExpenseWallet?.type !== "credit_card") return 0;
     let available = selectedExpenseWallet.balance;
     if (
       editingTx &&
@@ -522,10 +721,34 @@ export function QuickAddSheet({
     },
   });
 
-  const handleSubmit = (e: FormEvent) => {
-    e.preventDefault();
+  const submitDisabled =
+    saveMutation.isPending ||
+    isSavedSuccess ||
+    (mode === "settle" && (!settleTarget || isSettleInsufficient)) ||
+    (mode === "transfer" && isTransferInsufficient) ||
+    isCcLimitExceeded;
+
+  const triggerSubmit = useCallback(() => {
+    if (submitDisabled) return;
     setError("");
     saveMutation.mutate();
+  }, [submitDisabled, saveMutation]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleShortcut = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        triggerSubmit();
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [open, triggerSubmit]);
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    triggerSubmit();
   };
 
   const selectMode = (nextMode: QuickAddMode) => {
@@ -609,11 +832,32 @@ export function QuickAddSheet({
 
   const activeTabId = `${baseId}-tab-${mode}`;
   const panelId = `${baseId}-panel`;
+  const contextualTemplates = useMemo(
+    () =>
+      !editingTx && (mode === "expense" || mode === "income")
+        ? (presets?.frequentTemplates ?? []).filter((t) => t.type === mode)
+        : [],
+    [editingTx, mode, presets],
+  );
+
+  const yesterdayIso = useMemo(() => {
+    const [y, m, d] = jakartaToday().split("-").map(Number);
+    const dt = new Date(Date.UTC(y!, m! - 1, d! - 1));
+    return dt.toISOString().slice(0, 10);
+  }, []);
+
+  const inputClass =
+    "w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all";
+  const selectClass =
+    "h-11 w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all";
+  const labelClass =
+    "block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]";
 
   return (
     <ModalSheet
       open={open}
       onClose={onClose}
+      size="lg"
       title={
         editingTx
           ? editingTx.type === "transfer"
@@ -622,723 +866,581 @@ export function QuickAddSheet({
           : "Catat Transaksi"
       }
       subtitle={editingTx ? "Perbarui detail mutasi atau hapus jika salah catat." : undefined}
-    >
-      {!editingTx && (
-        <div
-          role="tablist"
-          aria-label="Jenis pencatatan"
-          className="mb-4 grid grid-cols-4 gap-1.5 rounded-[14px] bg-[var(--surface)] p-1 border border-[var(--border)]"
-        >
-          {MODE_TABS.map(([key, label], index) => {
-            const active = mode === key;
-            return (
-              <button
-                key={key}
-                ref={(el) => {
-                  tabRefs.current[index] = el;
-                }}
-                id={`${baseId}-tab-${key}`}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                aria-controls={panelId}
-                tabIndex={active ? 0 : -1}
-                onClick={() => selectMode(key)}
-                onKeyDown={(e) => {
-                  if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-                  e.preventDefault();
-                  const delta = e.key === "ArrowRight" ? 1 : -1;
-                  const nextIndex = (index + delta + MODE_TABS.length) % MODE_TABS.length;
-                  const nextTab = MODE_TABS[nextIndex]![0];
-                  selectMode(nextTab);
-                  tabRefs.current[nextIndex]?.focus();
-                }}
-                className={`min-h-[44px] rounded-[10px] px-2 text-xs font-bold transition-colors sm:text-sm ${
-                  active
-                    ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
-                    : "text-[var(--foreground)] hover:bg-[var(--card)]"
-                }`}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Template Cepat Bar (Quick Presets) - Hanya tampilkan sesuai mode aktif */}
-      {!editingTx &&
-        (mode === "expense" || mode === "income") &&
-        (() => {
-          const contextualTemplates = (presets?.frequentTemplates ?? []).filter(
-            (t) => t.type === mode,
-          );
-          if (contextualTemplates.length === 0) return null;
-          return (
-            <div className="mb-4 space-y-1.5">
-              <span className="text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                {mode === "expense" ? "Template Pengeluaran Sering" : "Template Pemasukan Sering"}
-              </span>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {contextualTemplates.map((t) => (
-                  <button
-                    key={`${t.merchant}-${t.suggestedAmount}`}
-                    type="button"
-                    onClick={() => {
-                      selectMode(t.type);
-                      setMerchant(t.merchant);
-                      setAmountInput(t.suggestedAmount.toLocaleString("id-ID"));
-                      setCategory(t.category);
-                      setWalletId(t.walletId);
-                    }}
-                    className="min-h-[40px] shrink-0 inline-flex items-center gap-1.5 rounded-full border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 px-3.5 text-xs font-medium text-neutral-800 dark:text-neutral-200 hover:border-[var(--primary)] hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-all"
-                  >
-                    <span className="font-bold">{t.merchant}</span>
-                    <span className="text-neutral-400">
-                      · {formatCompactRupiah(t.suggestedAmount)}
-                    </span>
-                  </button>
-                ))}
-              </div>
+      footer={
+        <div className="space-y-2.5">
+          {error && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-[14px] border border-[var(--destructive)] bg-[var(--destructive)]/10 p-3 text-xs text-[var(--destructive)]"
+            >
+              <AlertIcon className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{error}</span>
             </div>
-          );
-        })()}
+          )}
 
-      <div
-        id={panelId}
-        {...(!editingTx ? { role: "tabpanel", "aria-labelledby": activeTabId } : {})}
-      >
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {mode === "settle" ? (
-            <div className="space-y-4">
-              <div className="space-y-1.5">
-                <label htmlFor="settle-target" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                  Tagihan atau Cicilan yang Dibayar
-                </label>
-                <select
-                  id="settle-target"
-                  value={settleTarget}
-                  onChange={(e) => setSettleTarget(e.target.value)}
-                  className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {editingTx && !confirmDelete && (
+                <Button
+                  variant="secondary"
+                  onClick={() => setConfirmDelete(true)}
+                  className="text-xs text-[var(--destructive)]"
                 >
-                  {unpaidCcCycles.length > 0 && (
-                    <optgroup label="Tagihan Kartu Kredit">
-                      {unpaidCcCycles.map((c) => (
-                        <option key={c.key} value={c.key}>
-                          {c.walletName} · Siklus {c.cycleKey} ({formatRupiah(c.totalBill)})
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {upcomingInstallments.length > 0 && (
-                    <optgroup label="Cicilan Utang Mendatang">
-                      {upcomingInstallments.map((i) => (
-                        <option key={`inst:${i.id}`} value={`inst:${i.id}`}>
-                          {i.accountName} ({formatShortDate(i.dueDate)}) -{" "}
-                          {formatRupiah(i.plannedAmount)}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                </select>
-                {unpaidCcCycles.length === 0 && upcomingInstallments.length === 0 && (
-                  <p className="text-xs text-neutral-400">
-                    Tidak ada cicilan atau tagihan CC yang menunggu pembayaran.
-                  </p>
-                )}
-              </div>
-
-              <div className="space-y-1.5">
-                <label htmlFor="settle-wallet" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                  Bayar Dari Dompet
-                </label>
-                <select
-                  id="settle-wallet"
-                  value={walletId}
-                  onChange={(e) => setWalletId(Number(e.target.value))}
-                  className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-                >
-                  {cashWallets.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name} ({formatRupiah(w.balance)})
-                    </option>
-                  ))}
-                </select>
-                {isSettleInsufficient && selectedSettleWallet && (
-                  <div className="rounded-[14px] border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2">
-                    <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
-                    <div>
-                      <p className="font-bold">Saldo Dompet Tidak Mencukupi!</p>
-                      <p className="mt-0.5">
-                        Saldo {selectedSettleWallet.name} saat ini{" "}
-                        {formatRupiah(selectedSettleWallet.balance)}, sedangkan tagihan sebesar{" "}
-                        {formatRupiah(selectedSettleBillAmount)}. Pembayaran tidak dapat diproses.
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* Nominal Input & Quick Preset Buttons */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label htmlFor="tx-amount" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                    Nominal (Rp)
-                  </label>
-                  {parsedTotalAmount > 0 && (
-                    <span className="tabular-nums text-xs font-semibold text-neutral-400">
-                      {formatRupiah(parsedTotalAmount)}
-                    </span>
-                  )}
-                </div>
-                <input
-                  ref={amountInputRef}
-                  id="tx-amount"
-                  inputMode="numeric"
-                  value={amountInput}
-                  onChange={(e) => setAmountInput(formatDigitsInput(e.target.value))}
-                  onFocus={(e) => {
-                    window.setTimeout(() => {
-                      e.target.scrollIntoView({ behavior: "smooth", block: "center" });
-                    }, 150);
-                  }}
-                  placeholder="0"
-                  className="tabular-nums min-h-[50px] w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-2xl font-black text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-                />
-
-                {/* Spell-out nominal otomatis */}
-                {parsedTotalAmount > 0 && (
-                  <p className="text-xs font-semibold text-[var(--primary)] transition-all">
-                    {spellOutRupiah(parsedTotalAmount)}
-                  </p>
-                )}
-
-                {/* Preset Nominal Cepat Buttons (Zero-CLS 5-Column Grid) */}
-                <div className="grid grid-cols-5 gap-1.5 pt-1">
-                  {[
-                    [10_000, "+10rb"],
-                    [25_000, "+25rb"],
-                    [50_000, "+50rb"],
-                    [100_000, "+100rb"],
-                  ].map(([addVal, label]) => (
-                    <button
-                      key={label}
-                      type="button"
-                      onClick={() => {
-                        const current = parsePositiveInt(amountInput);
-                        setAmountInput((current + (addVal as number)).toLocaleString("id-ID"));
-                      }}
-                      className="min-h-[40px] rounded-[12px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 px-1 text-xs font-bold text-neutral-800 dark:text-neutral-100 hover:bg-neutral-100 dark:hover:bg-neutral-800 active:scale-95 transition-all text-center"
-                    >
-                      {label}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    disabled={!amountInput}
-                    onClick={() => setAmountInput("")}
-                    className="min-h-[40px] rounded-[12px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 px-1 text-xs font-semibold text-neutral-400 hover:text-[var(--destructive)] disabled:opacity-40 disabled:cursor-not-allowed transition-all text-center"
-                  >
-                    Reset
-                  </button>
-                </div>
-              </div>
-
-              {mode === "transfer" ? (
-                <div className="space-y-4">
-                  {/* Chip Rute Transfer Cepat */}
-                  {presets?.frequentTransferRoutes && presets.frequentTransferRoutes.length > 0 && (
-                    <div className="space-y-1.5">
-                      <span className="text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                        Rute Transfer Cepat
-                      </span>
-                      <div className="flex flex-wrap gap-2">
-                        {presets.frequentTransferRoutes.map((route) => {
-                          const isSelected =
-                            walletId === route.fromWalletId && toWalletId === route.toWalletId;
-                          return (
-                            <button
-                              key={`${route.fromWalletId}->${route.toWalletId}`}
-                              type="button"
-                              onClick={() => {
-                                setWalletId(route.fromWalletId);
-                                setToWalletId(route.toWalletId);
-                                if (route.adminFee !== undefined) {
-                                  setAdminFeeInput(
-                                    route.adminFee > 0
-                                      ? route.adminFee.toLocaleString("id-ID")
-                                      : "",
-                                  );
-                                }
-                              }}
-                              className={`min-h-[40px] rounded-[12px] border px-3.5 text-xs font-semibold transition-all ${
-                                isSelected
-                                  ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs"
-                                  : "border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-                              }`}
-                            >
-                              {route.fromWalletName} &rarr; {route.toWalletName}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="space-y-1.5">
-                      <label htmlFor="tx-from-wallet" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                        Dari Dompet
-                      </label>
-                      <select
-                        id="tx-from-wallet"
-                        value={walletId}
-                        onChange={(e) => setWalletId(Number(e.target.value))}
-                        className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-                      >
-                        {cashWallets.map((w) => (
-                          <option key={w.id} value={w.id}>
-                            {w.name} ({formatRupiah(w.balance)})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="space-y-1.5">
-                      <label htmlFor="tx-to-wallet" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                        Ke Dompet
-                      </label>
-                      <select
-                        id="tx-to-wallet"
-                        value={toWalletId}
-                        onChange={(e) => setToWalletId(Number(e.target.value))}
-                        className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-                      >
-                        {cashWallets.map((w) => (
-                          <option key={w.id} value={w.id}>
-                            {w.name} ({formatRupiah(w.balance)})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <label htmlFor="tx-admin-fee" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                          Biaya Admin (Opsional)
-                        </label>
-                        <div className="flex items-center gap-1">
-                          {[
-                            [0, "Gratis"],
-                            [2500, "2.500"],
-                            [6500, "6.500"],
-                          ].map(([feeVal, label]) => (
-                            <button
-                              key={label}
-                              type="button"
-                              onClick={() =>
-                                setAdminFeeInput(
-                                  feeVal === 0 ? "" : (feeVal as number).toLocaleString("id-ID"),
-                                )
-                              }
-                              className="rounded-[8px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 px-2 py-0.5 text-[11px] font-bold text-neutral-500 hover:text-neutral-900 dark:hover:text-white transition-colors"
-                            >
-                              {label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <input
-                        id="tx-admin-fee"
-                        inputMode="numeric"
-                        value={adminFeeInput}
-                        onChange={(e) => setAdminFeeInput(formatDigitsInput(e.target.value))}
-                        placeholder="Contoh: 2.500 (kosongkan jika gratis)"
-                        className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label htmlFor="tx-transfer-label" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                        Keterangan (Opsional)
-                      </label>
-                      <input
-                        id="tx-transfer-label"
-                        type="text"
-                        value={merchant}
-                        onChange={(e) => setMerchant(e.target.value)}
-                        placeholder="Otomatis: Transfer ke ..."
-                        className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-                      />
-                    </div>
-                  </div>
-                  {isTransferInsufficient && selectedTransferWallet && (
-                    <div className="rounded-[14px] border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2">
-                      <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
-                      <div>
-                        <p className="font-bold">Saldo Dompet Tidak Mencukupi!</p>
-                        <p className="mt-0.5">
-                          Saldo {selectedTransferWallet.name} saat ini{" "}
-                          {formatRupiah(selectedTransferWallet.balance)}, sedangkan kebutuhan
-                          transfer + admin sebesar {formatRupiah(transferTotalNeeded)}.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <div className="space-y-1.5">
-                    <label htmlFor="tx-merchant" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                      {mode === "income" ? "Sumber Pemasukan" : "Merchant / Keterangan"}
-                    </label>
-                    <input
-                      id="tx-merchant"
-                      type="text"
-                      value={merchant}
-                      onChange={(e) => handleMerchantChange(e.target.value)}
-                      onFocus={(e) => {
-                        window.setTimeout(() => {
-                          e.target.scrollIntoView({ behavior: "smooth", block: "center" });
-                        }, 150);
-                      }}
-                      placeholder={
-                        mode === "income"
-                          ? "Contoh: Gaji, Pengembalian pinjaman"
-                          : "Contoh: Warung Agus, Indomaret, Kopi Kenangan"
-                      }
-                      className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-                    />
-                  </div>
-
-                  {/* Merchant auto-suggestions */}
-                  {matchingSuggestions.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                      {matchingSuggestions.slice(0, 3).map((s) => (
-                        <button
-                          key={s.merchant}
-                          type="button"
-                          onClick={() => {
-                            setMerchant(s.merchant);
-                            setCategory(s.category);
-                            setWalletId(s.walletId);
-                            if (!amountInput && s.lastUsedAmount > 0) {
-                              setAmountInput(s.lastUsedAmount.toLocaleString("id-ID"));
-                            }
-                          }}
-                          className="min-h-[38px] rounded-[10px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 px-3 text-xs font-medium text-neutral-800 dark:text-neutral-200 hover:border-[var(--primary)]"
-                        >
-                          Pernah dicatat: <strong>{s.merchant}</strong> ({s.category})
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                  <TrashIcon className="w-4 h-4" />
+                  <span>Hapus</span>
+                </Button>
               )}
+              {editingTx && confirmDelete && (
+                <Button
+                  variant="danger"
+                  disabled={deleteMutation.isPending}
+                  onClick={() => deleteMutation.mutate()}
+                  className="text-xs"
+                >
+                  {deleteMutation.isPending ? "Menghapus..." : "Konfirmasi Hapus"}
+                </Button>
+              )}
+              {editingTx &&
+                editingTx.walletType === "credit_card" &&
+                editingTx.type === "expense" &&
+                !editingTx.isConvertedToInstallment &&
+                onRequestSplitPay && (
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      onClose();
+                      onRequestSplitPay(editingTx);
+                    }}
+                    className="text-xs"
+                  >
+                    <SplitPayIcon className="w-4 h-4" />
+                    <span>Ubah Jadi Cicilan</span>
+                  </Button>
+                )}
+            </div>
 
-              {(mode === "expense" || mode === "income") && (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="space-y-1.5">
-                      <label htmlFor="tx-wallet" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                        {mode === "income" ? "Masuk ke Dompet" : "Sumber Dana"}
-                      </label>
-                      <select
-                        id="tx-wallet"
-                        value={walletId}
-                        onChange={(e) => setWalletId(Number(e.target.value))}
-                        className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-                      >
-                        {selectableWallets.map((w) => (
-                          <option key={w.id} value={w.id}>
-                            [{w.provider ? w.provider.toUpperCase() : w.type.toUpperCase()}]{" "}
-                            {w.name} ({w.type === "credit_card" ? `Sisa Limit ${formatRupiah(w.balance)}` : formatRupiah(w.balance)})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+            <div className="flex items-center gap-2 ml-auto">
+              <Button variant="secondary" onClick={onClose}>
+                Batal
+              </Button>
+              <Button type="submit" form={formId} disabled={submitDisabled}>
+                {isSavedSuccess
+                  ? "Tersimpan"
+                  : saveMutation.isPending
+                    ? "Menyimpan..."
+                    : mode === "settle"
+                      ? "Konfirmasi Bayar"
+                      : editingTx
+                        ? "Simpan Perubahan"
+                        : "Simpan Transaksi"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      }
+    >
+      <form id={formId} onSubmit={handleSubmit}>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 lg:gap-6 items-start">
+          {/* Kolom Kiri (7 col): Mode, Nominal, spellOutRupiah, Chip Cepat, Merchant, Sumber Dana, Kategori */}
+          <div className="lg:col-span-7 space-y-4">
+            {!editingTx && (
+              <div
+                role="tablist"
+                aria-label="Jenis pencatatan"
+                className="grid grid-cols-4 gap-1 rounded-[14px] bg-[var(--surface)] p-1 border border-[var(--border)]"
+              >
+                {MODE_TABS.map((item, index) => {
+                  const active = mode === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      ref={(el) => {
+                        tabRefs.current[index] = el;
+                      }}
+                      id={`${baseId}-tab-${item.id}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      aria-controls={panelId}
+                      tabIndex={active ? 0 : -1}
+                      onClick={() => selectMode(item.id)}
+                      onKeyDown={(e) => {
+                        if (e.key >= "1" && e.key <= "4") {
+                          e.preventDefault();
+                          const targetIdx = Number(e.key) - 1;
+                          const targetTab = MODE_TABS[targetIdx];
+                          if (targetTab) {
+                            selectMode(targetTab.id);
+                            tabRefs.current[targetIdx]?.focus();
+                          }
+                          return;
+                        }
+                        if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+                        e.preventDefault();
+                        const delta = e.key === "ArrowRight" ? 1 : -1;
+                        const nextIndex = (index + delta + MODE_TABS.length) % MODE_TABS.length;
+                        const nextTab = MODE_TABS[nextIndex]!;
+                        selectMode(nextTab.id);
+                        tabRefs.current[nextIndex]?.focus();
+                      }}
+                      className={`flex h-10 sm:h-11 items-center justify-center whitespace-nowrap rounded-[10px] px-1.5 sm:px-2 text-xs font-bold transition-colors sm:text-sm ${
+                        active
+                          ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)]"
+                          : "text-[var(--foreground)] hover:bg-[var(--card)]"
+                      }`}
+                    >
+                      <span className="sm:hidden">{item.shortLabel}</span>
+                      <span className="hidden sm:inline">{item.fullLabel}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
-                    {!isSplit && (
-                      <div className="space-y-1.5">
-                        <label htmlFor="tx-category" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                          Kategori
-                        </label>
-                        <select
-                          id="tx-category"
-                          value={category}
-                          onChange={(e) => setCategory(e.target.value)}
-                          className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-                        >
-                          {mode === "expense" ? (
-                            <>
-                              {needsCategories.length > 0 && (
-                                <optgroup label="Kebutuhan (50% - Needs)">
-                                  {needsCategories.map((cat) => (
-                                    <option key={`${cat.id}-${cat.name}`} value={cat.name}>
-                                      {cat.isArchived ? `${cat.name} (Diarsipkan)` : cat.name}
-                                    </option>
-                                  ))}
-                                </optgroup>
-                              )}
-                              {wantsCategories.length > 0 && (
-                                <optgroup label="Keinginan (30% - Wants)">
-                                  {wantsCategories.map((cat) => (
-                                    <option key={`${cat.id}-${cat.name}`} value={cat.name}>
-                                      {cat.isArchived ? `${cat.name} (Diarsipkan)` : cat.name}
-                                    </option>
-                                  ))}
-                                </optgroup>
-                              )}
-                              {savingsCategories.length > 0 && (
-                                <optgroup label="Tabungan & Hutang (20% - Savings & Debt)">
-                                  {savingsCategories.map((cat) => (
-                                    <option key={`${cat.id}-${cat.name}`} value={cat.name}>
-                                      {cat.isArchived ? `${cat.name} (Diarsipkan)` : cat.name}
-                                    </option>
-                                  ))}
-                                </optgroup>
-                              )}
-                            </>
-                          ) : (
-                            currentCategories.map((cat) => (
-                              <option key={`${cat.id}-${cat.name}`} value={cat.name}>
-                                {cat.isArchived ? `${cat.name} (Diarsipkan)` : cat.name}
-                              </option>
-                            ))
-                          )}
-                        </select>
-                      </div>
+            <div
+              id={panelId}
+              {...(!editingTx ? { role: "tabpanel", "aria-labelledby": activeTabId } : {})}
+              className="space-y-4"
+            >
+              {mode === "settle" ? (
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label htmlFor="settle-target" className={labelClass}>
+                      Tagihan atau Cicilan yang Dibayar
+                    </label>
+                    <select
+                      id="settle-target"
+                      value={settleTarget}
+                      onChange={(e) => setSettleTarget(e.target.value)}
+                      className={selectClass}
+                    >
+                      {unpaidCcCycles.length > 0 && (
+                        <optgroup label="Tagihan Kartu Kredit">
+                          {unpaidCcCycles.map((c) => (
+                            <option key={c.key} value={c.key}>
+                              {c.walletName} · Siklus {c.cycleKey} ({formatRupiah(c.totalBill)})
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {upcomingInstallments.length > 0 && (
+                        <optgroup label="Cicilan Utang Mendatang">
+                          {upcomingInstallments.map((i) => (
+                            <option key={`inst:${i.id}`} value={`inst:${i.id}`}>
+                              {i.accountName} ({formatShortDate(i.dueDate)}) -{" "}
+                              {formatRupiah(i.plannedAmount)}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                    {unpaidCcCycles.length === 0 && upcomingInstallments.length === 0 && (
+                      <p className="text-xs text-[var(--muted-foreground)]">
+                        Tidak ada cicilan atau tagihan CC yang menunggu pembayaran.
+                      </p>
                     )}
                   </div>
 
-                  {/* Credit Card Remaining Limit Guard & Live Status */}
-                  {mode === "expense" && selectedExpenseWallet?.type === "credit_card" && (
-                    <div
-                      className={`rounded-[14px] border p-3 text-xs flex items-start gap-2 ${
-                        isCcLimitExceeded
-                          ? "border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
-                          : "border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 text-neutral-700 dark:text-neutral-300"
-                      }`}
+                  <div className="space-y-1.5">
+                    <label htmlFor="settle-wallet" className={labelClass}>
+                      Bayar Dari Dompet
+                    </label>
+                    <select
+                      id="settle-wallet"
+                      value={walletId}
+                      onChange={(e) => setWalletId(Number(e.target.value))}
+                      className={selectClass}
                     >
-                      {isCcLimitExceeded && (
+                      {cashWallets.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name} ({formatRupiah(w.balance)})
+                        </option>
+                      ))}
+                    </select>
+                    {isSettleInsufficient && selectedSettleWallet && (
+                      <div className="rounded-[14px] border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2">
                         <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
-                      )}
-                      <div className="flex-1 space-y-0.5">
-                        {isCcLimitExceeded ? (
-                          <>
-                            <p className="font-bold">Melebihi Sisa Limit Kartu Kredit!</p>
-                            <p>
-                              Sisa limit tersedia {selectedExpenseWallet.name} saat ini{" "}
-                              <strong>{formatRupiah(effectiveCcAvailableLimit)}</strong>
-                              {selectedCcCard && selectedCcCard.installmentLimitUsed > 0
-                                ? ` (Rp ${selectedCcCard.installmentLimitUsed.toLocaleString("id-ID")} terkunci cicilan aktif)`
-                                : ""}
-                              . Transaksi tidak dapat disimpan kecuali ada penambahan limit kartu.
+                        <div>
+                          <p className="font-bold">Saldo Dompet Tidak Mencukupi!</p>
+                          <p className="mt-0.5">
+                            Saldo {selectedSettleWallet.name} saat ini{" "}
+                            {formatRupiah(selectedSettleWallet.balance)}, sedangkan tagihan sebesar{" "}
+                            {formatRupiah(selectedSettleBillAmount)}. Pembayaran tidak dapat diproses.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Nominal Input & Quick Preset Buttons */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="tx-amount" className={labelClass}>
+                      Nominal (Rp)
+                    </label>
+                    <input
+                      ref={amountInputRef}
+                      id="tx-amount"
+                      inputMode="numeric"
+                      value={amountInput}
+                      onChange={(e) => setAmountInput(formatDigitsInput(e.target.value))}
+                      placeholder="0"
+                      className="tabular-nums min-h-[50px] w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-3 text-2xl font-black text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
+                    />
+
+                    {/* Spell-out nominal otomatis */}
+                    {parsedTotalAmount > 0 && (
+                      <p className="text-xs font-semibold text-[var(--primary)] transition-all">
+                        {spellOutRupiah(parsedTotalAmount)}
+                      </p>
+                    )}
+
+                    {/* Preset Nominal Cepat Buttons (Zero-CLS 5-Column Grid) */}
+                    <div className="grid grid-cols-5 gap-1.5 pt-1">
+                      {[
+                        [10_000, "+10rb"],
+                        [25_000, "+25rb"],
+                        [50_000, "+50rb"],
+                        [100_000, "+100rb"],
+                      ].map(([addVal, label]) => (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => {
+                            const current = parsePositiveInt(amountInput);
+                            setAmountInput((current + (addVal as number)).toLocaleString("id-ID"));
+                          }}
+                          className="min-h-[40px] rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-1 text-xs font-bold text-[var(--foreground)] hover:bg-[var(--card)] active:scale-95 transition-all text-center"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        disabled={!amountInput}
+                        onClick={() => setAmountInput("")}
+                        className="min-h-[40px] rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-1 text-xs font-semibold text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-40 disabled:cursor-not-allowed transition-all text-center"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </div>
+
+                  {mode === "transfer" ? (
+                    <div className="space-y-4">
+                      {/* Chip Rute Transfer Cepat */}
+                      {presets?.frequentTransferRoutes &&
+                        presets.frequentTransferRoutes.length > 0 && (
+                          <div className="space-y-1.5">
+                            <span className={labelClass}>Rute Transfer Cepat</span>
+                            <div className="flex flex-wrap gap-2">
+                              {presets.frequentTransferRoutes.map((route) => {
+                                const isSelected =
+                                  walletId === route.fromWalletId && toWalletId === route.toWalletId;
+                                return (
+                                  <button
+                                    key={`${route.fromWalletId}->${route.toWalletId}`}
+                                    type="button"
+                                    onClick={() => {
+                                      setWalletId(route.fromWalletId);
+                                      setToWalletId(route.toWalletId);
+                                      if (route.adminFee !== undefined) {
+                                        setAdminFeeInput(
+                                          route.adminFee > 0
+                                            ? route.adminFee.toLocaleString("id-ID")
+                                            : "",
+                                        );
+                                      }
+                                    }}
+                                    className={`min-h-[40px] rounded-[12px] border px-3.5 text-xs font-semibold transition-all ${
+                                      isSelected
+                                        ? "border-[var(--primary)] bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-xs"
+                                        : "border-[var(--control-border)] bg-[var(--surface)] text-[var(--foreground)] hover:bg-[var(--card)]"
+                                    }`}
+                                  >
+                                    {route.fromWalletName} &rarr; {route.toWalletName}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <label htmlFor="tx-from-wallet" className={labelClass}>
+                            Dari Dompet
+                          </label>
+                          <select
+                            id="tx-from-wallet"
+                            value={walletId}
+                            onChange={(e) => setWalletId(Number(e.target.value))}
+                            className={selectClass}
+                          >
+                            {cashWallets.map((w) => (
+                              <option key={w.id} value={w.id}>
+                                {w.name} ({formatRupiah(w.balance)})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <label htmlFor="tx-to-wallet" className={labelClass}>
+                            Ke Dompet
+                          </label>
+                          <select
+                            id="tx-to-wallet"
+                            value={toWalletId}
+                            onChange={(e) => setToWalletId(Number(e.target.value))}
+                            className={selectClass}
+                          >
+                            {cashWallets.map((w) => (
+                              <option key={w.id} value={w.id}>
+                                {w.name} ({formatRupiah(w.balance)})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <label htmlFor="tx-admin-fee" className={labelClass}>
+                              Biaya Admin
+                            </label>
+                            <div className="flex items-center gap-1">
+                              {[
+                                [0, "Gratis"],
+                                [2500, "2.500"],
+                                [6500, "6.500"],
+                              ].map(([feeVal, label]) => (
+                                <button
+                                  key={label}
+                                  type="button"
+                                  onClick={() =>
+                                    setAdminFeeInput(
+                                      feeVal === 0 ? "" : (feeVal as number).toLocaleString("id-ID"),
+                                    )
+                                  }
+                                  className="rounded-[8px] border border-[var(--control-border)] bg-[var(--surface)] px-2 py-0.5 text-[11px] font-bold text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <input
+                            id="tx-admin-fee"
+                            inputMode="numeric"
+                            value={adminFeeInput}
+                            onChange={(e) => setAdminFeeInput(formatDigitsInput(e.target.value))}
+                            placeholder="0 jika gratis"
+                            className={`tabular-nums ${inputClass}`}
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label htmlFor="tx-transfer-label" className={labelClass}>
+                            Keterangan (Opsional)
+                          </label>
+                          <input
+                            id="tx-transfer-label"
+                            type="text"
+                            value={merchant}
+                            onChange={(e) => setMerchant(e.target.value)}
+                            placeholder="Otomatis: Transfer ke..."
+                            className={inputClass}
+                          />
+                        </div>
+                      </div>
+                      {isTransferInsufficient && selectedTransferWallet && (
+                        <div className="rounded-[14px] border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2">
+                          <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+                          <div>
+                            <p className="font-bold">Saldo Dompet Tidak Mencukupi!</p>
+                            <p className="mt-0.5">
+                              Saldo {selectedTransferWallet.name} saat ini{" "}
+                              {formatRupiah(selectedTransferWallet.balance)}, sedangkan kebutuhan
+                              transfer + admin sebesar {formatRupiah(transferTotalNeeded)}.
                             </p>
-                          </>
-                        ) : (
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span>
-                              Sisa limit tersedia{" "}
-                              <strong className="font-mono text-neutral-900 dark:text-white">
-                                {formatRupiah(effectiveCcAvailableLimit)}
-                              </strong>{" "}
-                              dari{" "}
-                              {formatCompactRupiah(
-                                selectedExpenseWallet.creditLimit ?? 0,
-                              )}
-                            </span>
-                            {selectedCcCard && selectedCcCard.installmentLimitUsed > 0 && (
-                              <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
-                                Terkunci cicilan: {formatCompactRupiah(selectedCcCard.installmentLimitUsed)}
-                              </span>
-                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <div className="space-y-1.5">
+                          <label htmlFor="tx-merchant" className={labelClass}>
+                            {mode === "income" ? "Sumber Pemasukan" : "Merchant / Keterangan"}
+                          </label>
+                          <input
+                            id="tx-merchant"
+                            type="text"
+                            value={merchant}
+                            onChange={(e) => handleMerchantChange(e.target.value)}
+                            placeholder={
+                              mode === "income" ? "Contoh: Gaji, Bonus" : "Contoh: Warung, Kopi"
+                            }
+                            className={inputClass}
+                          />
+                        </div>
+
+                        {/* Merchant auto-suggestions */}
+                        {matchingSuggestions.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            {matchingSuggestions.slice(0, 3).map((s) => (
+                              <button
+                                key={s.merchant}
+                                type="button"
+                                onClick={() => {
+                                  setMerchant(s.merchant);
+                                  setCategory(s.category);
+                                  setWalletId(s.walletId);
+                                  if (!amountInput && s.lastUsedAmount > 0) {
+                                    setAmountInput(s.lastUsedAmount.toLocaleString("id-ID"));
+                                  }
+                                }}
+                                className="min-h-[38px] rounded-[10px] border border-[var(--control-border)] bg-[var(--surface)] px-3 text-xs font-medium text-[var(--foreground)] hover:border-[var(--primary)]"
+                              >
+                                Pernah dicatat: <strong>{s.merchant}</strong> ({s.category})
+                              </button>
+                            ))}
                           </div>
                         )}
                       </div>
-                    </div>
-                  )}
 
-                  {/* Toggle Pecah Kategori (Split Struk) for expense */}
-                  {mode === "expense" && (
-                    <div className="space-y-3 rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 p-3.5">
-                      <div className="flex items-center justify-between">
-                        <label className="inline-flex min-h-[40px] items-center gap-2 text-xs font-bold text-neutral-800 dark:text-neutral-100 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={isSplit}
-                            onChange={(e) => {
-                              const checked = e.target.checked;
-                              setIsSplit(checked);
-                              if (checked && splits.length < 2) {
-                                setSplits([
-                                  {
-                                    keyId: `split-1`,
-                                    category,
-                                    amountInput: "",
-                                    note: "",
-                                  },
-                                  {
-                                    keyId: `split-2`,
-                                    category:
-                                      expenseCategories.find((c) => c.name !== category)?.name ??
-                                      "Belanja",
-                                    amountInput: "",
-                                    note: "",
-                                  },
-                                ]);
-                              }
-                            }}
-                            className="h-4 w-4 rounded accent-[var(--primary)]"
-                          />
-                          Pecah Kategori (Split Struk)
-                        </label>
-                        {isSplit && (
-                          <Badge
-                            tone={
-                              splitDelta === 0 ? "soft" : splitDelta > 0 ? "highlight" : "danger"
-                            }
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <label htmlFor="tx-wallet" className={labelClass}>
+                            {mode === "income" ? "Masuk ke Dompet" : "Sumber Dana"}
+                          </label>
+                          <select
+                            id="tx-wallet"
+                            value={walletId}
+                            onChange={(e) => setWalletId(Number(e.target.value))}
+                            className={selectClass}
                           >
-                            {splitDelta === 0
-                              ? "Total Pas"
-                              : splitDelta > 0
-                                ? `Sisa: ${formatRupiah(splitDelta)}`
-                                : `Kelebihan: ${formatRupiah(Math.abs(splitDelta))}`}
-                          </Badge>
+                            {selectableWallets.map((w) => (
+                              <option key={w.id} value={w.id}>
+                                [{w.provider ? w.provider.toUpperCase() : w.type.toUpperCase()}]{" "}
+                                {w.name} (
+                                {w.type === "credit_card"
+                                  ? `Sisa Limit ${formatRupiah(w.balance)}`
+                                  : formatRupiah(w.balance)}
+                                )
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {!isSplit && (
+                          <div className="space-y-1.5">
+                            <label htmlFor="tx-category" className={labelClass}>
+                              Kategori
+                            </label>
+                            <CategoryPicker
+                              id="tx-category"
+                              mode={mode}
+                              value={category}
+                              onChange={setCategory}
+                              categories={currentCategories}
+                              needsCategories={needsCategories}
+                              wantsCategories={wantsCategories}
+                              savingsCategories={savingsCategories}
+                            />
+                          </div>
                         )}
                       </div>
 
-                      {isSplit && (
-                        <div className="space-y-2.5 pt-1">
-                          {splits.map((s, idx) => (
-                            <div
-                              key={s.keyId}
-                              className="flex flex-wrap items-center gap-2 rounded-[14px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-2.5 shadow-2xs"
-                            >
-                              <div className="w-full sm:w-auto sm:flex-1">
-                                <label htmlFor={`split-cat-${s.keyId}`} className="sr-only">
-                                  Kategori Pecahan {idx + 1}
-                                </label>
-                                <select
-                                  id={`split-cat-${s.keyId}`}
-                                  value={s.category}
-                                  onChange={(e) => {
-                                    const next = [...splits];
-                                    next[idx]!.category = e.target.value;
-                                    setSplits(next);
-                                  }}
-                                  className="w-full rounded-[10px] bg-[#f8f9fa] dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 px-3 py-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200 focus:outline-none focus:border-[var(--primary)]"
-                                >
-                                  {expenseCategories.map((cat) => (
-                                    <option key={cat.id} value={cat.name}>
-                                      {cat.name}
-                                    </option>
-                                  ))}
-                                </select>
+                      {/* Credit Card Remaining Limit Guard & Live Status */}
+                      {mode === "expense" && selectedExpenseWallet?.type === "credit_card" && (
+                        <div
+                          className={`rounded-[14px] border p-3 text-xs flex items-start gap-2 ${
+                            isCcLimitExceeded
+                              ? "border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+                              : "border-dashed border-[var(--border)] bg-[var(--surface)] text-[var(--muted-foreground)]"
+                          }`}
+                        >
+                          {isCcLimitExceeded && (
+                            <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+                          )}
+                          <div className="flex-1 space-y-0.5">
+                            {isCcLimitExceeded ? (
+                              <>
+                                <p className="font-bold">Melebihi Sisa Limit Kartu Kredit!</p>
+                                <p>
+                                  Sisa limit tersedia {selectedExpenseWallet.name} saat ini{" "}
+                                  <strong>{formatRupiah(effectiveCcAvailableLimit)}</strong>
+                                  {selectedCcCard && selectedCcCard.installmentLimitUsed > 0
+                                    ? ` (Rp ${selectedCcCard.installmentLimitUsed.toLocaleString("id-ID")} terkunci cicilan aktif)`
+                                    : ""}
+                                  . Transaksi tidak dapat disimpan kecuali ada penambahan limit kartu.
+                                </p>
+                              </>
+                            ) : (
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span>
+                                  Sisa limit tersedia{" "}
+                                  <strong className="font-mono text-[var(--foreground)]">
+                                    {formatRupiah(effectiveCcAvailableLimit)}
+                                  </strong>{" "}
+                                  dari{" "}
+                                  {formatCompactRupiah(selectedExpenseWallet.creditLimit ?? 0)}
+                                </span>
+                                {selectedCcCard && selectedCcCard.installmentLimitUsed > 0 && (
+                                  <span className="text-[11px] font-semibold text-[var(--highlight-text)]">
+                                    Terkunci cicilan:{" "}
+                                    {formatCompactRupiah(selectedCcCard.installmentLimitUsed)}
+                                  </span>
+                                )}
                               </div>
-
-                              <div className="w-full sm:w-36">
-                                <label htmlFor={`split-amt-${s.keyId}`} className="sr-only">
-                                  Nominal Pecahan {idx + 1}
-                                </label>
-                                <input
-                                  id={`split-amt-${s.keyId}`}
-                                  type="text"
-                                  inputMode="numeric"
-                                  placeholder="Nominal"
-                                  value={s.amountInput}
-                                  onChange={(e) => {
-                                    const next = [...splits];
-                                    next[idx]!.amountInput = formatDigitsInput(e.target.value);
-                                    setSplits(next);
-                                  }}
-                                  className="tabular-nums w-full rounded-[10px] bg-[#f8f9fa] dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 px-3 py-2 text-xs font-bold text-neutral-800 dark:text-neutral-200 focus:outline-none focus:border-[var(--primary)]"
-                                />
-                              </div>
-
-                              <div className="flex-1 min-w-[120px]">
-                                <label htmlFor={`split-note-${s.keyId}`} className="sr-only">
-                                  Catatan Pecahan {idx + 1}
-                                </label>
-                                <input
-                                  id={`split-note-${s.keyId}`}
-                                  type="text"
-                                  placeholder="Catatan struk"
-                                  value={s.note}
-                                  onChange={(e) => {
-                                    const next = [...splits];
-                                    next[idx]!.note = e.target.value;
-                                    setSplits(next);
-                                  }}
-                                  className="w-full rounded-[10px] bg-[#f8f9fa] dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 px-3 py-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200 focus:outline-none focus:border-[var(--primary)]"
-                                />
-                              </div>
-
-                              {splits.length > 2 && (
-                                <button
-                                  type="button"
-                                  onClick={() => setSplits(splits.filter((_, i) => i !== idx))}
-                                  aria-label={`Hapus pecahan ${idx + 1}`}
-                                  className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] text-[var(--destructive)] hover:bg-neutral-100 dark:hover:bg-neutral-800"
-                                >
-                                  <TrashIcon className="w-4 h-4" />
-                                </button>
-                              )}
-                            </div>
-                          ))}
-
-                          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setSplits([
-                                  ...splits,
-                                  {
-                                    keyId: `split-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                                    category: expenseCategories[0]?.name ?? "Lainnya",
-                                    amountInput: "",
-                                    note: "",
-                                  },
-                                ])
-                              }
-                              className="inline-flex items-center px-2 py-1 text-xs font-bold text-[var(--primary)] hover:underline"
-                            >
-                              + Tambah Kategori Struk
-                            </button>
-
-                            {splitDelta > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const next = [...splits];
-                                  const lastIdx = next.length - 1;
-                                  const currentVal = parsePositiveInt(next[lastIdx]!.amountInput);
-                                  next[lastIdx]!.amountInput = (
-                                    currentVal + splitDelta
-                                  ).toLocaleString("id-ID");
-                                  setSplits(next);
-                                }}
-                                className="inline-flex items-center px-2 py-1 text-xs font-bold text-[var(--highlight)] hover:underline"
-                              >
-                                Isi sisa ({formatRupiah(splitDelta)}) ke baris terakhir
-                              </button>
                             )}
                           </div>
                         </div>
                       )}
                     </div>
                   )}
-                </div>
+                </>
               )}
-            </>
-          )}
+            </div>
+          </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {/* Kolom Kanan (5 col): Template Sering, Tanggal (Hari Ini/Kemarin), Catatan, Split Struk */}
+          <div className="lg:col-span-5 space-y-4">
+            {contextualTemplates.length > 0 && (
+              <div className="space-y-1.5">
+                <span className={labelClass}>
+                  {mode === "expense" ? "Template Pengeluaran Sering" : "Template Pemasukan Sering"}
+                </span>
+                <div className="flex gap-2 overflow-x-auto no-scrollbar scroll-fade-x pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0">
+                  {contextualTemplates.map((t) => (
+                    <button
+                      key={`${t.merchant}-${t.suggestedAmount}`}
+                      type="button"
+                      onClick={() => {
+                        selectMode(t.type);
+                        setMerchant(t.merchant);
+                        setAmountInput(t.suggestedAmount.toLocaleString("id-ID"));
+                        setCategory(t.category);
+                        setWalletId(t.walletId);
+                      }}
+                      className="min-h-[40px] shrink-0 inline-flex items-center gap-1.5 rounded-full border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-xs font-medium text-[var(--foreground)] hover:border-[var(--primary)] hover:bg-[var(--card)] transition-all"
+                    >
+                      <span className="font-bold">{t.merchant}</span>
+                      <span className="text-[var(--muted-foreground)]">
+                        · {formatCompactRupiah(t.suggestedAmount)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label htmlFor="tx-date" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor="tx-date" className={labelClass}>
                   Tanggal
                 </label>
                 <div className="flex items-center gap-1">
@@ -1347,23 +1449,19 @@ export function QuickAddSheet({
                     onClick={() => setDate(jakartaToday())}
                     className={`rounded-[8px] px-2.5 py-0.5 text-[11px] font-bold border transition-colors ${
                       date === jakartaToday()
-                        ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]"
-                        : "border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 text-neutral-500 hover:text-neutral-900 dark:hover:text-white"
+                        ? "border-[var(--primary)] bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)]"
+                        : "border-[var(--control-border)] bg-[var(--surface)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                     }`}
                   >
                     Hari Ini
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      const d = new Date();
-                      d.setDate(d.getDate() - 1);
-                      setDate(d.toISOString().slice(0, 10));
-                    }}
+                    onClick={() => setDate(yesterdayIso)}
                     className={`rounded-[8px] px-2.5 py-0.5 text-[11px] font-bold border transition-colors ${
-                      date !== jakartaToday()
-                        ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]"
-                        : "border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 text-neutral-500 hover:text-neutral-900 dark:hover:text-white"
+                      date === yesterdayIso
+                        ? "border-[var(--primary)] bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)]"
+                        : "border-[var(--control-border)] bg-[var(--surface)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                     }`}
                   >
                     Kemarin
@@ -1375,11 +1473,12 @@ export function QuickAddSheet({
                 type="date"
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
-                className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                className={`tabular-nums ${inputClass}`}
               />
             </div>
+
             <div className="space-y-1.5">
-              <label htmlFor="tx-note" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+              <label htmlFor="tx-note" className={labelClass}>
                 Catatan (Opsional)
               </label>
               <input
@@ -1387,87 +1486,183 @@ export function QuickAddSheet({
                 type="text"
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
-                placeholder="Detail tambahan"
-                className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                placeholder="Catatan tambahan"
+                className={inputClass}
               />
             </div>
-          </div>
 
-          {error && (
-            <div
-              role="alert"
-              className="flex items-start gap-2 rounded-[14px] border border-[var(--destructive)] bg-[var(--destructive)]/10 p-3 text-xs text-[var(--destructive)]"
-            >
-              <AlertIcon className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
+            {/* Toggle Pecah Kategori (Split Struk) for expense */}
+            {mode === "expense" && (
+              <div className="space-y-3 rounded-[16px] border border-[var(--border)] bg-[var(--surface)] p-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="inline-flex min-h-[40px] items-center gap-2 text-xs font-bold text-[var(--foreground)] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isSplit}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setIsSplit(checked);
+                        if (checked && splits.length < 2) {
+                          setSplits([
+                            {
+                              keyId: `split-1`,
+                              category,
+                              amountInput: "",
+                              note: "",
+                            },
+                            {
+                              keyId: `split-2`,
+                              category:
+                                expenseCategories.find((c) => c.name !== category)?.name ??
+                                "Belanja",
+                              amountInput: "",
+                              note: "",
+                            },
+                          ]);
+                        }
+                      }}
+                      className="h-4 w-4 rounded accent-[var(--primary)]"
+                    />
+                    Pecah Kategori (Split Struk)
+                  </label>
+                  {isSplit && (
+                    <Badge
+                      tone={splitDelta === 0 ? "soft" : splitDelta > 0 ? "highlight" : "danger"}
+                    >
+                      {splitDelta === 0
+                        ? "Total Pas"
+                        : splitDelta > 0
+                          ? `Sisa: ${formatRupiah(splitDelta)}`
+                          : `Kelebihan: ${formatRupiah(Math.abs(splitDelta))}`}
+                    </Badge>
+                  )}
+                </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
-            <div className="flex flex-wrap gap-2">
-              {editingTx && !confirmDelete && (
-                <button
-                  type="button"
-                  onClick={() => setConfirmDelete(true)}
-                  className="inline-flex min-h-[44px] items-center gap-1.5 px-4 py-2.5 rounded-[14px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs font-bold text-[var(--destructive)] hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-all"
-                >
-                  <TrashIcon className="w-4 h-4" />
-                  <span>Hapus</span>
-                </button>
-              )}
-              {editingTx && confirmDelete && (
-                <button
-                  type="button"
-                  disabled={deleteMutation.isPending}
-                  onClick={() => deleteMutation.mutate()}
-                  className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] bg-[var(--destructive)] text-[var(--destructive-foreground)] text-xs font-bold hover:opacity-90 active:scale-95 transition-all"
-                >
-                  {deleteMutation.isPending ? "Menghapus..." : "Konfirmasi Hapus"}
-                </button>
-              )}
-              {editingTx &&
-                editingTx.walletType === "credit_card" &&
-                editingTx.type === "expense" &&
-                !editingTx.isConvertedToInstallment &&
-                onRequestSplitPay && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onClose();
-                      onRequestSplitPay(editingTx);
-                    }}
-                    className="inline-flex min-h-[44px] items-center gap-1.5 px-4 py-2.5 rounded-[14px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs font-bold text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-all"
-                  >
-                    <SplitPayIcon className="w-4 h-4" />
-                    <span>Ubah Jadi Cicilan</span>
-                  </button>
+                {isSplit && (
+                  <div className="space-y-2.5 pt-1">
+                    {splits.map((s, idx) => (
+                      <div
+                        key={s.keyId}
+                        className="space-y-2 rounded-[14px] border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-2xs"
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 min-w-0">
+                            <label htmlFor={`split-cat-${s.keyId}`} className="sr-only">
+                              Kategori Pecahan {idx + 1}
+                            </label>
+                            <select
+                              id={`split-cat-${s.keyId}`}
+                              value={s.category}
+                              onChange={(e) => {
+                                const next = [...splits];
+                                next[idx]!.category = e.target.value;
+                                setSplits(next);
+                              }}
+                              className="h-11 w-full rounded-[10px] bg-[var(--surface)] border border-[var(--control-border)] px-3 text-xs font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)]"
+                            >
+                              {expenseCategories.map((cat) => (
+                                <option key={cat.id} value={cat.name}>
+                                  {cat.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          {splits.length > 2 && (
+                            <button
+                              type="button"
+                              onClick={() => setSplits(splits.filter((_, i) => i !== idx))}
+                              aria-label={`Hapus pecahan ${idx + 1}`}
+                              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] text-[var(--destructive)] hover:bg-[var(--surface)]"
+                            >
+                              <TrashIcon className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label htmlFor={`split-amt-${s.keyId}`} className="sr-only">
+                              Nominal Pecahan {idx + 1}
+                            </label>
+                            <input
+                              id={`split-amt-${s.keyId}`}
+                              type="text"
+                              inputMode="numeric"
+                              placeholder="Nominal"
+                              value={s.amountInput}
+                              onChange={(e) => {
+                                const next = [...splits];
+                                next[idx]!.amountInput = formatDigitsInput(e.target.value);
+                                setSplits(next);
+                              }}
+                              className="tabular-nums w-full rounded-[10px] bg-[var(--surface)] border border-[var(--control-border)] px-3 py-2 text-xs font-bold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)]"
+                            />
+                          </div>
+                          <div>
+                            <label htmlFor={`split-note-${s.keyId}`} className="sr-only">
+                              Catatan Pecahan {idx + 1}
+                            </label>
+                            <input
+                              id={`split-note-${s.keyId}`}
+                              type="text"
+                              placeholder="Catatan struk"
+                              value={s.note}
+                              onChange={(e) => {
+                                const next = [...splits];
+                                next[idx]!.note = e.target.value;
+                                setSplits(next);
+                              }}
+                              className="w-full rounded-[10px] bg-[var(--surface)] border border-[var(--control-border)] px-3 py-2 text-xs font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)]"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSplits([
+                            ...splits,
+                            {
+                              keyId: `split-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                              category: expenseCategories[0]?.name ?? "Lainnya",
+                              amountInput: "",
+                              note: "",
+                            },
+                          ])
+                        }
+                        className="inline-flex min-h-[36px] items-center px-2 py-1 text-xs font-bold text-[var(--primary)] hover:underline"
+                      >
+                        + Tambah Kategori Struk
+                      </button>
+
+                      {splitDelta > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = [...splits];
+                            const lastIdx = next.length - 1;
+                            const currentVal = parsePositiveInt(next[lastIdx]!.amountInput);
+                            next[lastIdx]!.amountInput = (
+                              currentVal + splitDelta
+                            ).toLocaleString("id-ID");
+                            setSplits(next);
+                          }}
+                          className="inline-flex min-h-[36px] items-center px-2 py-1 text-xs font-bold text-[var(--highlight-text)] hover:underline"
+                        >
+                          Isi sisa ({formatRupiah(splitDelta)})
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 )}
-            </div>
-
-            <button
-              type="submit"
-              disabled={
-                saveMutation.isPending ||
-                isSavedSuccess ||
-                (mode === "settle" && (!settleTarget || isSettleInsufficient)) ||
-                (mode === "transfer" && isTransferInsufficient) ||
-                isCcLimitExceeded
-              }
-              className="ml-auto min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-            >
-              {isSavedSuccess
-                ? "Tersimpan"
-                : saveMutation.isPending
-                  ? "Menyimpan..."
-                  : mode === "settle"
-                    ? "Konfirmasi Bayar"
-                    : editingTx
-                      ? "Simpan Perubahan"
-                      : "Simpan Transaksi"}
-            </button>
+              </div>
+            )}
           </div>
-        </form>
-      </div>
+        </div>
+      </form>
     </ModalSheet>
   );
 }

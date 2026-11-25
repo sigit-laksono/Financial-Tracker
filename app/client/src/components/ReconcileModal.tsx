@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type WalletDto } from "../lib/api";
 import { formatRupiah, formatSignedDigitsInput, jakartaToday, parseSignedInt } from "../lib/format";
@@ -15,6 +15,7 @@ export function ReconcileModal({
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const formId = useId();
   const [actualInput, setActualInput] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
@@ -72,23 +73,44 @@ export function ReconcileModal({
     <ModalSheet
       open={Boolean(wallet)}
       onClose={onClose}
-      title={wallet ? `Cocokkan Saldo ${wallet.name}` : "Cocokkan Saldo Dompet"}
+      title={wallet ? `Cocokkan Saldo ${wallet.name}` : "Cocokkan Saldo"}
       subtitle="Bandingkan saldo di m-banking dengan aplikasi agar angka pencatatan tetap sinkron tanpa repot."
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Batal
+          </Button>
+          <Button type="submit" form={formId} disabled={mutation.isPending}>
+            {mutation.isPending
+              ? "Menyimpan..."
+              : delta === 0
+                ? "Saldo Sudah Sesuai"
+                : `Sesuaikan (${delta > 0 ? `+${formatRupiah(delta)}` : formatRupiah(delta)})`}
+          </Button>
+        </div>
+      }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 p-3.5 text-sm space-y-2">
-          <div className="flex justify-between items-center">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">Saldo Tercatat di Aplikasi</span>
-            <strong className="tabular-nums text-base font-black text-neutral-900 dark:text-white">{formatRupiah(wallet?.balance ?? 0)}</strong>
+      <form id={formId} onSubmit={handleSubmit} className="space-y-4">
+        <div className="rounded-[16px] border border-dashed border-[var(--border)] bg-[var(--surface)] p-3.5 text-sm space-y-2">
+          <div className="flex justify-between items-center gap-2">
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
+              Saldo Tercatat di Aplikasi
+            </span>
+            <strong className="tabular-nums text-base font-black text-[var(--foreground)]">
+              {formatRupiah(wallet?.balance ?? 0)}
+            </strong>
           </div>
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="rec-actual" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+          <label
+            htmlFor="rec-actual"
+            className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+          >
             Saldo Riil di M-Banking / Dompet Saat Ini (Rp)
           </label>
           <div className="relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
               Rp
             </span>
             <input
@@ -96,13 +118,16 @@ export function ReconcileModal({
               inputMode="text"
               value={actualInput}
               onChange={(e) => setActualInput(formatSignedDigitsInput(e.target.value))}
-              className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-xl font-black text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+              className="tabular-nums w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-3 text-xl font-black text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
             />
           </div>
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="rec-note" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+          <label
+            htmlFor="rec-note"
+            className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+          >
             Keterangan Penyesuaian (Opsional)
           </label>
           <input
@@ -110,19 +135,21 @@ export function ReconcileModal({
             type="text"
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="Contoh: Cek mutasi m-banking pagi ini"
-            className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+            placeholder="Contoh: Cek mutasi m-banking"
+            className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-3 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
           />
         </div>
 
-        <div className="rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 p-3.5 text-sm space-y-1">
-          <div className="flex justify-between items-center">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">Selisih Penyesuaian</span>
-            <strong className="tabular-nums text-base font-black text-neutral-900 dark:text-white">
+        <div className="rounded-[16px] border border-dashed border-[var(--border)] bg-[var(--surface)] p-3.5 text-sm space-y-1">
+          <div className="flex justify-between items-center gap-2">
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
+              Selisih Penyesuaian
+            </span>
+            <strong className="tabular-nums text-base font-black text-[var(--foreground)]">
               {delta > 0 ? `+${formatRupiah(delta)}` : formatRupiah(delta)}
             </strong>
           </div>
-          <p className="text-xs text-neutral-400">
+          <p className="text-xs text-[var(--muted-foreground)]">
             {delta === 0
               ? "Saldo sudah cocok sempurna dengan m-banking."
               : `Terdapat selisih ${formatRupiah(Math.abs(delta))} (${
@@ -140,27 +167,6 @@ export function ReconcileModal({
             <span>{error}</span>
           </div>
         )}
-
-        <div className="flex justify-end gap-2 pt-2 border-t border-neutral-200 dark:border-neutral-700">
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] text-sm font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-          >
-            Batal
-          </button>
-          <button
-            type="submit"
-            disabled={mutation.isPending}
-            className="min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-          >
-            {mutation.isPending
-              ? "Menyimpan..."
-              : delta === 0
-                ? "Saldo Sudah Sesuai"
-                : `Sesuaikan Otomatis (${delta > 0 ? `+${formatRupiah(delta)}` : formatRupiah(delta)})`}
-          </button>
-        </div>
       </form>
     </ModalSheet>
   );

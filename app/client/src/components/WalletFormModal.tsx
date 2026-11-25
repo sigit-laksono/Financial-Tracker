@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
   AccountGroup,
@@ -212,6 +212,7 @@ export function WalletFormModal({
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const formId = useId();
 
   // Core Form State
   const [uiType, setUiType] = useState<WalletUiType>("bank");
@@ -516,14 +517,54 @@ export function WalletFormModal({
   };
 
   const isCreditOrPaylater = uiType === "credit_card" || uiType === "paylater";
+  const inputClass =
+    "w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all";
+  const labelClass =
+    "block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]";
 
   return (
     <ModalSheet
       open={open}
       onClose={onClose}
       title={isEditing ? `Edit Dompet: ${wallet?.name}` : "Tambah Dompet"}
+      footer={
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {isEditing && !confirmDelete ? (
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setError("");
+                setConfirmDelete(true);
+              }}
+              className="text-xs text-[var(--destructive)]"
+            >
+              <TrashIcon className="w-4 h-4" />
+              <span>Hapus</span>
+            </Button>
+          ) : (
+            <span />
+          )}
+
+          <div className="flex items-center gap-2 ml-auto">
+            <Button variant="secondary" onClick={onClose}>
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              form={formId}
+              disabled={saveMutation.isPending || deleteMutation.isPending}
+            >
+              {saveMutation.isPending
+                ? "Menyimpan..."
+                : isEditing
+                  ? "Simpan Perubahan"
+                  : "Tambah Dompet"}
+            </Button>
+          </div>
+        </div>
+      }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form id={formId} onSubmit={handleSubmit} className="space-y-4">
         {error && (
           <div
             role="alert"
@@ -536,31 +577,29 @@ export function WalletFormModal({
 
         {/* 1. TIPE SELECTOR */}
         <div className="relative space-y-1.5" ref={typeRef}>
-          <span className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-            TIPE
-          </span>
+          <span className={labelClass}>TIPE</span>
           <button
             type="button"
             onClick={() => {
               setTypeDropdownOpen((prev) => !prev);
               setProviderDropdownOpen(false);
             }}
-            className={`w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border px-4 py-3 text-sm font-semibold text-neutral-800 dark:text-neutral-100 flex items-center justify-between transition-all ${
+            className={`min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] flex items-center justify-between transition-all ${
               typeDropdownOpen
-                ? "border-[var(--primary)] ring-1 ring-[var(--primary)]/30"
-                : "border-neutral-200 dark:border-neutral-700"
+                ? "border-[var(--primary)] ring-2 ring-[var(--primary)]/20"
+                : "border-[var(--control-border)]"
             }`}
           >
             <span>{WALLET_UI_TYPES.find((t) => t.id === uiType)?.label}</span>
             {typeDropdownOpen ? (
-              <ChevronUpIcon className="text-neutral-500" />
+              <ChevronUpIcon className="text-[var(--muted-foreground)]" />
             ) : (
-              <ChevronDownIcon className="text-neutral-500" />
+              <ChevronDownIcon className="text-[var(--muted-foreground)]" />
             )}
           </button>
 
           {typeDropdownOpen && (
-            <div className="absolute left-0 right-0 top-full z-40 mt-1.5 rounded-[18px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-2xl p-1.5 space-y-1">
+            <div className="absolute left-0 right-0 top-full z-40 mt-1.5 rounded-[18px] border border-[var(--control-border)] bg-[var(--card)] shadow-2xl p-1.5 space-y-1">
               {WALLET_UI_TYPES.map((t) => {
                 const isSelected = uiType === t.id;
                 return (
@@ -570,13 +609,13 @@ export function WalletFormModal({
                     onClick={() => handleSelectType(t.id)}
                     className={`w-full px-4 py-2.5 rounded-[12px] text-sm flex items-center justify-between transition-colors ${
                       isSelected
-                        ? "bg-[var(--primary)] text-[var(--primary-foreground)] font-bold shadow-sm"
-                        : "text-neutral-700 dark:text-neutral-200 font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                        ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] font-bold shadow-sm"
+                        : "text-[var(--foreground)] font-medium hover:bg-[var(--surface)]"
                     }`}
                   >
                     <span>{t.label}</span>
                     {isSelected && (
-                      <CheckIcon className="w-4 h-4 text-[var(--primary-foreground)]" />
+                      <CheckIcon className="w-4 h-4 text-[var(--primary-solid-foreground)]" />
                     )}
                   </button>
                 );
@@ -588,7 +627,7 @@ export function WalletFormModal({
         {/* 2. PENYEDIA DROPDOWN (Hidden for Cash/Tunai) */}
         {uiType !== "cash" && (
           <div className="relative space-y-1.5" ref={providerRef}>
-            <span className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+            <span className={labelClass}>
               {uiType === "ewallet" ? "PENYEDIA DOMPET" : "PENYEDIA"}
             </span>
             <button
@@ -597,46 +636,44 @@ export function WalletFormModal({
                 setProviderDropdownOpen((prev) => !prev);
                 setTypeDropdownOpen(false);
               }}
-              className={`w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border px-4 py-3 text-sm font-semibold flex items-center justify-between transition-all ${
+              className={`min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border px-4 py-2.5 text-sm font-semibold flex items-center justify-between transition-all ${
                 providerDropdownOpen
-                  ? "border-[var(--primary)] ring-1 ring-[var(--primary)]/30"
-                  : "border-neutral-200 dark:border-neutral-700"
+                  ? "border-[var(--primary)] ring-2 ring-[var(--primary)]/20"
+                  : "border-[var(--control-border)]"
               }`}
             >
               <span
                 className={
                   selectedProviderMeta
-                    ? "text-neutral-800 dark:text-neutral-100"
-                    : "text-neutral-400"
+                    ? "text-[var(--foreground)]"
+                    : "text-[var(--muted-foreground)]"
                 }
               >
-                {selectedProviderMeta?.name ?? "Cari penyedia..."}
+                {selectedProviderMeta?.name ?? "Pilih penyedia..."}
               </span>
               {providerDropdownOpen ? (
-                <ChevronUpIcon className="text-neutral-500" />
+                <ChevronUpIcon className="text-[var(--muted-foreground)]" />
               ) : (
-                <ChevronDownIcon className="text-neutral-500" />
+                <ChevronDownIcon className="text-[var(--muted-foreground)]" />
               )}
             </button>
 
             {providerDropdownOpen && (
-              <div className="absolute left-0 right-0 top-full z-40 mt-1.5 rounded-[18px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-2xl p-2 space-y-2">
-                {/* Search Input with Lime Border */}
-                <div className="flex items-center gap-2 px-3 py-2 border border-[var(--primary)] ring-1 ring-[var(--primary)]/30 rounded-[12px] bg-white dark:bg-neutral-950">
-                  <SearchIcon className="w-4 h-4 text-neutral-400" />
+              <div className="absolute left-0 right-0 top-full z-40 mt-1.5 rounded-[18px] border border-[var(--control-border)] bg-[var(--card)] shadow-2xl p-2 space-y-2">
+                <div className="flex items-center gap-2 px-3 py-2 border border-[var(--primary)] ring-1 ring-[var(--primary)]/30 rounded-[12px] bg-[var(--surface)]">
+                  <SearchIcon className="w-4 h-4 text-[var(--muted-foreground)]" />
                   <input
                     type="text"
                     value={providerSearch}
                     onChange={(e) => setProviderSearch(e.target.value)}
-                    placeholder="Search..."
-                    className="w-full bg-transparent text-sm font-medium outline-none text-neutral-900 dark:text-white placeholder-neutral-400"
+                    placeholder="Cari penyedia..."
+                    className="min-h-0 w-full bg-transparent text-sm font-medium outline-none text-[var(--foreground)] placeholder:text-[var(--muted-foreground)]"
                   />
                 </div>
 
-                {/* Filtered Provider List */}
                 <div className="max-h-[190px] overflow-y-auto space-y-0.5 pr-1">
                   {filteredProviders.length === 0 ? (
-                    <div className="p-3 text-center text-xs text-neutral-400">
+                    <div className="p-3 text-center text-xs text-[var(--muted-foreground)]">
                       Penyedia tidak ditemukan
                     </div>
                   ) : (
@@ -649,14 +686,12 @@ export function WalletFormModal({
                           onClick={() => handleSelectProvider(p)}
                           className={`w-full px-3.5 py-2 rounded-[10px] text-sm text-left flex items-center justify-between transition-colors ${
                             isSelected
-                              ? "bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-white font-bold"
-                              : "text-neutral-700 dark:text-neutral-300 font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800/60"
+                              ? "bg-[var(--soft)] text-[var(--soft-foreground)] font-bold"
+                              : "text-[var(--foreground)] font-medium hover:bg-[var(--surface)]"
                           }`}
                         >
                           <span>{p.name}</span>
-                          {isSelected && (
-                            <CheckIcon className="w-4 h-4 text-neutral-800 dark:text-neutral-200" />
-                          )}
+                          {isSelected && <CheckIcon className="w-4 h-4" />}
                         </button>
                       );
                     })
@@ -669,10 +704,7 @@ export function WalletFormModal({
 
         {/* 3. NAMA DOMPET */}
         <div className="space-y-1.5">
-          <label
-            htmlFor="wallet-name-input"
-            className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
-          >
+          <label htmlFor="wallet-name-input" className={labelClass}>
             NAMA
           </label>
           <input
@@ -683,24 +715,21 @@ export function WalletFormModal({
             onChange={(e) => setName(e.target.value)}
             placeholder={
               uiType === "bank"
-                ? "BCA"
+                ? "Contoh: BCA"
                 : uiType === "ewallet"
-                  ? "cth. GoPay Utama"
+                  ? "Contoh: GoPay"
                   : isCreditOrPaylater
-                    ? "cth. BCA Pribadi"
-                    : "Tunai"
+                    ? "Contoh: BCA Card"
+                    : "Contoh: Tunai"
             }
-            className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+            className={inputClass}
           />
         </div>
 
         {/* 4. NOMOR REKENING (OPSIONAL) - For Bank & E-Wallet */}
         {(uiType === "bank" || uiType === "ewallet") && (
           <div className="space-y-1.5">
-            <label
-              htmlFor="wallet-account-number"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
-            >
+            <label htmlFor="wallet-account-number" className={labelClass}>
               NOMOR REKENING (OPSIONAL)
             </label>
             <input
@@ -708,8 +737,8 @@ export function WalletFormModal({
               type="text"
               value={accountNumber}
               onChange={(e) => setAccountNumber(e.target.value)}
-              placeholder={uiType === "ewallet" ? "Nomor Rekening / No HP" : "Nomor Rekening"}
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+              placeholder={uiType === "ewallet" ? "No. HP / Rekening" : "No. Rekening"}
+              className={`${inputClass} font-mono`}
             />
           </div>
         )}
@@ -717,14 +746,11 @@ export function WalletFormModal({
         {/* 5. SALDO SAAT INI - For Bank, E-Wallet, Tunai */}
         {!isCreditOrPaylater && (
           <div className="space-y-1.5">
-            <label
-              htmlFor="wallet-balance-input"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
-            >
+            <label htmlFor="wallet-balance-input" className={labelClass}>
               SALDO SAAT INI
             </label>
             <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                 Rp
               </span>
               <input
@@ -734,7 +760,7 @@ export function WalletFormModal({
                 value={balance}
                 onChange={(e) => setBalance(formatDigitsInput(e.target.value))}
                 placeholder="0"
-                className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+                className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
               />
             </div>
           </div>
@@ -744,14 +770,11 @@ export function WalletFormModal({
         {isCreditOrPaylater && (
           <>
             <div className="space-y-1.5">
-              <label
-                htmlFor="wallet-credit-limit"
-                className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
-              >
+              <label htmlFor="wallet-credit-limit" className={labelClass}>
                 {uiType === "paylater" ? "LIMIT PAYLATER" : "LIMIT"}
               </label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                   Rp
                 </span>
                 <input
@@ -761,28 +784,25 @@ export function WalletFormModal({
                   value={creditLimit}
                   onChange={(e) => setCreditLimit(formatDigitsInput(e.target.value))}
                   placeholder="0"
-                  className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+                  className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
                 />
               </div>
             </div>
 
             <div className="space-y-1.5">
               <div className="flex items-center gap-1">
-                <label
-                  htmlFor="wallet-pemakaian"
-                  className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
-                >
+                <label htmlFor="wallet-pemakaian" className={labelClass}>
                   PEMAKAIAN
                 </label>
                 <span
                   title="Tagihan atau pemakaian kartu kredit/paylater saat ini"
-                  className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-neutral-400 text-[10px] text-neutral-400 cursor-help"
+                  className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-[var(--control-border)] text-[10px] text-[var(--muted-foreground)] cursor-help"
                 >
                   ?
                 </span>
               </div>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                   Rp
                 </span>
                 <input
@@ -792,17 +812,15 @@ export function WalletFormModal({
                   value={pemakaian}
                   onChange={(e) => setPemakaian(formatDigitsInput(e.target.value))}
                   placeholder="0"
-                  className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+                  className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
                 />
               </div>
             </div>
 
             {/* SIKLUS TAGIHAN & JATUH TEMPO */}
-            <div className="rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[var(--surface)] p-3.5 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                  Siklus Tagihan & Jatuh Tempo
-                </span>
+            <div className="rounded-[16px] border border-[var(--border)] bg-[var(--surface)] p-3.5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className={labelClass}>Siklus Tagihan & Jatuh Tempo</span>
                 <div className="flex items-center rounded-lg bg-[var(--card)] p-0.5 border border-[var(--border)] text-[10px] font-bold">
                   <button
                     type="button"
@@ -812,7 +830,7 @@ export function WalletFormModal({
                     }}
                     className={`px-2 py-1 rounded-[6px] transition-colors ${
                       dueMode === "days"
-                        ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
+                        ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)]"
                         : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                     }`}
                   >
@@ -826,7 +844,7 @@ export function WalletFormModal({
                     }}
                     className={`px-2 py-1 rounded-[6px] transition-colors ${
                       dueMode === "date"
-                        ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
+                        ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)]"
                         : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                     }`}
                   >
@@ -851,7 +869,7 @@ export function WalletFormModal({
                     max={28}
                     value={cutoffDay}
                     onChange={(e) => setCutoffDay(e.target.value)}
-                    className="w-full rounded-[12px] bg-[var(--card)] border border-neutral-200 dark:border-neutral-700 px-3 py-2.5 text-sm font-bold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono text-center"
+                    className="w-full rounded-[12px] bg-[var(--card)] border border-[var(--control-border)] px-3 py-2.5 text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono text-center"
                   />
                   <span className="text-[10px] text-[var(--muted-foreground)] block text-center">
                     Tiap tgl {cutoffDay || 1}
@@ -875,7 +893,7 @@ export function WalletFormModal({
                         max={60}
                         value={daysAfterCutoff}
                         onChange={(e) => setDaysAfterCutoff(e.target.value)}
-                        className="w-full rounded-[12px] bg-[var(--card)] border border-neutral-200 dark:border-neutral-700 px-3 py-2.5 text-sm font-bold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono text-center"
+                        className="w-full rounded-[12px] bg-[var(--card)] border border-[var(--control-border)] px-3 py-2.5 text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono text-center"
                       />
                       <span className="text-[10px] text-[var(--primary)] font-bold block text-center">
                         = Tgl {dueInfo.paymentDay} (
@@ -891,7 +909,7 @@ export function WalletFormModal({
                         max={28}
                         value={paymentDay}
                         onChange={(e) => setPaymentDay(e.target.value)}
-                        className="w-full rounded-[12px] bg-[var(--card)] border border-neutral-200 dark:border-neutral-700 px-3 py-2.5 text-sm font-bold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono text-center"
+                        className="w-full rounded-[12px] bg-[var(--card)] border border-[var(--control-border)] px-3 py-2.5 text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono text-center"
                       />
                       <span className="text-[10px] text-[var(--primary)] font-bold block text-center">
                         ~{dueInfo.daysDiff} hari (
@@ -903,9 +921,9 @@ export function WalletFormModal({
               </div>
 
               {/* Live Simulation Card */}
-              <div className="rounded-[10px] border border-[var(--border)] bg-[var(--card)] p-2.5 text-[11px] text-[var(--muted-foreground)] space-y-1">
+              <div className="rounded-[10px] border border-dashed border-[var(--border)] bg-[var(--card)] p-2.5 text-[11px] text-[var(--muted-foreground)] space-y-1">
                 <div className="flex items-center justify-between font-bold text-[var(--foreground)]">
-                  <span>📅 Simulasi Tagihan:</span>
+                  <span>Simulasi Tagihan:</span>
                   <span className="text-[var(--primary)] font-mono font-bold">
                     Selang {dueInfo.daysDiff} Hari
                   </span>
@@ -925,14 +943,14 @@ export function WalletFormModal({
 
         {/* 7. ACTIVE TOGGLE IF EDITING */}
         {isEditing && (
-          <label className="flex items-center gap-2 cursor-pointer select-none pt-2">
+          <label className="flex items-center gap-2 cursor-pointer select-none pt-1">
             <input
               type="checkbox"
               checked={isActive}
               onChange={(e) => setIsActive(e.target.checked)}
               className="h-4 w-4 rounded accent-[var(--primary)]"
             />
-            <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-200">
+            <span className="text-xs font-semibold text-[var(--foreground)]">
               Dompet Aktif (Tampilkan di pilihan transaksi)
             </span>
           </label>
@@ -944,10 +962,10 @@ export function WalletFormModal({
             <div className="flex items-start gap-2.5 text-[var(--destructive)]">
               <AlertIcon className="w-5 h-5 shrink-0 mt-0.5" />
               <div className="space-y-1">
-                <h4 className="text-sm font-bold text-neutral-900 dark:text-white">
+                <h4 className="text-sm font-bold text-[var(--foreground)]">
                   Hapus Dompet {wallet?.name}?
                 </h4>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                <p className="text-xs text-[var(--muted-foreground)]">
                   {cascadeRequired
                     ? "Dompet ini memiliki riwayat transaksi atau kewajiban aktif. Menghapusnya akan menghapus seluruh data transaksi terkait secara permanen."
                     : "Apakah Anda yakin ingin menghapus dompet ini? Tindakan ini tidak dapat dibatalkan."}
@@ -956,7 +974,7 @@ export function WalletFormModal({
             </div>
 
             {cascadeRequired && (
-              <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-neutral-900 dark:text-white font-semibold bg-white dark:bg-neutral-900 p-2.5 rounded-[10px] border border-neutral-200 dark:border-neutral-700">
+              <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-[var(--foreground)] font-semibold bg-[var(--card)] p-2.5 rounded-[10px] border border-[var(--border)]">
                 <input
                   type="checkbox"
                   checked={cascadeConfirmed}
@@ -991,34 +1009,6 @@ export function WalletFormModal({
                 {deleteMutation.isPending ? "Menghapus..." : "Ya, Hapus Permanen"}
               </Button>
             </div>
-          </div>
-        )}
-
-        {/* 9. SUBMIT BUTTON */}
-        <div className="pt-2">
-          <button
-            type="submit"
-            disabled={saveMutation.isPending || deleteMutation.isPending}
-            className="w-full min-h-[44px] py-3.5 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-          >
-            {saveMutation.isPending ? "Menyimpan..." : isEditing ? "Simpan Perubahan" : "Tambah"}
-          </button>
-        </div>
-
-        {/* 10. EDITING: HAPUS DOMPET BUTTON */}
-        {isEditing && !confirmDelete && (
-          <div className="flex justify-center pt-1">
-            <button
-              type="button"
-              onClick={() => {
-                setError("");
-                setConfirmDelete(true);
-              }}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--destructive)] hover:underline opacity-80 hover:opacity-100 transition-opacity"
-            >
-              <TrashIcon className="w-3.5 h-3.5" />
-              <span>Hapus Dompet Ini</span>
-            </button>
           </div>
         )}
       </form>

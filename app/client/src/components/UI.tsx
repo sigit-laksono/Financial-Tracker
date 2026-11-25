@@ -9,7 +9,7 @@ import {
 } from "react";
 import { AlertIcon, CloseIcon } from "./Icons";
 
-type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "heroOutline";
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "heroOutline";
 
 export function Button({
   variant = "primary",
@@ -20,7 +20,7 @@ export function Button({
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }) {
   const styles: Record<ButtonVariant, string> = {
     primary:
-      "bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 active:opacity-80 disabled:opacity-45",
+      "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] hover:bg-[var(--primary-solid-hover)] active:opacity-85 disabled:opacity-45",
     secondary:
       "bg-[var(--card)] text-[var(--foreground)] border border-[var(--control-border)] hover:bg-[var(--surface)] active:bg-[var(--border)] disabled:opacity-45",
     ghost:
@@ -41,7 +41,7 @@ export function Button({
   );
 }
 
-type BadgeTone = "neutral" | "primary" | "soft" | "highlight" | "danger";
+export type BadgeTone = "neutral" | "primary" | "soft" | "info" | "highlight" | "danger";
 
 export function Badge({
   tone = "neutral",
@@ -54,14 +54,17 @@ export function Badge({
 }) {
   const tones: Record<BadgeTone, string> = {
     neutral: "bg-[var(--surface)] text-[var(--muted-foreground)] border border-[var(--border)]",
-    primary: "bg-[var(--primary)] text-[var(--primary-foreground)]",
-    soft: "bg-[var(--soft)] text-[var(--soft-foreground)]",
-    highlight: "bg-[var(--highlight)] text-[var(--highlight-foreground)]",
-    danger: "bg-[var(--destructive)] text-[var(--destructive-foreground)]",
+    primary: "bg-[var(--primary)]/12 text-[var(--primary)] border border-[var(--primary)]/30",
+    soft: "bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800/70",
+    info: "bg-sky-50 text-sky-800 border border-sky-200 dark:bg-sky-950/60 dark:text-sky-300 dark:border-sky-800/70",
+    highlight:
+      "bg-amber-50 text-amber-900 border border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800/70",
+    danger:
+      "bg-rose-50 text-rose-800 border border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800/70",
   };
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-[10px] px-2 py-0.5 text-xs font-semibold ${tones[tone]} ${className}`}
+      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-[10px] px-2 py-0.5 text-xs font-semibold ${tones[tone]} ${className}`}
     >
       {children}
     </span>
@@ -120,17 +123,23 @@ const FOCUSABLE_SELECTOR = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(", ");
 
+export type ModalSheetSize = "md" | "lg";
+
 export function ModalSheet({
   open,
   onClose,
   title,
   subtitle,
+  size = "md",
+  footer,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   subtitle?: string;
+  size?: ModalSheetSize;
+  footer?: ReactNode;
   children: ReactNode;
 }) {
   const titleId = useId();
@@ -175,18 +184,23 @@ export function ModalSheet({
       target?.focus();
     }, 10);
 
-    const prevOverflow = document.body.style.overflow;
+    const prevBodyOverflow = document.body.style.overflow;
+    const prevHtmlOverflow = document.documentElement.style.overflow;
     document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
 
     return () => {
       window.clearTimeout(focusTimer);
       window.removeEventListener("keydown", handleKey);
-      document.body.style.overflow = prevOverflow;
+      document.body.style.overflow = prevBodyOverflow;
+      document.documentElement.style.overflow = prevHtmlOverflow;
       triggerRef.current?.focus();
     };
   }, [open]);
 
   if (!open) return null;
+
+  const sizeClass = size === "lg" ? "sm:max-w-2xl lg:max-w-[760px]" : "sm:max-w-lg";
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
@@ -203,10 +217,13 @@ export function ModalSheet({
         aria-modal="true"
         aria-labelledby={titleId}
         style={{ boxShadow: "var(--elevation-float)" }}
-        className="relative z-10 w-full max-w-lg max-h-[90dvh] overflow-y-auto rounded-t-[24px] rounded-b-none border border-[var(--border)] bg-[var(--card)] p-5 pb-[calc(24px+env(safe-area-inset-bottom))] sm:rounded-[20px] sm:p-6"
+        className={`relative z-10 flex w-full max-h-[90dvh] flex-col overflow-hidden rounded-t-[24px] rounded-b-none border border-[var(--border)] bg-[var(--card)] sm:my-6 sm:max-h-[85vh] sm:rounded-[20px] ${sizeClass}`}
       >
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div>
+        <div className="flex shrink-0 justify-center pt-2.5 pb-1 sm:hidden" aria-hidden="true">
+          <span className="h-1 w-10 rounded-full bg-[var(--control-border)]/50" />
+        </div>
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--border)] px-5 py-3.5 sm:px-6 sm:py-4">
+          <div className="min-w-0">
             <h2 id={titleId} className="text-lg font-bold text-[var(--foreground)]">
               {title}
             </h2>
@@ -223,7 +240,16 @@ export function ModalSheet({
             <CloseIcon className="w-5 h-5" />
           </button>
         </div>
-        {children}
+        <div
+          className={`flex-1 overflow-y-auto px-5 py-4 sm:px-6 ${footer != null ? "" : "pb-[calc(20px+env(safe-area-inset-bottom))] sm:pb-6"}`}
+        >
+          {children}
+        </div>
+        {footer != null && (
+          <div className="shrink-0 border-t border-[var(--border)] bg-[var(--card)] px-5 py-3.5 pb-[calc(14px+env(safe-area-inset-bottom))] sm:px-6 sm:pb-4">
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -17,16 +17,18 @@ import {
   parsePositiveInt,
   shiftMonth,
 } from "../lib/format";
+import { usePrivacyMode } from "../lib/usePrivacyMode";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
   EditIcon,
+  PlusIcon,
+  SettingsIcon,
   SplitPayIcon,
   TransactionsIcon,
-  TransferIcon,
   TrashIcon,
 } from "../components/Icons";
-import { Badge, Button, Card, ProgressBar, StateView } from "../components/UI";
+import { Badge, Button, Card, ModalSheet, ProgressBar, StateView } from "../components/UI";
 
 export function TransactionsPage({
   data,
@@ -50,6 +52,7 @@ export function TransactionsPage({
   onToast: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const { isMasked } = usePrivacyMode();
   const weeks = useMemo(
     () => buildWeekSlices(data.periodStart, data.periodEnd),
     [data.periodStart, data.periodEnd],
@@ -83,6 +86,17 @@ export function TransactionsPage({
   const [budgetScope, setBudgetScope] = useState<"default" | "override">("default");
   const [budgetError, setBudgetError] = useState("");
   const [confirmDeleteTxId, setConfirmDeleteTxId] = useState<number | null>(null);
+
+  // Mobile Filter Sheet state
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  const [draftWallet, setDraftWallet] = useState(filters.walletFilter);
+  const [draftType, setDraftType] = useState(filters.typeFilter);
+  const [draftCategory, setDraftCategory] = useState(filters.categoryFilter);
+
+  // Desktop View Switcher & Bulk Selection state
+  const [viewMode, setViewMode] = useState<"card" | "table">("card");
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
 
   const gajianPeriod = useMemo(
     () =>
@@ -147,7 +161,7 @@ export function TransactionsPage({
 
   const deleteTxMutation = useMutation({
     mutationFn: (id: number) => api.deleteTransaction(id),
-    onSuccess: async () => {
+    onSuccess: async (_, deletedId) => {
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       await queryClient.invalidateQueries({ queryKey: ["transactions"] });
       await queryClient.invalidateQueries({ queryKey: ["debts"] });
@@ -155,10 +169,49 @@ export function TransactionsPage({
       await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
       await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
       setConfirmDeleteTxId(null);
+      setSelectedIds((prev) => prev.filter((id) => id !== deletedId));
       onToast("Transaksi dihapus");
     },
     onError: (err) => {
       onToast(err instanceof ApiError ? err.message : "Gagal menghapus transaksi.");
+    },
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: number[]) => {
+      let successCount = 0;
+      let failedCount = 0;
+      for (const id of ids) {
+        try {
+          await api.deleteTransaction(id);
+          successCount += 1;
+        } catch {
+          failedCount += 1;
+        }
+      }
+      if (successCount === 0 && failedCount > 0) {
+        throw new Error("Gagal menghapus transaksi terpilih.");
+      }
+      return { successCount, failedCount };
+    },
+    onSuccess: async ({ successCount, failedCount }) => {
+      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      await queryClient.invalidateQueries({ queryKey: ["debts"] });
+      await queryClient.invalidateQueries({ queryKey: ["wallets"] });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+      await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
+      setBulkDeleteConfirmOpen(false);
+      setSelectedIds([]);
+      onToast(
+        failedCount > 0
+          ? `${successCount} transaksi dihapus, ${failedCount} gagal`
+          : `${successCount} transaksi berhasil dihapus`,
+      );
+    },
+    onError: (err) => {
+      setBulkDeleteConfirmOpen(false);
+      onToast(err instanceof Error ? err.message : "Gagal menghapus transaksi massal.");
     },
   });
 
@@ -275,6 +328,11 @@ export function TransactionsPage({
     [data.budgets],
   );
 
+  const activeModalFilterCount =
+    (filters.walletFilter !== "all" ? 1 : 0) +
+    (filters.typeFilter !== "all" ? 1 : 0) +
+    (filters.categoryFilter !== "all" ? 1 : 0);
+
   const hasActiveFilter =
     resolvedWeekChoice !== "all" ||
     filters.walletFilter !== "all" ||
@@ -293,13 +351,45 @@ export function TransactionsPage({
     });
   };
 
+  const openFilterSheet = () => {
+    setDraftWallet(filters.walletFilter);
+    setDraftType(filters.typeFilter);
+    setDraftCategory(filters.categoryFilter);
+    setFilterSheetOpen(true);
+  };
+
+  const visibleTxIds = useMemo(
+    () => filteredTransactions.map((t) => t.id),
+    [filteredTransactions],
+  );
+  const selectedVisibleCount = useMemo(
+    () => selectedIds.filter((id) => visibleTxIds.includes(id)).length,
+    [selectedIds, visibleTxIds],
+  );
+  const allVisibleSelected =
+    visibleTxIds.length > 0 && selectedVisibleCount === visibleTxIds.length;
+
+  const toggleSelectAll = () => {
+    if (allVisibleSelected) {
+      setSelectedIds((prev) => prev.filter((id) => !visibleTxIds.includes(id)));
+    } else {
+      setSelectedIds((prev) => [...new Set([...prev, ...visibleTxIds])]);
+    }
+  };
+
+  const toggleSelectOne = (id: number) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
+    );
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Transaksi & Anggaran</h1>
+          <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Transaksi</h1>
           <p className="text-sm text-[var(--muted-foreground)]">
-            Filter mingguan, grafik arus kas harian, dan batas anggaran kategori.
+            Filter mingguan, grafik arus kas harian, dan kontrol batas kategori.
           </p>
         </div>
 
@@ -326,72 +416,99 @@ export function TransactionsPage({
             </button>
           </div>
 
-          <Button onClick={onAddTransaction}>Catat Transaksi</Button>
+          <Button onClick={onAddTransaction} className="gap-1.5">
+            <PlusIcon className="w-4 h-4" />
+            <span>Catat Transaksi</span>
+          </Button>
         </div>
       </div>
 
-      {/* Week Slice Pills */}
-      <fieldset className="flex flex-wrap gap-2 border-0 m-0 p-0">
-        <legend className="sr-only">Filter minggu</legend>
+      {/* Week Slice Controls: 1-Row (Semua + Dropdown Minggu) */}
+      <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={() => onFiltersChange({ ...filters, weekChoice: "all" })}
-          className={`min-h-[42px] inline-flex items-center gap-1.5 rounded-[12px] border px-3.5 text-xs font-bold sm:text-sm transition-all ${
+          aria-pressed={resolvedWeekChoice === "all"}
+          className={`h-11 shrink-0 inline-flex items-center gap-1.5 rounded-[12px] border px-3.5 text-xs font-bold sm:text-sm whitespace-nowrap transition-all ${
             resolvedWeekChoice === "all"
-              ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs"
-              : "border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+              ? "border-[var(--primary)] bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-xs"
+              : "border-[var(--control-border)] bg-[var(--card)] text-[var(--foreground)] hover:bg-[var(--surface)]"
           }`}
         >
           <span>Semua</span>
           <span
             className={`tabular-nums text-xs font-semibold ${
-              resolvedWeekChoice === "all" ? "opacity-90" : "text-neutral-400"
+              resolvedWeekChoice === "all" ? "opacity-90" : "text-[var(--muted-foreground)]"
             }`}
           >
             ({data.transactions.length})
           </span>
         </button>
-        {weeks.map((w) => {
-          const isSelected = resolvedWeekChoice === w.index;
-          const isRunning = currentRunningWeekIndex === w.index;
-          const count = weekCounts[w.index] ?? 0;
-          return (
-            <button
-              key={w.index}
-              type="button"
-              onClick={() => onFiltersChange({ ...filters, weekChoice: w.index })}
-              className={`min-h-[42px] inline-flex items-center gap-1.5 rounded-[12px] border px-3.5 text-xs font-bold sm:text-sm transition-all ${
-                isSelected
-                  ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs"
-                  : "border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-              }`}
-            >
-              <span>{w.label}</span>
-              <span
-                className={`tabular-nums text-xs font-semibold ${
-                  isSelected ? "opacity-90" : "text-neutral-400"
-                }`}
-              >
-                ({count})
-              </span>
-              {isRunning && (
-                <span
-                  title="Minggu berjalan"
-                  className={`h-2 w-2 rounded-full ${isSelected ? "bg-white" : "bg-[var(--primary)]"}`}
-                />
-              )}
-            </button>
-          );
-        })}
-      </fieldset>
 
-      {/* Filter Controls (Sticky on Mobile) */}
+        <select
+          aria-label="Pilih minggu"
+          value={resolvedWeekChoice === "all" ? "" : String(resolvedWeekChoice)}
+          onChange={(e) => {
+            const val = e.target.value;
+            onFiltersChange({
+              ...filters,
+              weekChoice: val === "" ? "all" : Number(val),
+            });
+          }}
+          className={`h-11 min-w-0 flex-1 sm:flex-none sm:min-w-[220px] rounded-[12px] border px-3.5 text-xs font-bold sm:text-sm transition-all focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20 ${
+            resolvedWeekChoice !== "all"
+              ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
+              : "border-[var(--control-border)] bg-[var(--card)] text-[var(--foreground)] hover:bg-[var(--surface)]"
+          }`}
+        >
+          <option value="">Pilih Minggu...</option>
+          {weeks.map((w) => {
+            const isRunning = currentRunningWeekIndex === w.index;
+            const count = weekCounts[w.index] ?? 0;
+            return (
+              <option key={w.index} value={String(w.index)}>
+                {w.label} ({count}){isRunning ? " · Berjalan" : ""}
+              </option>
+            );
+          })}
+        </select>
+      </div>
+
+      {/* Filter Controls: Compact 1-Row Sticky on Mobile (< 1024px) & 4-Col Bar on Desktop (>= 1024px) */}
       <div className="sticky top-0 z-20 -mx-1 px-1 py-1 bg-[var(--background)]/90 backdrop-blur-md transition-all">
-        <div className="rounded-[18px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-4 sm:p-5 shadow-xs grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {/* Mobile Sticky Bar (< 1024px) */}
+        <div className="flex lg:hidden items-center gap-2 rounded-[16px] border border-[var(--border)] bg-[var(--card)] p-2 shadow-xs max-h-[60px]">
+          <input
+            id="flt-search-mobile"
+            type="search"
+            aria-label="Cari merchant atau catatan"
+            value={filters.search}
+            onChange={(e) => onFiltersChange({ ...filters, search: e.target.value })}
+            placeholder="Cari merchant/catatan..."
+            className="h-11 min-w-0 flex-1 rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-sm font-semibold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
+          />
+          <Button
+            variant="secondary"
+            onClick={openFilterSheet}
+            aria-label="Buka filter transaksi"
+            className="h-11 shrink-0 rounded-[12px] px-3.5 text-xs font-bold gap-1.5"
+          >
+            <SettingsIcon className="w-4 h-4" />
+            <span>Filter</span>
+            {activeModalFilterCount > 0 && (
+              <Badge tone="primary" className="px-1.5 py-0 text-[11px]">
+                {activeModalFilterCount}
+              </Badge>
+            )}
+          </Button>
+        </div>
+
+        {/* Desktop 4-Column Bar (>= 1024px) */}
+        <div className="hidden lg:grid lg:grid-cols-4 gap-3 rounded-[18px] border border-[var(--border)] bg-[var(--card)] p-4 shadow-xs">
           <div className="space-y-1.5">
             <label
               htmlFor="flt-search"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
             >
               Cari Merchant / Catatan
             </label>
@@ -401,14 +518,14 @@ export function TransactionsPage({
               value={filters.search}
               onChange={(e) => onFiltersChange({ ...filters, search: e.target.value })}
               placeholder="Ketik nama toko..."
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className="h-11 w-full rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-sm font-semibold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             />
           </div>
 
           <div className="space-y-1.5">
             <label
               htmlFor="flt-wallet"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
             >
               Dompet
             </label>
@@ -416,7 +533,7 @@ export function TransactionsPage({
               id="flt-wallet"
               value={filters.walletFilter}
               onChange={(e) => onFiltersChange({ ...filters, walletFilter: e.target.value })}
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className="h-11 w-full rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             >
               <option value="all">Semua Dompet</option>
               {data.wallets.map((w) => (
@@ -430,7 +547,7 @@ export function TransactionsPage({
           <div className="space-y-1.5">
             <label
               htmlFor="flt-type"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
             >
               Tipe Transaksi
             </label>
@@ -438,7 +555,7 @@ export function TransactionsPage({
               id="flt-type"
               value={filters.typeFilter}
               onChange={(e) => onFiltersChange({ ...filters, typeFilter: e.target.value })}
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className="h-11 w-full rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             >
               <option value="all">Semua Tipe</option>
               <option value="expense">Pengeluaran</option>
@@ -452,7 +569,7 @@ export function TransactionsPage({
           <div className="space-y-1.5">
             <label
               htmlFor="flt-cat"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
             >
               Kategori
             </label>
@@ -460,7 +577,7 @@ export function TransactionsPage({
               id="flt-cat"
               value={filters.categoryFilter}
               onChange={(e) => onFiltersChange({ ...filters, categoryFilter: e.target.value })}
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-2.5 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className="h-11 w-full rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             >
               <option value="all">Semua Kategori</option>
               {filterCategoryOptions.map((catName) => (
@@ -477,9 +594,27 @@ export function TransactionsPage({
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <Card className="space-y-3 lg:col-span-7">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-base font-bold text-[var(--foreground)]">
-              Bagaimana arus kas harian pada periode ini?
-            </h2>
+            <div>
+              <h2 className="text-base font-bold text-[var(--foreground)]">
+                Bagaimana arus kas harian pada periode ini?
+              </h2>
+              <div className="mt-1 flex flex-wrap items-center gap-4 text-xs font-semibold text-[var(--muted-foreground)]">
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className="h-2.5 w-2.5 rounded-full bg-[var(--chart-income)]"
+                    aria-hidden="true"
+                  />
+                  Pemasukan
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className="h-2.5 w-2.5 rounded-full bg-[var(--chart-expense)]"
+                    aria-hidden="true"
+                  />
+                  Pengeluaran
+                </span>
+              </div>
+            </div>
             <label className="inline-flex min-h-[44px] items-center gap-2 text-xs font-semibold text-[var(--foreground)]">
               <input
                 type="checkbox"
@@ -494,14 +629,22 @@ export function TransactionsPage({
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                <XAxis dataKey="label" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
+                <XAxis
+                  dataKey="label"
+                  interval={Math.max(0, Math.ceil(chartData.length / 7) - 1)}
+                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                />
                 <YAxis
-                  tickFormatter={(v: number) => formatCompactRupiah(v).replace("Rp", "")}
+                  tickFormatter={(v: number) =>
+                    isMasked
+                      ? "•••"
+                      : formatCompactRupiah(v).replace("Rp\u00A0", "").replace("Rp", "")
+                  }
                   tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
                 />
                 <Tooltip
                   formatter={(value: number, name: string) => [
-                    formatRupiah(value),
+                    formatRupiah(value, isMasked),
                     name === "income" ? "Pemasukan" : "Pengeluaran",
                   ]}
                   labelFormatter={(label, payload) => {
@@ -525,7 +668,7 @@ export function TransactionsPage({
 
         <Card className="space-y-3 lg:col-span-5">
           <h2 className="text-base font-bold text-[var(--foreground)]">
-            Pengeluaran per Kategori & Budget
+            Pengeluaran per Kategori & Anggaran
           </h2>
           {data.categoryTotals.length === 0 ? (
             <p className="text-sm text-[var(--muted-foreground)]">
@@ -549,7 +692,7 @@ export function TransactionsPage({
                         {budget?.isOverride && <Badge tone="soft">Khusus {budget.period}</Badge>}
                       </div>
                       <span className="tabular-nums font-bold text-[var(--foreground)]">
-                        {formatRupiah(cat.total)}
+                        {formatRupiah(cat.total, isMasked)}
                       </span>
                     </div>
 
@@ -564,11 +707,12 @@ export function TransactionsPage({
                                 ? "highlight"
                                 : "primary"
                           }
-                          label={`Budget ${cat.category}`}
+                          label={`Anggaran ${cat.category}`}
                         />
                         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted-foreground)]">
                           <span className="tabular-nums">
-                            Limit {formatRupiah(budget.limitAmount)} ({budget.percentUsed}%)
+                            Limit {formatRupiah(budget.limitAmount, isMasked)} ({budget.percentUsed}
+                            %)
                           </span>
                           <div className="flex items-center gap-2">
                             {budget.isOverride && (
@@ -606,7 +750,7 @@ export function TransactionsPage({
                         }}
                         className="inline-flex min-h-[44px] items-center px-1 text-xs font-semibold text-[var(--primary)] hover:underline"
                       >
-                        Atur Batas Budget
+                        Atur Batas Anggaran
                       </button>
                     )}
 
@@ -748,178 +892,469 @@ export function TransactionsPage({
         />
       ) : (
         <div className="space-y-4">
-          {groupedByDay.map(([day, rows]) => (
-            <Card key={day} className="p-0 overflow-hidden">
-              <div className="border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
-                {formatDayHeader(day)}
-              </div>
-              <div className="divide-y divide-[var(--border)]">
-                {rows.map((tx) => {
-                  const isEditable =
-                    tx.type === "expense" || tx.type === "income" || tx.type === "transfer";
-                  const isDeletableDirect = !isEditable;
-                  const isConfirmingDelete = confirmDeleteTxId === tx.id;
-                  const canSplitPay =
-                    tx.walletType === "credit_card" &&
-                    tx.type === "expense" &&
-                    !tx.isConvertedToInstallment;
-                  return (
-                    <div
-                      key={tx.id}
-                      className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
-                    >
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="truncate text-sm font-bold text-[var(--foreground)]">
-                            {tx.type === "transfer" && tx.toWalletName
-                              ? `${tx.walletName} → ${tx.toWalletName}`
-                              : tx.merchant}
-                          </span>
-                          <Badge tone="neutral">{tx.walletName}</Badge>
-                          {tx.type === "transfer" && tx.toWalletName && (
-                            <Badge tone="primary">
-                              <TransferIcon className="w-3 h-3" />
-                              Transfer
-                            </Badge>
-                          )}
-                          {tx.type === "settlement" && (
-                            <Badge tone="soft">Pembayaran Tagihan</Badge>
-                          )}
-                          {tx.type === "adjustment" && <Badge tone="neutral">Penyesuaian</Badge>}
-                          {tx.isUnbilledCc && (
-                            <Badge tone="highlight">Tagihan Berjalan (Belum Dicetak)</Badge>
-                          )}
-                          {tx.isConvertedToInstallment && (
-                            <Badge tone="soft">Sudah Jadi Cicilan</Badge>
-                          )}
-                          {tx.splits && tx.splits.length > 0 && (
-                            <Badge tone="primary">Split ({tx.splits.length})</Badge>
-                          )}
-                        </div>
+          {/* Desktop View Switcher & Bulk Action Bar */}
+          <div className="hidden md:flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {selectedIds.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-[14px] border border-[var(--primary)]/30 bg-[var(--primary)]/10 px-3 py-1.5">
+                  <span className="text-xs font-bold text-[var(--foreground)] tabular-nums">
+                    {selectedIds.length} transaksi dipilih
+                  </span>
+                  <Button
+                    variant="danger"
+                    onClick={() => setBulkDeleteConfirmOpen(true)}
+                    disabled={bulkDeleteMutation.isPending}
+                    className="min-h-[36px] px-3 py-1 text-xs"
+                  >
+                    <TrashIcon className="w-3.5 h-3.5" />
+                    <span>Hapus Terpilih ({selectedIds.length})</span>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setSelectedIds([])}
+                    className="min-h-[36px] px-2.5 py-1 text-xs"
+                  >
+                    Batal Pilih
+                  </Button>
+                </div>
+              ) : (
+                <span className="text-xs font-semibold text-[var(--muted-foreground)] tabular-nums">
+                  Menampilkan {filteredTransactions.length} dari {totalFilteredCount} transaksi
+                </span>
+              )}
+            </div>
 
-                        <p className="text-xs text-[var(--muted-foreground)]">
-                          {tx.type === "transfer" ? (
-                            <>
-                              {tx.merchant &&
-                              tx.merchant !== `Transfer ke ${tx.toWalletName}` &&
-                              tx.merchant !== `${tx.walletName} → ${tx.toWalletName}`
-                                ? `${tx.merchant} · `
-                                : ""}
-                              {tx.linkedFeeTransaction
-                                ? `Biaya Admin ${formatRupiah(tx.linkedFeeTransaction.amount)}`
-                                : "Bebas Biaya Admin"}
-                              {tx.note ? ` · ${tx.note}` : ""}
-                            </>
-                          ) : (
-                            <>
-                              {tx.category}
-                              {tx.note ? ` · ${tx.note}` : ""}
-                            </>
-                          )}
-                        </p>
+            <fieldset className="inline-flex items-center rounded-[12px] border border-[var(--control-border)] bg-[var(--card)] p-1 m-0">
+              <legend className="sr-only">Mode tampilan daftar transaksi</legend>
+              <button
+                type="button"
+                onClick={() => setViewMode("card")}
+                aria-pressed={viewMode === "card"}
+                className={`min-h-[36px] rounded-[8px] px-3 text-xs font-bold transition-colors ${
+                  viewMode === "card"
+                    ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)]"
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                }`}
+              >
+                Kartu
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("table")}
+                aria-pressed={viewMode === "table"}
+                className={`min-h-[36px] rounded-[8px] px-3 text-xs font-bold transition-colors ${
+                  viewMode === "table"
+                    ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)]"
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                }`}
+              >
+                Tabel
+              </button>
+            </fieldset>
+          </div>
 
-                        {/* Split Category Badges */}
-                        {tx.splits && tx.splits.length > 0 && (
-                          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                            {tx.splits.map((s) => (
-                              <span
-                                key={s.id ?? `${s.category}-${s.amount}-${s.note ?? ""}`}
-                                className="inline-flex items-center rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-0.5 text-[11px] text-[var(--muted-foreground)]"
-                              >
-                                <strong className="text-[var(--foreground)] mr-1">
-                                  {s.category}:
-                                </strong>
-                                {formatRupiah(s.amount)}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+          {/* Desktop Compact Table Mode */}
+          {viewMode === "table" && (
+            <div className="hidden md:block">
+              <Card className="p-0 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-[var(--border)] bg-[var(--surface)] text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
+                        <th className="w-10 px-3 py-3 text-center">
+                          <input
+                            type="checkbox"
+                            aria-label="Pilih semua transaksi yang tampil"
+                            checked={allVisibleSelected}
+                            onChange={toggleSelectAll}
+                            className="h-4 w-4 accent-[var(--primary)]"
+                          />
+                        </th>
+                        <th className="px-3 py-3 whitespace-nowrap">Tanggal</th>
+                        <th className="px-3 py-3">Merchant / Catatan</th>
+                        <th className="px-3 py-3 whitespace-nowrap">Kategori</th>
+                        <th className="px-3 py-3 whitespace-nowrap">Dompet</th>
+                        <th className="px-3 py-3 whitespace-nowrap">Status</th>
+                        <th className="px-3 py-3 text-right whitespace-nowrap">Nominal</th>
+                        <th className="px-3 py-3 text-right whitespace-nowrap">Aksi Cepat</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[var(--border)]">
+                      {filteredTransactions.map((tx) => {
+                        const isEditable =
+                          tx.type === "expense" || tx.type === "income" || tx.type === "transfer";
+                        const canSplitPay =
+                          tx.walletType === "credit_card" &&
+                          tx.type === "expense" &&
+                          !tx.isConvertedToInstallment;
+                        const isChecked = selectedIds.includes(tx.id);
+                        const titleText =
+                          tx.type === "transfer" && tx.toWalletName
+                            ? `${tx.walletName} → ${tx.toWalletName}`
+                            : tx.merchant;
+                        const amountDisplay = isMasked
+                          ? formatRupiah(tx.amount, true)
+                          : tx.type === "income"
+                            ? `+${formatRupiah(tx.amount)}`
+                            : tx.type === "adjustment"
+                              ? tx.amount >= 0
+                                ? `+${formatRupiah(tx.amount)}`
+                                : formatRupiah(tx.amount)
+                              : formatRupiah(tx.amount);
+                        const amountColor = isMasked
+                          ? "text-[var(--foreground)]"
+                          : tx.type === "income"
+                            ? "text-[var(--chart-income)]"
+                            : "text-[var(--foreground)]";
 
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="flex flex-col items-end">
-                          <span
-                            className={`tabular-nums text-sm font-bold ${
-                              tx.type === "income"
-                                ? "text-[var(--chart-income)]"
-                                : tx.type === "transfer"
-                                  ? "text-[var(--foreground)]"
-                                  : "text-[var(--foreground)]"
+                        return (
+                          <tr
+                            key={tx.id}
+                            className={`transition-colors hover:bg-[var(--surface)]/60 ${
+                              isChecked ? "bg-[var(--primary)]/5" : ""
                             }`}
                           >
-                            {tx.type === "income"
-                              ? `+${formatRupiah(tx.amount)}`
-                              : tx.type === "adjustment"
-                                ? tx.amount >= 0
-                                  ? `+${formatRupiah(tx.amount)}`
-                                  : formatRupiah(tx.amount)
-                                : formatRupiah(tx.amount)}
-                          </span>
-                          {tx.type === "transfer" && tx.linkedFeeTransaction && (
-                            <span className="tabular-nums text-[11px] text-[var(--muted-foreground)]">
-                              (+Admin {formatRupiah(tx.linkedFeeTransaction.amount)})
-                            </span>
+                            <td className="px-3 py-2.5 text-center">
+                              <input
+                                type="checkbox"
+                                aria-label={`Pilih transaksi ${titleText}`}
+                                checked={isChecked}
+                                onChange={() => toggleSelectOne(tx.id)}
+                                className="h-4 w-4 accent-[var(--primary)]"
+                              />
+                            </td>
+                            <td className="px-3 py-2.5 whitespace-nowrap text-xs font-medium text-[var(--muted-foreground)] tabular-nums">
+                              {formatShortDate(tx.transactionDate)}
+                            </td>
+                            <td className="px-3 py-2.5 max-w-[280px]">
+                              <div className="font-bold text-[var(--foreground)] truncate">
+                                {titleText}
+                              </div>
+                              {tx.note && (
+                                <p className="text-xs text-[var(--muted-foreground)] truncate">
+                                  {tx.note}
+                                </p>
+                              )}
+                              {tx.splits && tx.splits.length > 0 && (
+                                <p className="text-[11px] text-[var(--muted-foreground)] truncate">
+                                  Split: {tx.splits.map((s) => s.category).join(", ")}
+                                </p>
+                              )}
+                            </td>
+                            <td className="px-3 py-2.5 whitespace-nowrap text-xs font-semibold text-[var(--foreground)]">
+                              {tx.type === "transfer" ? "Transfer" : tx.category}
+                            </td>
+                            <td className="px-3 py-2.5 whitespace-nowrap">
+                              <Badge tone="neutral">{tx.walletName}</Badge>
+                            </td>
+                            <td className="px-3 py-2.5 whitespace-nowrap">
+                              <div className="flex flex-wrap items-center gap-1">
+                                {tx.type === "transfer" && tx.toWalletName && (
+                                  <Badge tone="primary" className="whitespace-nowrap">
+                                    Transfer
+                                  </Badge>
+                                )}
+                                {tx.type === "settlement" && (
+                                  <Badge tone="soft" className="whitespace-nowrap">
+                                    Pembayaran Tagihan
+                                  </Badge>
+                                )}
+                                {tx.type === "adjustment" && (
+                                  <Badge tone="neutral" className="whitespace-nowrap">
+                                    Penyesuaian
+                                  </Badge>
+                                )}
+                                {tx.isUnbilledCc && (
+                                  <Badge tone="highlight" className="whitespace-nowrap">
+                                    Belum Dicetak
+                                  </Badge>
+                                )}
+                                {tx.isConvertedToInstallment && (
+                                  <Badge tone="soft" className="whitespace-nowrap">
+                                    Sudah Jadi Cicilan
+                                  </Badge>
+                                )}
+                                {tx.splits && tx.splits.length > 0 && (
+                                  <Badge tone="primary" className="whitespace-nowrap">
+                                    Split ({tx.splits.length})
+                                  </Badge>
+                                )}
+                                {tx.type !== "transfer" &&
+                                  tx.type !== "settlement" &&
+                                  tx.type !== "adjustment" &&
+                                  !tx.isUnbilledCc &&
+                                  !tx.isConvertedToInstallment &&
+                                  !(tx.splits && tx.splits.length > 0) && (
+                                    <span className="text-xs text-[var(--muted-foreground)]">
+                                      —
+                                    </span>
+                                  )}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                              <div className={`tabular-nums font-bold ${amountColor}`}>
+                                {amountDisplay}
+                              </div>
+                              {tx.type === "transfer" && tx.linkedFeeTransaction && (
+                                <div className="tabular-nums text-[11px] text-[var(--muted-foreground)]">
+                                  +Admin {formatRupiah(tx.linkedFeeTransaction.amount, isMasked)}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                              <div className="inline-flex items-center justify-end gap-1">
+                                {canSplitPay && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onSplitPay(tx)}
+                                    aria-label={`Ubah ${tx.merchant} jadi cicilan bulanan`}
+                                    title="Ubah Jadi Cicilan"
+                                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--control-border)] text-[var(--foreground)] hover:bg-[var(--surface)]"
+                                  >
+                                    <SplitPayIcon className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                                {isEditable && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onEditTransaction(tx)}
+                                    aria-label={`Edit ${tx.merchant}`}
+                                    title="Edit"
+                                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--control-border)] text-[var(--foreground)] hover:bg-[var(--surface)]"
+                                  >
+                                    <EditIcon className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteTxId(tx.id)}
+                                  aria-label={`Hapus ${tx.merchant}`}
+                                  title="Hapus transaksi"
+                                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--control-border)] text-[var(--destructive)] hover:bg-[var(--surface)]"
+                                >
+                                  <TrashIcon className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {/* Card View (Always on Mobile, or Desktop when viewMode === "card") */}
+          <div className={viewMode === "table" ? "space-y-4 md:hidden" : "space-y-4"}>
+            {groupedByDay.map(([day, rows]) => {
+              const dayExpense = rows
+                .filter((t) => t.type === "expense")
+                .reduce((sum, t) => sum + t.amount, 0);
+
+              return (
+                <Card key={day} className="p-0 overflow-hidden">
+                  <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 text-xs font-bold">
+                    <span className="uppercase tracking-wide text-[var(--muted-foreground)]">
+                      {formatDayHeader(day)}
+                    </span>
+                    {dayExpense > 0 && (
+                      <span className="tabular-nums font-mono text-[var(--muted-foreground)]">
+                        {isMasked ? formatRupiah(dayExpense, true) : `−${formatRupiah(dayExpense)}`}
+                      </span>
+                    )}
+                  </div>
+                  <div className="divide-y divide-[var(--border)]">
+                    {rows.map((tx) => {
+                      const isIncome = tx.type === "income";
+                      const isTransfer = tx.type === "transfer";
+                      const isAdjustment = tx.type === "adjustment";
+                      const isEditable = isIncome || isTransfer || tx.type === "expense";
+                      const isDeletableDirect = !isEditable;
+                      const isConfirmingDelete = confirmDeleteTxId === tx.id;
+                      const canSplitPay =
+                        tx.walletType === "credit_card" &&
+                        tx.type === "expense" &&
+                        !tx.isConvertedToInstallment;
+                      const isSplit = Boolean(tx.splits && tx.splits.length > 0);
+                      const adminFee = isTransfer ? (tx.linkedFeeTransaction?.amount ?? 0) : 0;
+
+                      const iconSymbol = isIncome
+                        ? "↓"
+                        : isTransfer
+                          ? "⇄"
+                          : isAdjustment
+                            ? "±"
+                            : "↑";
+                      const iconClass = isMasked
+                        ? "bg-[var(--surface)] text-[var(--muted-foreground)] border border-[var(--border)]"
+                        : isIncome
+                          ? "bg-[var(--chart-income)]/15 text-[var(--chart-income)]"
+                          : isTransfer
+                            ? "bg-[var(--primary)]/10 text-[var(--primary)]"
+                            : isAdjustment
+                              ? "bg-[var(--surface)] text-[var(--muted-foreground)] border border-[var(--border)]"
+                              : "bg-[var(--destructive)]/15 text-[var(--destructive)]";
+
+                      const titleText =
+                        isTransfer && tx.toWalletName
+                          ? tx.merchant &&
+                            tx.merchant !== `Transfer ke ${tx.toWalletName}` &&
+                            tx.merchant !== `${tx.walletName} → ${tx.toWalletName}`
+                            ? tx.merchant
+                            : `${tx.walletName} → ${tx.toWalletName}`
+                          : tx.merchant || tx.category;
+
+                      const subText = isTransfer
+                        ? `Transfer · ${tx.walletName}${tx.toWalletName ? ` → ${tx.toWalletName}` : ""}`
+                        : `${tx.category} · ${tx.walletName}`;
+
+                      const amountText = isMasked
+                        ? formatRupiah(tx.amount, true)
+                        : isIncome
+                          ? `+${formatRupiah(tx.amount)}`
+                          : isTransfer
+                            ? formatRupiah(tx.amount)
+                            : isAdjustment
+                              ? tx.amount > 0
+                                ? `+${formatRupiah(tx.amount)}`
+                                : formatRupiah(tx.amount)
+                              : `−${formatRupiah(tx.amount)}`;
+
+                      const amountColor = isMasked
+                        ? "text-[var(--muted-foreground)]"
+                        : isIncome
+                          ? "text-[var(--chart-income)]"
+                          : isTransfer || isAdjustment
+                            ? "text-[var(--foreground)]"
+                            : "text-[var(--destructive)]";
+
+                      const rowCore = (
+                        <>
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <div
+                              aria-hidden="true"
+                              className={`h-9 w-9 rounded-[10px] flex items-center justify-center shrink-0 text-sm font-bold ${iconClass}`}
+                            >
+                              {iconSymbol}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-semibold text-[var(--foreground)] truncate">
+                                {titleText}
+                              </p>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <p className="text-xs text-[var(--muted-foreground)] truncate">
+                                  {subText}
+                                </p>
+                                {isSplit && (
+                                  <span className="shrink-0 rounded bg-[var(--primary)]/10 px-1.5 py-0.5 text-[10px] font-bold text-[var(--primary)]">
+                                    Split ({tx.splits?.length})
+                                  </span>
+                                )}
+                                {tx.isConvertedToInstallment && (
+                                  <span className="shrink-0 rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--muted-foreground)]">
+                                    Cicilan
+                                  </span>
+                                )}
+                              </div>
+                              {tx.note && (
+                                <p className="text-[11px] text-[var(--muted-foreground)] truncate">
+                                  {tx.note}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="shrink-0 text-right">
+                            <p
+                              className={`tabular-nums font-mono text-sm font-bold whitespace-nowrap ${amountColor}`}
+                            >
+                              {amountText}
+                            </p>
+                            {adminFee > 0 && (
+                              <p className="tabular-nums text-[10px] font-medium text-[var(--muted-foreground)] whitespace-nowrap">
+                                +Admin {formatRupiah(adminFee, isMasked)}
+                              </p>
+                            )}
+                          </div>
+                        </>
+                      );
+
+                      return (
+                        <div
+                          key={tx.id}
+                          className="px-3.5 py-2 sm:px-4 transition-colors hover:bg-[var(--surface)]/60"
+                        >
+                          <div className="flex items-center gap-2 min-h-[44px]">
+                            {isEditable ? (
+                              <button
+                                type="button"
+                                onClick={() => onEditTransaction(tx)}
+                                aria-label={`Edit transaksi ${titleText}`}
+                                className="flex min-w-0 flex-1 items-center justify-between gap-2.5 min-h-[44px] text-left rounded-[10px] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]"
+                              >
+                                {rowCore}
+                              </button>
+                            ) : (
+                              <div className="flex min-w-0 flex-1 items-center justify-between gap-2.5 min-h-[44px]">
+                                {rowCore}
+                              </div>
+                            )}
+
+                            {canSplitPay && (
+                              <button
+                                type="button"
+                                onClick={() => onSplitPay(tx)}
+                                aria-label={`Ubah ${tx.merchant} jadi cicilan bulanan`}
+                                title="Ubah Jadi Cicilan"
+                                className="shrink-0 inline-flex min-h-[36px] items-center rounded-[10px] border border-[var(--control-border)] bg-[var(--surface)] px-2.5 text-[11px] font-bold text-[var(--foreground)] hover:bg-[var(--border)]/60 transition-colors"
+                              >
+                                Cicil
+                              </button>
+                            )}
+
+                            {isDeletableDirect && !isConfirmingDelete && (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteTxId(tx.id)}
+                                aria-label={`Hapus ${tx.merchant}`}
+                                title="Hapus transaksi"
+                                className="shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--control-border)] text-[var(--destructive)] hover:bg-[var(--surface)] transition-colors"
+                              >
+                                <TrashIcon className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+
+                          {isDeletableDirect && isConfirmingDelete && (
+                            <div className="mt-2 flex items-center justify-end gap-1.5">
+                              <Button
+                                variant="danger"
+                                disabled={deleteTxMutation.isPending}
+                                onClick={() => deleteTxMutation.mutate(tx.id)}
+                                className="min-h-[36px] px-3 text-xs"
+                              >
+                                Konfirmasi Hapus
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                onClick={() => setConfirmDeleteTxId(null)}
+                                className="min-h-[36px] px-3 text-xs"
+                              >
+                                Batal
+                              </Button>
+                            </div>
                           )}
                         </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
 
-                        {canSplitPay && (
-                          <button
-                            type="button"
-                            onClick={() => onSplitPay(tx)}
-                            aria-label={`Ubah ${tx.merchant} jadi cicilan bulanan`}
-                            title="Ubah Jadi Cicilan"
-                            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--control-border)] text-[var(--foreground)] hover:bg-[var(--surface)]"
-                          >
-                            <SplitPayIcon className="w-4 h-4" />
-                          </button>
-                        )}
-                        {isEditable && (
-                          <button
-                            type="button"
-                            onClick={() => onEditTransaction(tx)}
-                            aria-label={`Edit ${tx.merchant}`}
-                            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--control-border)] text-[var(--foreground)] hover:bg-[var(--surface)]"
-                          >
-                            <EditIcon className="w-4 h-4" />
-                          </button>
-                        )}
-                        {isDeletableDirect && !isConfirmingDelete && (
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDeleteTxId(tx.id)}
-                            aria-label={`Hapus ${tx.merchant}`}
-                            title="Hapus transaksi"
-                            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--control-border)] text-[var(--destructive)] hover:bg-[var(--surface)]"
-                          >
-                            <TrashIcon className="w-4 h-4" />
-                          </button>
-                        )}
-                        {isDeletableDirect && isConfirmingDelete && (
-                          <div className="flex items-center gap-1.5">
-                            <Button
-                              variant="danger"
-                              disabled={deleteTxMutation.isPending}
-                              onClick={() => deleteTxMutation.mutate(tx.id)}
-                              className="min-h-[44px] px-3 text-xs"
-                            >
-                              Konfirmasi Hapus
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              onClick={() => setConfirmDeleteTxId(null)}
-                              className="min-h-[44px] px-3 text-xs"
-                            >
-                              Batal
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </Card>
-          ))}
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-[var(--muted-foreground)]">
             <span className="tabular-nums">
               Menampilkan {filteredTransactions.length} dari {totalFilteredCount} transaksi
@@ -936,6 +1371,183 @@ export function TransactionsPage({
           </div>
         </div>
       )}
+
+      {/* Mobile Filter ModalSheet (< 1024px) */}
+      <ModalSheet
+        open={filterSheetOpen}
+        onClose={() => setFilterSheetOpen(false)}
+        title="Filter Transaksi"
+        subtitle="Saring daftar mutasi berdasarkan dompet, tipe, atau kategori."
+        footer={
+          <div className="flex items-center justify-between gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setDraftWallet("all");
+                setDraftType("all");
+                setDraftCategory("all");
+                onFiltersChange({
+                  ...filters,
+                  walletFilter: "all",
+                  typeFilter: "all",
+                  categoryFilter: "all",
+                });
+                setFilterSheetOpen(false);
+              }}
+            >
+              Reset Filter
+            </Button>
+            <Button
+              onClick={() => {
+                onFiltersChange({
+                  ...filters,
+                  walletFilter: draftWallet,
+                  typeFilter: draftType,
+                  categoryFilter: draftCategory,
+                });
+                setFilterSheetOpen(false);
+              }}
+            >
+              Terapkan
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label
+              htmlFor="flt-wallet-sheet"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
+              Dompet
+            </label>
+            <select
+              id="flt-wallet-sheet"
+              value={draftWallet}
+              onChange={(e) => setDraftWallet(e.target.value)}
+              className="h-11 w-full rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
+            >
+              <option value="all">Semua Dompet</option>
+              {data.wallets.map((w) => (
+                <option key={w.id} value={String(w.id)}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label
+              htmlFor="flt-type-sheet"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
+              Tipe Transaksi
+            </label>
+            <select
+              id="flt-type-sheet"
+              value={draftType}
+              onChange={(e) => setDraftType(e.target.value)}
+              className="h-11 w-full rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
+            >
+              <option value="all">Semua Tipe</option>
+              <option value="expense">Pengeluaran</option>
+              <option value="income">Pemasukan</option>
+              <option value="transfer">Transfer</option>
+              <option value="settlement">Pembayaran Tagihan</option>
+              <option value="adjustment">Penyesuaian Saldo</option>
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label
+              htmlFor="flt-cat-sheet"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
+              Kategori
+            </label>
+            <select
+              id="flt-cat-sheet"
+              value={draftCategory}
+              onChange={(e) => setDraftCategory(e.target.value)}
+              className="h-11 w-full rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
+            >
+              <option value="all">Semua Kategori</option>
+              {filterCategoryOptions.map((catName) => (
+                <option key={catName} value={catName}>
+                  {catName}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </ModalSheet>
+
+      {/* Single Row Delete Confirmation Modal for Table View */}
+      <ModalSheet
+        open={confirmDeleteTxId !== null && viewMode === "table"}
+        onClose={() => setConfirmDeleteTxId(null)}
+        title="Hapus Transaksi?"
+        subtitle="Tindakan ini akan menghapus mutasi yang dipilih dan menghitung ulang saldo dompet."
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => setConfirmDeleteTxId(null)}
+              disabled={deleteTxMutation.isPending}
+            >
+              Batal
+            </Button>
+            <Button
+              variant="danger"
+              disabled={deleteTxMutation.isPending}
+              onClick={() => {
+                if (confirmDeleteTxId !== null) {
+                  deleteTxMutation.mutate(confirmDeleteTxId);
+                }
+              }}
+            >
+              {deleteTxMutation.isPending ? "Menghapus..." : "Ya, Hapus"}
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-[var(--foreground)]">
+          Apakah Anda yakin ingin menghapus transaksi ini secara permanen?
+        </p>
+      </ModalSheet>
+
+      {/* Bulk Delete Confirmation Modal */}
+      <ModalSheet
+        open={bulkDeleteConfirmOpen}
+        onClose={() => setBulkDeleteConfirmOpen(false)}
+        title={`Hapus ${selectedIds.length} Transaksi Terpilih?`}
+        subtitle="Penghapusan massal akan memproses setiap transaksi terpilih secara berurutan."
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => setBulkDeleteConfirmOpen(false)}
+              disabled={bulkDeleteMutation.isPending}
+            >
+              Batal
+            </Button>
+            <Button
+              variant="danger"
+              disabled={bulkDeleteMutation.isPending || selectedIds.length === 0}
+              onClick={() => bulkDeleteMutation.mutate(selectedIds)}
+            >
+              {bulkDeleteMutation.isPending
+                ? "Menghapus..."
+                : `Ya, Hapus ${selectedIds.length} Transaksi`}
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-[var(--foreground)]">
+          Apakah Anda yakin ingin menghapus <strong>{selectedIds.length}</strong> transaksi yang
+          dipilih? Saldo dompet dan progres anggaran akan otomatis disesuaikan.
+        </p>
+      </ModalSheet>
     </div>
   );
 }

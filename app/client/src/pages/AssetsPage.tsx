@@ -253,29 +253,32 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
               ({items.length} aset)
             </p>
           </div>
-          <Button
-            variant="secondary"
-            onClick={() => openCreateModal(categoryKey)}
-            className="min-h-[44px] px-3.5 text-xs font-bold gap-1.5"
-          >
-            <PlusIcon className="w-3.5 h-3.5" />
-            <span>Tambah Aset</span>
-          </Button>
+          {items.length > 0 && (
+            <Button
+              variant="secondary"
+              onClick={() => openCreateModal(categoryKey)}
+              className="min-h-[44px] px-3.5 text-xs font-bold gap-1.5"
+            >
+              <PlusIcon className="w-3.5 h-3.5" />
+              <span>Tambah Aset</span>
+            </Button>
+          )}
         </div>
 
         {items.length === 0 ? (
           <div className="rounded-[14px] border border-dashed border-[var(--border)] p-6 text-center space-y-3">
             <p className="text-xs text-[var(--muted-foreground)]">
-              Belum ada aset terdaftar di kategori {title}. Catat nilai investasi saham, reksa dana,
-              emas, atau aset fisik Anda.
+              {categoryKey === "investment"
+                ? "Belum ada aset investasi tercatat."
+                : "Belum ada aset fisik tercatat."}
             </p>
             <Button
               variant="secondary"
               onClick={() => openCreateModal(categoryKey)}
-              className="min-h-[44px] px-4 text-xs font-semibold"
+              className="min-h-[44px] px-4 text-xs font-semibold gap-1.5"
             >
-              <PlusIcon className="w-3.5 h-3.5 mr-1" />
-              Mulai Catat Aset Investasi
+              <PlusIcon className="w-3.5 h-3.5" />
+              <span>{categoryKey === "investment" ? "Catat Investasi" : "Catat Aset Fisik"}</span>
             </Button>
           </div>
         ) : (
@@ -314,13 +317,22 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
                         {hasGainLoss && (
                           <span
                             className={`font-semibold font-mono text-[11px] ${
-                              isProfit ? "text-emerald-500" : "text-rose-500"
+                              isMasked
+                                ? "text-[var(--muted-foreground)]"
+                                : isProfit
+                                  ? "text-emerald-600 dark:text-emerald-400"
+                                  : "text-[var(--destructive)]"
                             }`}
                           >
-                            {isProfit ? "+" : ""}
-                            {formatRupiah(asset.unrealizedGainLoss!, isMasked)} (
-                            {isProfit ? "+" : ""}
-                            {asset.unrealizedGainLossPercent}%)
+                            {isMasked ? (
+                              formatRupiah(asset.unrealizedGainLoss!, true)
+                            ) : (
+                              <>
+                                {isProfit ? "+" : ""}
+                                {formatRupiah(asset.unrealizedGainLoss!)} ({isProfit ? "+" : ""}
+                                {asset.unrealizedGainLossPercent}%)
+                              </>
+                            )}
                           </span>
                         )}
                         {asset.notes && (
@@ -351,7 +363,7 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
                     <Button
                       variant="secondary"
                       onClick={() => openQuickValuationModal(asset)}
-                      className="min-h-[32px] px-2.5 text-xs font-semibold"
+                      className="min-h-[44px] h-11 px-3 text-xs font-semibold"
                       title="Perbarui taksiran harga pasar"
                     >
                       Update Nilai
@@ -360,8 +372,9 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
                     <button
                       type="button"
                       onClick={() => openEditModal(asset)}
+                      aria-label={`Edit ${asset.name}`}
                       title="Edit data aset"
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)] transition-colors"
+                      className="inline-flex min-h-[44px] h-11 w-11 items-center justify-center rounded-[10px] text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)] transition-colors"
                     >
                       <EditIcon className="w-4 h-4" />
                     </button>
@@ -369,8 +382,9 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
                     <button
                       type="button"
                       onClick={() => setDeletingAsset(asset)}
+                      aria-label={`Hapus ${asset.name}`}
                       title="Hapus aset ini"
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] text-[var(--muted-foreground)] hover:bg-rose-50 hover:text-[var(--destructive)] dark:hover:bg-rose-950/30 transition-colors"
+                      className="inline-flex min-h-[44px] h-11 w-11 items-center justify-center rounded-[10px] text-[var(--muted-foreground)] hover:bg-rose-50 hover:text-[var(--destructive)] dark:hover:bg-rose-950/30 transition-colors"
                     >
                       <TrashIcon className="w-4 h-4" />
                     </button>
@@ -387,91 +401,132 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
   return (
     <div className="space-y-6">
       {/* Page Heading */}
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-extrabold text-[var(--foreground)]">
-            Aset & Kekayaan Bersih
-          </h1>
-          <p className="text-sm text-[var(--muted-foreground)]">
-            Kalkulasi nilai kekayaan bersih (Net Worth) dari seluruh portofolio aset dikurangi
-            liabilitas.
-          </p>
-        </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-2xl font-extrabold text-[var(--foreground)]">
+          Aset & Kekayaan Bersih
+        </h1>
+
+        <Button
+          onClick={() => openCreateModal("investment")}
+          className="gap-2 self-start sm:self-auto"
+        >
+          <PlusIcon className="w-4 h-4" />
+          <span>Tambah Aset</span>
+        </Button>
       </div>
 
       {/* Net Worth Hero Card */}
       <div className="relative overflow-hidden rounded-[24px] border border-[var(--hero-border)] bg-[var(--hero-bg)] text-[var(--hero-card-foreground)] p-6 sm:p-8 shadow-sm transition-all">
-        <div className="relative z-10 flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-2">
+        <div className="relative z-10 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--hero-border)] bg-[var(--hero-surface)] px-2.5 py-1 text-xs font-semibold text-[var(--hero-card-foreground)]">
               <AssetIcon className="w-3.5 h-3.5 text-[var(--primary)]" />
               <span>Kekayaan Bersih (Net Worth)</span>
             </div>
-            <div className="flex items-baseline gap-2">
-              <p className="font-mono text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-[var(--hero-card-foreground)] tabular-nums">
-                {formatRupiah(totalNetWorth, isMasked)}
-              </p>
-            </div>
-            <p className="text-xs sm:text-sm text-[var(--hero-card-muted)] max-w-md">
-              Total aset likuid, investasi, dan aset fisik setelah dikurangi seluruh kewajiban
-              pinjaman & tagihan kartu kredit.
-            </p>
+            <Badge tone={financialStage.badgeTone} className="text-[11px] font-bold px-2 py-0.5">
+              {financialStage.title}
+            </Badge>
           </div>
-
-          <div className="flex flex-col items-start sm:items-end gap-2.5">
-            <div className="rounded-[16px] border border-[var(--hero-inner-border)] bg-[var(--hero-surface)] p-4 text-left sm:text-right max-w-sm">
-              <div className="flex items-center justify-between sm:justify-end gap-2 mb-1.5">
-                <span className="text-[11px] font-semibold text-[var(--hero-card-muted)] uppercase tracking-wider">
-                  Tahap Keuangan
-                </span>
-                <Badge tone={financialStage.badgeTone} className="text-xs font-bold">
-                  {financialStage.title}
-                </Badge>
-              </div>
-              <p className="text-xs text-[var(--hero-card-muted)] leading-relaxed">
-                {financialStage.description}
-              </p>
-            </div>
+          <div className="flex items-baseline gap-2">
+            <p className="font-mono text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-[var(--hero-card-foreground)] tabular-nums">
+              {formatRupiah(totalNetWorth, isMasked)}
+            </p>
           </div>
         </div>
 
-        {/* Debt-to-Asset Ratio Bar */}
-        <div className="mt-6 border-t border-[var(--hero-border)] pt-4 space-y-2">
-          <div className="flex justify-between text-xs font-bold text-[var(--hero-card-muted)]">
-            <span className="text-[#009267] dark:text-emerald-400">
+        {/* Debt-to-Asset Ratio Bar with Ideal & Warning Threshold Markers */}
+        <div className="mt-6 border-t border-[var(--hero-border)] pt-4 space-y-2.5">
+          <div className="flex flex-wrap justify-between gap-2 text-xs font-bold text-[var(--hero-card-muted)]">
+            <span
+              className={
+                isMasked
+                  ? "text-[var(--hero-card-foreground)]"
+                  : "text-emerald-600 dark:text-emerald-400"
+              }
+            >
               Total Aset: {formatRupiah(data.totalAssets, isMasked)}
             </span>
             <span
               className={
-                debtToAssetRatio > 40 ? "text-[var(--destructive)]" : "text-[var(--highlight-text)]"
+                isMasked
+                  ? "text-[var(--hero-card-foreground)]"
+                  : debtToAssetRatio > 50
+                    ? "text-[var(--destructive)]"
+                    : debtToAssetRatio > 35
+                      ? "text-[var(--highlight-text)]"
+                      : "text-emerald-600 dark:text-emerald-400"
               }
             >
-              Total Liabilitas: {formatRupiah(totalLiabilities, isMasked)} ({debtToAssetRatio}%
-              Debt-to-Asset)
+              Rasio Utang: {debtToAssetRatio}% · Liabilitas: {formatRupiah(totalLiabilities, isMasked)}
             </span>
           </div>
-          <div className="h-3 w-full rounded-full bg-[var(--surface)] overflow-hidden flex border border-[var(--border)]">
+
+          <div className="space-y-1.5">
+            <div className="relative h-3 w-full rounded-full bg-[var(--surface)] border border-[var(--border)]">
+              <div className="h-full w-full overflow-hidden rounded-full">
+                <div
+                  className={`h-full transition-all duration-300 ${
+                    debtToAssetRatio > 50
+                      ? "bg-[var(--destructive)]"
+                      : debtToAssetRatio > 35
+                        ? "bg-[var(--highlight)]"
+                        : "bg-[var(--chart-income)]"
+                  }`}
+                  style={{ width: `${Math.max(0, Math.min(100, debtToAssetRatio))}%` }}
+                  title={`Rasio Debt-to-Asset: ${debtToAssetRatio}%`}
+                />
+              </div>
+              {/* Vertical threshold markers: 35% ideal & 50% waspada */}
+              <span
+                aria-hidden="true"
+                title="Batas ideal <= 35%"
+                className="absolute -top-1 -bottom-1 left-[35%] w-0.5 bg-emerald-600 dark:bg-emerald-400"
+              />
+              <span
+                aria-hidden="true"
+                title="Batas waspada 50%"
+                className="absolute -top-1 -bottom-1 left-[50%] w-0.5 bg-amber-600 dark:bg-amber-400"
+              />
+            </div>
+
             <div
-              className="bg-[var(--chart-income)] transition-all"
-              style={{ width: `${Math.max(0, Math.min(100, 100 - debtToAssetRatio))}%` }}
-              title="Porsi Bersih"
-            />
-            <div
-              className="bg-[var(--destructive)] transition-all"
-              style={{ width: `${Math.min(100, debtToAssetRatio)}%` }}
-              title="Porsi Utang"
-            />
+              className="relative h-4 text-[11px] font-semibold text-[var(--hero-card-muted)] tabular-nums"
+              aria-hidden="true"
+            >
+              <span className="absolute left-0">0%</span>
+              <span className="absolute left-[35%] -translate-x-1/2">35%</span>
+              <span className="absolute left-[50%] -translate-x-1/2">50%</span>
+              <span className="absolute right-0">100%</span>
+            </div>
+          </div>
+
+          <div className="mt-3 pt-2.5 border-t border-[var(--border)]/60 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--muted-foreground)]">
+            <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+              <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" aria-hidden="true" />
+              <span>Ideal (≤ 35%)</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+              <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500" aria-hidden="true" />
+              <span>Waspada (35%–50%)</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+              <span
+                className="h-2 w-2 shrink-0 rounded-full bg-[var(--destructive)]"
+                aria-hidden="true"
+              />
+              <span>Bahaya (&gt; 50%)</span>
+            </span>
           </div>
         </div>
       </div>
 
       {/* 4 Pillar Grid Metric Cards */}
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-        <Card className="p-4 space-y-1">
+        <Card className="p-3 sm:p-4 space-y-1">
           <span className="text-xs font-bold text-[var(--muted-foreground)] uppercase tracking-wide">
             1. Kas & Dompet
           </span>
-          <p className="font-mono text-lg sm:text-xl font-extrabold text-[var(--foreground)] tabular-nums">
+          <p className="metric-value-compact font-extrabold text-[var(--foreground)]">
             {formatRupiah(totalLiquidAssets, isMasked)}
           </p>
           <span className="text-[11px] text-[var(--muted-foreground)]">
@@ -479,11 +534,17 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
           </span>
         </Card>
 
-        <Card className="p-4 space-y-1">
+        <Card className="p-3 sm:p-4 space-y-1">
           <span className="text-xs font-bold text-[var(--muted-foreground)] uppercase tracking-wide">
             2. Investasi
           </span>
-          <p className="font-mono text-lg sm:text-xl font-extrabold text-emerald-600 dark:text-emerald-400 tabular-nums">
+          <p
+            className={`metric-value-compact font-extrabold ${
+              isMasked
+                ? "text-[var(--foreground)]"
+                : "text-emerald-600 dark:text-emerald-400"
+            }`}
+          >
             {formatRupiah(totalInvestmentAssets, isMasked)}
           </p>
           <span className="text-[11px] text-[var(--muted-foreground)]">
@@ -491,11 +552,15 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
           </span>
         </Card>
 
-        <Card className="p-4 space-y-1">
+        <Card className="p-3 sm:p-4 space-y-1">
           <span className="text-xs font-bold text-[var(--muted-foreground)] uppercase tracking-wide">
-            3. Aset Tetap
+            3. Aset Fisik
           </span>
-          <p className="font-mono text-lg sm:text-xl font-extrabold text-[#38bdf8] tabular-nums">
+          <p
+            className={`metric-value-compact font-extrabold ${
+              isMasked ? "text-[var(--foreground)]" : "text-sky-600 dark:text-sky-400"
+            }`}
+          >
             {formatRupiah(totalFixedAssets, isMasked)}
           </p>
           <span className="text-[11px] text-[var(--muted-foreground)]">
@@ -503,11 +568,15 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
           </span>
         </Card>
 
-        <Card className="p-4 space-y-1">
+        <Card className="p-3 sm:p-4 space-y-1">
           <span className="text-xs font-bold text-[var(--muted-foreground)] uppercase tracking-wide">
             4. Total Utang
           </span>
-          <p className="font-mono text-lg sm:text-xl font-extrabold text-rose-500 tabular-nums">
+          <p
+            className={`metric-value-compact font-extrabold ${
+              isMasked ? "text-[var(--foreground)]" : "text-[var(--destructive)]"
+            }`}
+          >
             {formatRupiah(totalLiabilities, isMasked)}
           </p>
           <span className="text-[11px] text-[var(--muted-foreground)]">
@@ -531,16 +600,11 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
 
         {/* Integrated Liquid Wallets Summary */}
         <Card className="space-y-4">
-          <div className="flex items-center justify-between border-b border-[var(--border)] pb-3">
-            <div>
-              <h2 className="text-base font-extrabold text-[var(--foreground)]">
-                Rincian Saldo Kas & Rekening Bank
-              </h2>
-              <p className="text-xs text-[var(--muted-foreground)]">
-                Tersinkronisasi otomatis dari saldo berjalan modul Dompet
-              </p>
-            </div>
-            <span className="font-mono text-sm font-extrabold text-[var(--foreground)]">
+          <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] pb-3">
+            <h2 className="text-base font-extrabold text-[var(--foreground)]">
+              Saldo Kas & Rekening
+            </h2>
+            <span className="font-mono text-sm font-extrabold text-[var(--foreground)] tabular-nums shrink-0">
               {formatRupiah(totalLiquidAssets, isMasked)}
             </span>
           </div>
@@ -567,16 +631,15 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
 
         {/* Integrated Debt & Liabilities Summary */}
         <Card className="space-y-4">
-          <div className="flex items-center justify-between border-b border-[var(--border)] pb-3">
-            <div>
-              <h2 className="text-base font-extrabold text-[var(--foreground)]">
-                Rincian Kewajiban & Liabilitas
-              </h2>
-              <p className="text-xs text-[var(--muted-foreground)]">
-                Sisa pokok pinjaman dan tagihan kartu kredit yang belum diselesaikan
-              </p>
-            </div>
-            <span className="font-mono text-sm font-extrabold text-rose-500">
+          <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] pb-3">
+            <h2 className="text-base font-extrabold text-[var(--foreground)]">
+              Kewajiban & Liabilitas
+            </h2>
+            <span
+              className={`font-mono text-sm font-extrabold tabular-nums shrink-0 ${
+                isMasked ? "text-[var(--foreground)]" : "text-[var(--destructive)]"
+              }`}
+            >
               {formatRupiah(totalLiabilities, isMasked)}
             </span>
           </div>
@@ -600,7 +663,11 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
                       {l.lender}
                     </span>
                   </div>
-                  <strong className="font-mono text-xs font-bold text-rose-500 tabular-nums">
+                  <strong
+                    className={`font-mono text-xs font-bold tabular-nums ${
+                      isMasked ? "text-[var(--foreground)]" : "text-[var(--destructive)]"
+                    }`}
+                  >
                     {formatRupiah(l.balance, isMasked)}
                   </strong>
                 </div>
@@ -616,8 +683,26 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
         onClose={() => setModalOpen(false)}
         title={editingAsset ? "Edit Data Aset" : "Tambah Aset Baru"}
         subtitle="Catat portofolio investasi atau aset fisik untuk memperbarui kalkulasi Net Worth"
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => setModalOpen(false)}
+              disabled={createAssetMutation.isPending || updateAssetMutation.isPending}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              form="asset-form"
+              disabled={createAssetMutation.isPending || updateAssetMutation.isPending}
+            >
+              {editingAsset ? "Simpan Perubahan" : "Simpan Aset"}
+            </Button>
+          </div>
+        }
       >
-        <form onSubmit={handleSaveForm} className="space-y-4">
+        <form id="asset-form" onSubmit={handleSaveForm} className="space-y-4">
           {formError && (
             <div
               role="alert"
@@ -631,7 +716,7 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
           <div className="space-y-1.5">
             <label
               htmlFor="asset-name-input"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
             >
               Nama Aset <span className="text-[var(--destructive)]">*</span>
             </label>
@@ -641,8 +726,8 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
               required
               value={formName}
               onChange={(e) => setFormName(e.target.value)}
-              placeholder="Contoh: Emas Antam 10gr, Saham BBCA, Motor Honda Vario"
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              placeholder="Contoh: Emas Antam, Saham BBCA"
+              className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             />
           </div>
 
@@ -650,7 +735,7 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
             <div className="space-y-1.5">
               <label
                 htmlFor="asset-cat-select"
-                className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
               >
                 Kategori Utama
               </label>
@@ -658,17 +743,17 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
                 id="asset-cat-select"
                 value={formCategory}
                 onChange={(e) => setFormCategory(e.target.value as AssetCategory)}
-                className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
               >
                 <option value="investment">Aset Investasi (Liquid/Growth)</option>
-                <option value="fixed">Aset Tetap (Fisik/Produktif)</option>
+                <option value="fixed">Aset Fisik (Tetap/Produktif)</option>
               </select>
             </div>
 
             <div className="space-y-1.5">
               <label
                 htmlFor="asset-type-select"
-                className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
               >
                 Tipe Aset
               </label>
@@ -676,7 +761,7 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
                 id="asset-type-select"
                 value={formType}
                 onChange={(e) => setFormType(e.target.value as AssetType)}
-                className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
               >
                 {Object.entries(ASSET_TYPE_META).map(([key, meta]) => (
                   <option key={key} value={key}>
@@ -691,12 +776,12 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
             <div className="space-y-1.5">
               <label
                 htmlFor="asset-val-input"
-                className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
               >
                 Nilai Taksiran Sekarang <span className="text-[var(--destructive)]">*</span>
               </label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                   Rp
                 </span>
                 <input
@@ -707,7 +792,7 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
                   value={formValuation}
                   onChange={(e) => setFormValuation(formatDigitsInput(e.target.value))}
                   placeholder="0"
-                  className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 font-mono text-sm font-bold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                  className="tabular-nums h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] pl-11 pr-3.5 font-mono text-sm font-bold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
                 />
               </div>
             </div>
@@ -715,12 +800,12 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
             <div className="space-y-1.5">
               <label
                 htmlFor="asset-cost-input"
-                className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
               >
                 Modal Beli Awal (Opsional)
               </label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                   Rp
                 </span>
                 <input
@@ -730,7 +815,7 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
                   value={formCost}
                   onChange={(e) => setFormCost(formatDigitsInput(e.target.value))}
                   placeholder="0"
-                  className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 font-mono text-sm font-bold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                  className="tabular-nums h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] pl-11 pr-3.5 font-mono text-sm font-bold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
                 />
               </div>
             </div>
@@ -739,7 +824,7 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
           <div className="space-y-1.5">
             <label
               htmlFor="asset-notes-input"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
             >
               Catatan Tambahan (Opsional)
             </label>
@@ -748,26 +833,9 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
               type="text"
               value={formNotes}
               onChange={(e) => setFormNotes(e.target.value)}
-              placeholder="Contoh: Disimpan di SDB, Surat BPKB lengkap, Portofolio Bibit"
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              placeholder="Contoh: Portofolio Bibit, BPKB lengkap"
+              className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             />
-          </div>
-
-          <div className="flex items-center justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-700">
-            <button
-              type="button"
-              onClick={() => setModalOpen(false)}
-              className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] text-sm font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-            >
-              Batal
-            </button>
-            <button
-              type="submit"
-              disabled={createAssetMutation.isPending || updateAssetMutation.isPending}
-              className="min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-            >
-              {editingAsset ? "Simpan Perubahan" : "Simpan Aset"}
-            </button>
           </div>
         </form>
       </ModalSheet>
@@ -782,8 +850,26 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
             ? `Taksiran harga pasar terkini untuk "${valuationModalAsset.name}"`
             : undefined
         }
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => setValuationModalAsset(null)}
+              disabled={updateAssetMutation.isPending}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              form="asset-quick-val-form"
+              disabled={updateAssetMutation.isPending}
+            >
+              Perbarui Valuasi
+            </Button>
+          </div>
+        }
       >
-        <form onSubmit={handleSaveQuickValuation} className="space-y-4">
+        <form id="asset-quick-val-form" onSubmit={handleSaveQuickValuation} className="space-y-4">
           {quickValuationError && (
             <div
               role="alert"
@@ -797,12 +883,12 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
           <div className="space-y-1.5">
             <label
               htmlFor="quick-val-input"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
             >
               Nilai Taksiran Terkini (Rupiah)
             </label>
             <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+              <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                 Rp
               </span>
               <input
@@ -813,30 +899,13 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
                 value={quickValuationInput}
                 onChange={(e) => setQuickValuationInput(formatDigitsInput(e.target.value))}
                 placeholder="0"
-                className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 font-mono text-base font-black text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                className="tabular-nums h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] pl-11 pr-3.5 font-mono text-base font-black text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
               />
             </div>
-            <p className="text-[11px] text-neutral-400">
+            <p className="text-[11px] text-[var(--muted-foreground)]">
               Nilai pasar wajar aset saat ini. Perubahan akan langsung mengkalkulasi ulang total Net
               Worth Anda.
             </p>
-          </div>
-
-          <div className="flex items-center justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-700">
-            <button
-              type="button"
-              onClick={() => setValuationModalAsset(null)}
-              className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] text-sm font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-            >
-              Batal
-            </button>
-            <button
-              type="submit"
-              disabled={updateAssetMutation.isPending}
-              className="min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-            >
-              Perbarui Valuasi
-            </button>
           </div>
         </form>
       </ModalSheet>
@@ -847,21 +916,8 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
         onClose={() => setDeletingAsset(null)}
         title="Hapus Aset?"
         subtitle={deletingAsset ? `Konfirmasi penghapusan aset "${deletingAsset.name}"` : undefined}
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-[var(--foreground)]">
-            Apakah Anda yakin ingin menghapus data aset <strong>{deletingAsset?.name}</strong>{" "}
-            senilai{" "}
-            <strong>
-              {deletingAsset ? formatRupiah(deletingAsset.valuationAmount, isMasked) : ""}
-            </strong>
-            ?
-          </p>
-          <p className="text-xs text-[var(--muted-foreground)]">
-            Tindakan ini permanen dan akan mengurangi total kekayaan bersih Anda.
-          </p>
-
-          <div className="flex items-center justify-end gap-2 pt-3 border-t border-[var(--border)]">
+        footer={
+          <div className="flex items-center justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => setDeletingAsset(null)}>
               Batal
             </Button>
@@ -878,6 +934,20 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
               Hapus Aset
             </Button>
           </div>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-[var(--foreground)]">
+            Apakah Anda yakin ingin menghapus data aset <strong>{deletingAsset?.name}</strong>{" "}
+            senilai{" "}
+            <strong>
+              {deletingAsset ? formatRupiah(deletingAsset.valuationAmount, isMasked) : ""}
+            </strong>
+            ?
+          </p>
+          <p className="text-xs text-[var(--muted-foreground)]">
+            Tindakan ini permanen dan akan mengurangi total kekayaan bersih Anda.
+          </p>
         </div>
       </ModalSheet>
     </div>

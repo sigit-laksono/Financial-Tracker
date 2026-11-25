@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type GoalDto } from "../lib/api";
 import {
@@ -84,40 +84,64 @@ export function GoalsPage({ onToast }: { onToast: (msg: string) => void }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-6 sm:pb-8">
       {/* Page Heading */}
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-extrabold text-[var(--foreground)]">
-            Target & Dana Darurat
-          </h1>
-          <p className="text-sm text-[var(--muted-foreground)]">
-            Pantau ketahanan runway dana darurat serta progres pencapaian resolusi keuangan Anda.
-          </p>
-        </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Target & Goals</h1>
+
+        {goals.length > 0 && (
+          <Button
+            onClick={() => {
+              setEditingGoal(null);
+              setGoalModalOpen(true);
+            }}
+            className="gap-2 self-start sm:self-auto"
+          >
+            <PlusIcon className="w-4 h-4" />
+            <span>Buat Target Baru</span>
+          </Button>
+        )}
       </div>
 
       {/* Hero Card Dana Darurat & Runway Ketahanan */}
       <div className="relative overflow-hidden rounded-[24px] border border-[var(--hero-border)] bg-[var(--hero-bg)] text-[var(--hero-card-foreground)] p-6 sm:p-8 shadow-sm transition-all">
         <div className="relative z-10 flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
-            <div className="inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--hero-border)] bg-[var(--hero-surface)] px-2.5 py-1 text-xs font-semibold text-[var(--hero-card-foreground)]">
-              <ShieldIcon className="w-3.5 h-3.5 text-[var(--primary)]" />
-              <span>Daya Tahan Dana Darurat</span>
-              <HelpTooltip
-                title="Daya Tahan Dana Darurat (Runway)"
-                content="Berapa bulan Anda dapat bertahan hidup dengan pos kebutuhan bulanan saat ini jika terjadi kehilangan penghasilan secara tiba-tiba."
-              />
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--hero-border)] bg-[var(--hero-surface)] px-2.5 py-1 text-xs font-semibold text-[var(--hero-card-foreground)]">
+                <ShieldIcon className="w-3.5 h-3.5 text-[var(--primary)]" />
+                <span>Daya Tahan Dana Darurat</span>
+                <HelpTooltip
+                  title="Daya Tahan Dana Darurat (Runway)"
+                  content="Berapa bulan Anda dapat bertahan hidup dengan pos kebutuhan bulanan saat ini jika terjadi kehilangan penghasilan secara tiba-tiba."
+                />
+              </div>
+              <Badge
+                tone={
+                  isMasked
+                    ? "neutral"
+                    : emergencyFund?.status === "excellent" || emergencyFund?.status === "good"
+                      ? "soft"
+                      : emergencyFund?.status === "warning"
+                        ? "highlight"
+                        : "danger"
+                }
+                className="text-[11px] font-bold px-2 py-0.5"
+              >
+                {emergencyFund?.status === "excellent"
+                  ? "Sangat Aman (≥ 6 Bulan)"
+                  : emergencyFund?.status === "good"
+                    ? "Aman (3-6 Bulan)"
+                    : emergencyFund?.status === "warning"
+                      ? "Waspada (1-3 Bulan)"
+                      : "Kritis (< 1 Bulan)"}
+              </Badge>
             </div>
             <div className="flex items-baseline gap-2">
               <p className="font-mono text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-[var(--hero-card-foreground)] tabular-nums">
                 {formatRupiah(emergencyFund?.totalEmergencyFunds ?? 0, isMasked)}
               </p>
             </div>
-            <p className="text-xs sm:text-sm text-[var(--hero-card-muted)] max-w-md">
-              Dana cadangan cair untuk bertahan hidup saat terjadi keadaan tak terduga tanpa perlu
-              berhutang.
-            </p>
           </div>
 
           <div className="flex flex-col items-start sm:items-end gap-3">
@@ -126,7 +150,11 @@ export function GoalsPage({ onToast }: { onToast: (msg: string) => void }) {
                 Ketahanan Bertahan Hidup:
               </span>
               <div className="flex items-baseline gap-1.5 sm:justify-end">
-                <span className="font-mono text-3xl font-black text-[var(--primary)] tabular-nums">
+                <span
+                  className={`font-mono text-3xl font-black tabular-nums ${
+                    isMasked ? "text-[var(--hero-card-foreground)]" : "text-[var(--primary)]"
+                  }`}
+                >
                   {emergencyFund?.runwayMonths ?? 0}
                 </span>
                 <span className="text-sm font-bold text-[var(--hero-card-muted)]">Bulan</span>
@@ -139,81 +167,35 @@ export function GoalsPage({ onToast }: { onToast: (msg: string) => void }) {
                 /bln
               </p>
             </div>
-
-            <Button
-              onClick={() => {
-                setEditingGoal(null);
-                setGoalModalOpen(true);
-              }}
-              className="min-h-[44px]"
-            >
-              <PlusIcon className="w-5 h-5" />
-              <span>Buat Target Baru</span>
-            </Button>
           </div>
-        </div>
-
-        {/* Runway Status indicator */}
-        <div className="mt-6 border-t border-[var(--hero-border)] pt-4 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="text-[var(--hero-card-muted)]">Status Keamanan:</span>
-            <span
-              className={`font-bold px-2.5 py-0.5 rounded-full ${
-                emergencyFund?.status === "excellent"
-                  ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30"
-                  : emergencyFund?.status === "good"
-                    ? "bg-teal-500/20 text-teal-700 dark:text-teal-300 border border-teal-500/30"
-                    : emergencyFund?.status === "warning"
-                      ? "bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30"
-                      : "bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-500/30"
-              }`}
-            >
-              {emergencyFund?.status === "excellent"
-                ? "Sangat Aman (≥ 6 Bulan)"
-                : emergencyFund?.status === "good"
-                  ? "Aman (3-6 Bulan)"
-                  : emergencyFund?.status === "warning"
-                    ? "Waspada (1-3 Bulan)"
-                    : "Kritis (< 1 Bulan)"}
-            </span>
-          </div>
-          <span className="text-neutral-400">
-            Standar Perencana Finansial: Minimal 3–6 bulan kebutuhan pokok.
-          </span>
         </div>
       </div>
 
       {/* Target Tabungan / Goals Grid */}
       <div className="space-y-4">
         <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] pb-2">
-          <div>
-            <h2 className="text-base font-extrabold text-[var(--foreground)]">
-              Daftar Target Tabungan ({goals.length})
-            </h2>
-            <p className="text-xs text-[var(--muted-foreground)]">
-              Rencana masa depan dan pos tabungan impian Anda.
-            </p>
-          </div>
+          <h2 className="text-base font-extrabold text-[var(--foreground)]">
+            Daftar Target Tabungan ({goals.length})
+          </h2>
         </div>
 
         {goals.length === 0 ? (
-          <Card className="text-center py-12 space-y-3">
+          <Card className="text-center py-10 px-4 space-y-3">
             <div className="w-12 h-12 mx-auto rounded-full bg-[var(--surface)] flex items-center justify-center text-[var(--muted-foreground)]">
               <GoalsIcon className="w-6 h-6" />
             </div>
             <h3 className="text-base font-bold text-[var(--foreground)]">
               Belum Ada Target Tabungan
             </h3>
-            <p className="text-xs text-[var(--muted-foreground)] max-w-sm mx-auto">
-              Mulai buat target tabungan untuk liburan, beli gadget, DP rumah, atau pos dana darurat
-              agar progres menabung Anda terpantau jelas.
+            <p className="text-xs text-[var(--muted-foreground)]">
+              Buat target tabungan untuk memantau progres impian Anda.
             </p>
             <Button
               onClick={() => {
                 setEditingGoal(null);
                 setGoalModalOpen(true);
               }}
-              className="mt-2"
+              className="mt-1"
             >
               <PlusIcon className="w-4 h-4" />
               <span>Buat Target Sekarang</span>
@@ -252,7 +234,7 @@ export function GoalsPage({ onToast }: { onToast: (msg: string) => void }) {
                           setGoalModalOpen(true);
                         }}
                         aria-label={`Edit ${g.name}`}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
+                        className="inline-flex h-11 w-11 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
                       >
                         <EditIcon className="w-4 h-4" />
                       </button>
@@ -260,7 +242,7 @@ export function GoalsPage({ onToast }: { onToast: (msg: string) => void }) {
                         type="button"
                         onClick={() => deleteGoalMutation.mutate(g.id)}
                         aria-label={`Hapus ${g.name}`}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--destructive)]"
+                        className="inline-flex h-11 w-11 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--destructive)]"
                       >
                         <TrashIcon className="w-4 h-4" />
                       </button>
@@ -376,7 +358,9 @@ function GoalFormModal({
 
   const isEditing = Boolean(goal);
 
-  useState(() => {
+  useEffect(() => {
+    if (!open) return;
+    setError("");
     if (goal) {
       setName(goal.name);
       setEmoji(goal.emoji);
@@ -386,8 +370,17 @@ function GoalFormModal({
       setIsEmergencyFund(goal.isEmergencyFund);
       setWalletId(goal.walletId ?? undefined);
       setNotes(goal.notes ?? "");
+    } else {
+      setName("");
+      setEmoji("🎯");
+      setTargetAmount("");
+      setCurrentAmount("0");
+      setTargetDate("");
+      setIsEmergencyFund(false);
+      setWalletId(undefined);
+      setNotes("");
     }
-  });
+  }, [goal, open]);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -435,8 +428,23 @@ function GoalFormModal({
       onClose={onClose}
       title={isEditing ? `Edit Target: ${goal?.name}` : "Buat Target Tabungan Baru"}
       subtitle="Tetapkan nominal dan tanggal target untuk memantau tabungan impian Anda."
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={saveMutation.isPending}>
+            Batal
+          </Button>
+          <Button type="submit" form="goal-form" disabled={saveMutation.isPending}>
+            {saveMutation.isPending
+              ? "Menyimpan..."
+              : isEditing
+                ? "Simpan Perubahan"
+                : "Buat Target"}
+          </Button>
+        </div>
+      }
     >
       <form
+        id="goal-form"
         onSubmit={(e) => {
           e.preventDefault();
           setError("");
@@ -456,7 +464,7 @@ function GoalFormModal({
 
         {/* Emoji Selector */}
         <div className="space-y-1.5">
-          <span className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+          <span className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
             Pilih Ikon Emoji
           </span>
           <div className="flex flex-wrap gap-2">
@@ -467,8 +475,8 @@ function GoalFormModal({
                 onClick={() => setEmoji(em)}
                 className={`h-11 w-11 text-xl rounded-[12px] border transition-all ${
                   emoji === em
-                    ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs scale-105"
-                    : "border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                    ? "border-[var(--primary)] bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-xs scale-105"
+                    : "border-[var(--control-border)] bg-[var(--surface)] hover:bg-[var(--card)]"
                 }`}
               >
                 {em}
@@ -478,7 +486,10 @@ function GoalFormModal({
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="goal-name" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+          <label
+            htmlFor="goal-name"
+            className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+          >
             Nama Target Tabungan
           </label>
           <input
@@ -487,18 +498,21 @@ function GoalFormModal({
             required
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Contoh: DP Rumah, Liburan Jepang, Laptop Baru"
-            className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+            placeholder="Contoh: Dana Darurat, DP Rumah"
+            className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
           />
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <label htmlFor="goal-target" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+            <label
+              htmlFor="goal-target"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
               Target Nominal (Rp)
             </label>
             <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+              <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                 Rp
               </span>
               <input
@@ -508,17 +522,20 @@ function GoalFormModal({
                 value={targetAmount}
                 onChange={(e) => setTargetAmount(formatDigitsInput(e.target.value))}
                 placeholder="15.000.000"
-                className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-sm font-bold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+                className="tabular-nums h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] pl-11 pr-3.5 text-sm font-bold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
               />
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor="goal-current" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+            <label
+              htmlFor="goal-current"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
               Saldo Terkumpul Saat Ini (Rp)
             </label>
             <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+              <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                 Rp
               </span>
               <input
@@ -527,7 +544,7 @@ function GoalFormModal({
                 value={currentAmount}
                 onChange={(e) => setCurrentAmount(formatDigitsInput(e.target.value))}
                 placeholder="0"
-                className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-sm font-bold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+                className="tabular-nums h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] pl-11 pr-3.5 text-sm font-bold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
               />
             </div>
           </div>
@@ -535,7 +552,10 @@ function GoalFormModal({
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <label htmlFor="goal-date" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+            <label
+              htmlFor="goal-date"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
               Target Waktu Tercapai (Opsional)
             </label>
             <input
@@ -543,19 +563,22 @@ function GoalFormModal({
               type="date"
               value={targetDate}
               onChange={(e) => setTargetDate(e.target.value)}
-              className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className="tabular-nums h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             />
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor="goal-wallet" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+            <label
+              htmlFor="goal-wallet"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
               Tautkan ke Dompet (Opsional)
             </label>
             <select
               id="goal-wallet"
               value={walletId ?? ""}
               onChange={(e) => setWalletId(e.target.value ? Number(e.target.value) : undefined)}
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             >
               <option value="">Semua Dompet / Saldo Bersama</option>
               {wallets.map((w) => (
@@ -568,7 +591,7 @@ function GoalFormModal({
         </div>
 
         {/* Emergency Fund Checkbox */}
-        <label className="flex items-center gap-2.5 cursor-pointer select-none pt-2 p-3 rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700">
+        <label className="flex items-center gap-2.5 cursor-pointer select-none p-3 rounded-[12px] bg-[var(--surface)] border border-[var(--border)]">
           <input
             type="checkbox"
             checked={isEmergencyFund}
@@ -576,35 +599,14 @@ function GoalFormModal({
             className="h-4 w-4 rounded accent-[var(--primary)]"
           />
           <div>
-            <span className="text-xs font-bold text-neutral-900 dark:text-white block">
+            <span className="text-xs font-bold text-[var(--foreground)] block">
               Tandai sebagai Pos Dana Darurat (Emergency Fund)
             </span>
-            <span className="text-[11px] text-neutral-400 block">
+            <span className="text-[11px] text-[var(--muted-foreground)] block">
               Saldo pos ini akan otomatis dihitung ke dalam metrik ketahanan hidup (Runway Bulan).
             </span>
           </div>
         </label>
-
-        <div className="flex justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-700">
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] text-sm font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-          >
-            Batal
-          </button>
-          <button
-            type="submit"
-            disabled={saveMutation.isPending}
-            className="min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-          >
-            {saveMutation.isPending
-              ? "Menyimpan..."
-              : isEditing
-                ? "Simpan Perubahan"
-                : "Buat Target"}
-          </button>
-        </div>
       </form>
     </ModalSheet>
   );
@@ -660,8 +662,19 @@ function ContributeModal({
       onClose={onClose}
       title={`Setor Tabungan: ${goal?.name}`}
       subtitle="Debit saldo dompet operasional Anda untuk dialokasikan ke pos target tabungan ini."
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={contributeMutation.isPending}>
+            Batal
+          </Button>
+          <Button type="submit" form="goal-contribute-form" disabled={contributeMutation.isPending}>
+            {contributeMutation.isPending ? "Menyetor..." : "Konfirmasi Setor"}
+          </Button>
+        </div>
+      }
     >
       <form
+        id="goal-contribute-form"
         onSubmit={(e) => {
           e.preventDefault();
           setError("");
@@ -680,11 +693,14 @@ function ContributeModal({
         )}
 
         <div className="space-y-1.5">
-          <label htmlFor="contrib-amount" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+          <label
+            htmlFor="contrib-amount"
+            className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+          >
             Nominal Setoran (Rp)
           </label>
           <div className="relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
               Rp
             </span>
             <input
@@ -694,20 +710,23 @@ function ContributeModal({
               value={amount}
               onChange={(e) => setAmount(formatDigitsInput(e.target.value))}
               placeholder="0"
-              className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-sm font-bold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+              className="tabular-nums h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] pl-11 pr-3.5 text-sm font-bold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
             />
           </div>
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="contrib-wallet" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+          <label
+            htmlFor="contrib-wallet"
+            className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+          >
             Sumber Dana (Dompet)
           </label>
           <select
             id="contrib-wallet"
             value={walletId}
             onChange={(e) => setWalletId(Number(e.target.value))}
-            className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+            className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
           >
             {wallets.map((w) => (
               <option key={w.id} value={w.id}>
@@ -718,7 +737,10 @@ function ContributeModal({
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="contrib-note" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+          <label
+            htmlFor="contrib-note"
+            className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+          >
             Catatan Tambahan (Opsional)
           </label>
           <input
@@ -726,26 +748,9 @@ function ContributeModal({
             type="text"
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="Contoh: Tabungan dari sisa gaji minggu ini"
-            className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+            placeholder="Contoh: Sisa gaji minggu ini"
+            className="h-11 w-full rounded-[12px] bg-[var(--surface)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
           />
-        </div>
-
-        <div className="flex justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-700">
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] text-sm font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-          >
-            Batal
-          </button>
-          <button
-            type="submit"
-            disabled={contributeMutation.isPending}
-            className="min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-          >
-            {contributeMutation.isPending ? "Menyetor..." : "Konfirmasi Setor"}
-          </button>
         </div>
       </form>
     </ModalSheet>

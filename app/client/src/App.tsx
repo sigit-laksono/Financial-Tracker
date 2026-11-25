@@ -81,7 +81,13 @@ export function App() {
     const saved = localStorage.getItem("ft-theme");
     return saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
   });
-  const [pinBannerDismissed, setPinBannerDismissed] = useState(false);
+  const [pinBannerDismissed, setPinBannerDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("ft-pin-banner-dismissed") === "true";
+    } catch {
+      return false;
+    }
+  });
 
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickAddMode, setQuickAddMode] = useState<QuickAddMode>("expense");
@@ -211,13 +217,40 @@ export function App() {
     setTxFilters((prev) => ({ ...prev, weekChoice: "all" }));
   };
 
-  const openQuickAdd = (mode: QuickAddMode = "expense") => {
+  const openQuickAdd = useCallback((mode: QuickAddMode = "expense") => {
     setEditingTx(null);
     setPreselectedInstIds([]);
     setPreselectedCcCycle("");
     setQuickAddMode(mode);
     setQuickAddOpen(true);
-  };
+  }, []);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) return;
+      if (e.key.toLowerCase() !== "n") return;
+
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (document.querySelector('[role="dialog"]')) return;
+      if (!isAuthenticated || !dashboardQuery.data) return;
+
+      e.preventDefault();
+      openQuickAdd("expense");
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [isAuthenticated, dashboardQuery.data, openQuickAdd]);
 
   const openPayInstallment = (installmentId: number) => {
     setEditingTx(null);
@@ -288,7 +321,7 @@ export function App() {
     { id: "overview", label: "Ringkasan", shortLabel: "Home", icon: <OverviewIcon /> },
     { id: "wallets", label: "Dompet", shortLabel: "Dompet", icon: <WalletIcon /> },
     { id: "transactions", label: "Transaksi", shortLabel: "Transaksi", icon: <TransactionsIcon /> },
-    { id: "budget", label: "Budgeting", shortLabel: "Budget", icon: <BudgetIcon /> },
+    { id: "budget", label: "Anggaran", shortLabel: "Anggaran", icon: <BudgetIcon /> },
     { id: "goals", label: "Target & Goals", shortLabel: "Goals", icon: <GoalsIcon /> },
     { id: "assets", label: "Aset & Net Worth", shortLabel: "Aset", icon: <AssetIcon /> },
     { id: "debts", label: "Kartu & Utang", shortLabel: "Kartu", icon: <CardDebtIcon /> },
@@ -297,8 +330,8 @@ export function App() {
 
   const nextCycleTheme = (): ThemePref => {
     if (theme === "light") return "dark";
-    if (theme === "dark") return "light";
-    return document.documentElement.classList.contains("dark") ? "light" : "dark";
+    if (theme === "dark") return "system";
+    return "light";
   };
 
   const isDarkActive =
@@ -306,6 +339,15 @@ export function App() {
     (theme === "system" &&
       typeof window !== "undefined" &&
       window.matchMedia("(prefers-color-scheme: dark)").matches);
+
+  const themeLabel =
+    theme === "system"
+      ? isDarkActive
+        ? "Tema: Gelap (Sistem)"
+        : "Tema: Terang (Sistem)"
+      : theme === "dark"
+        ? "Tema: Gelap"
+        : "Tema: Terang";
 
   const tabSuspenseFallback = (
     <StateView kind="loading" title="Memuat halaman..." description="Menyiapkan tampilan tab." />
@@ -554,7 +596,7 @@ export function App() {
             aria-expanded={!railCollapsed}
             aria-label={railCollapsed ? "Perluas sidebar" : "Ciutkan sidebar"}
             onClick={() => setRailCollapsed((v) => !v)}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-[10px] hover:bg-[var(--surface)]"
+            className="inline-flex h-11 w-11 items-center justify-center rounded-[10px] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]"
           >
             <SidebarToggleIcon className="w-5 h-5" />
           </button>
@@ -563,11 +605,18 @@ export function App() {
         <div className="my-3">
           <Button
             onClick={() => openQuickAdd("expense")}
-            aria-label="Catat transaksi baru"
-            className={railCollapsed ? "w-11 px-0" : "w-full"}
+            aria-label="Catat transaksi baru (pintasan N)"
+            className={`${railCollapsed ? "w-11 px-0" : "w-full justify-between px-3.5"} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--card)]`}
           >
-            <PlusIcon className="w-5 h-5" />
-            {!railCollapsed && <span>Catat Transaksi</span>}
+            <span className="inline-flex items-center gap-2">
+              <PlusIcon className="w-5 h-5 shrink-0" />
+              {!railCollapsed && <span>Catat Transaksi</span>}
+            </span>
+            {!railCollapsed && (
+              <kbd className="rounded border border-white/30 bg-white/15 px-1.5 py-0.5 font-mono text-[11px] font-bold leading-none">
+                N
+              </kbd>
+            )}
           </Button>
         </div>
 
@@ -582,7 +631,7 @@ export function App() {
                 aria-current={active ? "page" : undefined}
                 aria-label={railCollapsed ? item.label : undefined}
                 title={railCollapsed ? item.label : undefined}
-                className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] px-3 text-sm font-semibold transition-colors ${
+                className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] px-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] ${
                   active
                     ? "bg-[var(--soft)] text-[var(--soft-foreground)] font-bold"
                     : "text-[var(--foreground)] hover:bg-[var(--surface)]"
@@ -600,7 +649,7 @@ export function App() {
             type="button"
             onClick={togglePrivacy}
             aria-label={isMasked ? "Tampilkan nominal" : "Sembunyikan nominal"}
-            className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] px-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[var(--surface)] ${
+            className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] px-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] ${
               railCollapsed ? "justify-center px-0" : ""
             }`}
           >
@@ -611,13 +660,16 @@ export function App() {
           <button
             type="button"
             onClick={() => setTheme(nextCycleTheme())}
-            aria-label={isDarkActive ? "Beralih ke mode terang" : "Beralih ke mode gelap"}
-            className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] px-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[var(--surface)] ${
+            aria-label={themeLabel}
+            title={themeLabel}
+            className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] px-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] ${
               railCollapsed ? "justify-center px-0" : ""
             }`}
           >
-            {isDarkActive ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
-            {!railCollapsed && <span>{isDarkActive ? "Mode Terang" : "Mode Gelap"}</span>}
+            <span className="shrink-0">
+              {isDarkActive ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
+            </span>
+            {!railCollapsed && <span className="truncate text-left">{themeLabel}</span>}
           </button>
 
           {pinConfigured && (
@@ -628,7 +680,7 @@ export function App() {
                 await queryClient.invalidateQueries({ queryKey: ["auth-status"] });
               }}
               aria-label="Kunci aplikasi"
-              className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] px-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[var(--surface)] ${
+              className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] px-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] ${
                 railCollapsed ? "justify-center px-0" : ""
               }`}
             >
@@ -658,22 +710,10 @@ export function App() {
             <button
               type="button"
               onClick={() => setTheme(nextCycleTheme())}
-              aria-label={isDarkActive ? "Beralih ke mode terang" : "Beralih ke mode gelap"}
+              aria-label={themeLabel}
               className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--control-border)] bg-[var(--card)]"
             >
               {isDarkActive ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("settings")}
-              aria-label="Buka Pengaturan"
-              className={`inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--control-border)] bg-[var(--card)] ${
-                tab === "settings"
-                  ? "border-[var(--primary)] text-[var(--primary)] ring-2 ring-[var(--primary)]/30"
-                  : "text-[var(--foreground)]"
-              }`}
-            >
-              <SettingsIcon className="w-5 h-5" />
             </button>
             {pinConfigured && (
               <button
@@ -691,52 +731,31 @@ export function App() {
           </div>
         </header>
 
-        {/* Mobile Quick Navigation Rail (Horizontal 1-tap switching for all tabs) */}
-        <nav
-          aria-label="Navigasi cepat mobile"
-          className="lg:hidden border-b border-[var(--border)] bg-[var(--card)] px-3 py-2 overflow-x-auto"
-        >
-          <div className="flex items-center gap-1.5 min-w-max">
-            {navItems.map((item) => {
-              const active = tab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setTab(item.id)}
-                  aria-current={active ? "page" : undefined}
-                  className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-full px-3 text-xs font-semibold transition-all ${
-                    active
-                      ? "bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs"
-                      : "bg-[var(--surface)] text-[var(--foreground)] border border-[var(--border)] hover:bg-[var(--control-border)]"
-                  }`}
-                >
-                  <span className="w-4 h-4 shrink-0">{item.icon}</span>
-                  <span>{item.shortLabel}</span>
-                </button>
-              );
-            })}
-          </div>
-        </nav>
-
         <main className="mx-auto w-full max-w-[1040px] px-4 pt-4 safe-bottom-pad sm:px-6 sm:pt-6">
-          {!pinConfigured && !pinBannerDismissed && tab !== "settings" && (
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-[14px] border border-[var(--border)] bg-[var(--card)] px-4 py-3 text-sm">
-              <span>
-                PIN keamanan belum aktif. Aktifkan jika aplikasi akan diakses lewat jaringan publik.
+          {!pinConfigured && !pinBannerDismissed && tab === "overview" && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-[14px] border border-[var(--border)] bg-[var(--card)] py-2.5 px-3.5 text-xs">
+              <span className="text-[var(--foreground)]">
+                PIN keamanan belum aktif. Aktifkan jika aplikasi diakses dari jaringan publik.
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 ml-auto">
                 <Button
                   variant="secondary"
                   onClick={() => setTab("settings")}
-                  className="min-h-[44px] px-3 text-xs"
+                  className="min-h-[40px] px-3 py-1.5 text-xs"
                 >
                   Atur PIN
                 </Button>
                 <button
                   type="button"
-                  onClick={() => setPinBannerDismissed(true)}
-                  className="min-h-[44px] px-2 text-xs font-semibold text-[var(--muted-foreground)] hover:underline"
+                  onClick={() => {
+                    setPinBannerDismissed(true);
+                    try {
+                      localStorage.setItem("ft-pin-banner-dismissed", "true");
+                    } catch {
+                      // Ignore storage errors
+                    }
+                  }}
+                  className="min-h-[40px] px-2 text-xs font-semibold text-[var(--muted-foreground)] hover:underline"
                 >
                   Nanti
                 </button>
@@ -792,7 +811,7 @@ export function App() {
               onClick={() => openQuickAdd("expense")}
               aria-label="Catat transaksi baru"
               style={{ boxShadow: "var(--elevation-float)" }}
-              className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-95 active:scale-95 transition-transform"
+              className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] hover:bg-[var(--primary-solid-hover)] active:scale-95 transition-transform"
             >
               <PlusIcon className="w-6 h-6" />
             </button>
@@ -817,40 +836,22 @@ export function App() {
           <button
             type="button"
             onClick={() => setMobileMenuOpen(true)}
-            aria-label="Buka menu fitur lainnya"
+            aria-label={!pinConfigured ? "Buka menu fitur lainnya (PIN belum aktif)" : "Buka menu fitur lainnya"}
             aria-expanded={mobileMenuOpen}
             className={`flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-[10px] text-[11px] font-semibold transition-colors relative ${
               ["budget", "goals", "assets", "debts", "settings"].includes(tab)
-                ? "bg-[var(--soft)] text-[var(--soft-foreground)] font-bold"
+                ? "bg-[var(--soft)] text-[var(--soft-foreground)] font-bold border border-[var(--primary)]/35"
                 : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
             }`}
           >
-            {tab === "budget" ? (
-              <BudgetIcon className="w-5 h-5" />
-            ) : tab === "goals" ? (
-              <GoalsIcon className="w-5 h-5" />
-            ) : tab === "assets" ? (
-              <AssetIcon className="w-5 h-5" />
-            ) : tab === "debts" ? (
-              <CardDebtIcon className="w-5 h-5" />
-            ) : tab === "settings" ? (
-              <SettingsIcon className="w-5 h-5" />
-            ) : (
-              <MenuIcon className="w-5 h-5" />
+            <MenuIcon className="w-5 h-5" />
+            <span>Menu</span>
+            {!pinConfigured && (
+              <span
+                aria-hidden="true"
+                className="absolute top-1.5 right-3 h-2 w-2 rounded-full bg-[var(--highlight)] ring-2 ring-[var(--card)]"
+              />
             )}
-            <span>
-              {tab === "budget"
-                ? "Budget"
-                : tab === "goals"
-                  ? "Goals"
-                  : tab === "assets"
-                    ? "Aset"
-                    : tab === "debts"
-                      ? "Kartu"
-                      : tab === "settings"
-                        ? "Atur"
-                        : "Menu"}
-            </span>
           </button>
         </div>
       </nav>
@@ -874,7 +875,7 @@ export function App() {
                   setTab("budget");
                   setMobileMenuOpen(false);
                 }}
-                className={`flex items-center gap-2.5 p-3 rounded-[12px] border text-left transition-all ${
+                className={`flex h-full min-h-[76px] items-center gap-2.5 p-3 rounded-[12px] border text-left transition-all ${
                   tab === "budget"
                     ? "border-[var(--primary)] bg-[var(--soft)] text-[var(--soft-foreground)] font-bold"
                     : "border-[var(--border)] bg-[var(--card)] hover:bg-[var(--surface)] text-[var(--foreground)]"
@@ -883,8 +884,8 @@ export function App() {
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-[var(--surface)] text-[var(--primary)]">
                   <BudgetIcon className="w-5 h-5" />
                 </div>
-                <div>
-                  <div className="text-sm font-bold">Budgeting</div>
+                <div className="min-w-0">
+                  <div className="text-sm font-bold">Anggaran</div>
                   <div className="text-[11px] text-[var(--muted-foreground)]">Pagu Anggaran Bulanan</div>
                 </div>
               </button>
@@ -895,7 +896,7 @@ export function App() {
                   setTab("goals");
                   setMobileMenuOpen(false);
                 }}
-                className={`flex items-center gap-2.5 p-3 rounded-[12px] border text-left transition-all ${
+                className={`flex h-full min-h-[76px] items-center gap-2.5 p-3 rounded-[12px] border text-left transition-all ${
                   tab === "goals"
                     ? "border-[var(--primary)] bg-[var(--soft)] text-[var(--soft-foreground)] font-bold"
                     : "border-[var(--border)] bg-[var(--card)] hover:bg-[var(--surface)] text-[var(--foreground)]"
@@ -904,7 +905,7 @@ export function App() {
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-[var(--surface)] text-[var(--primary)]">
                   <GoalsIcon className="w-5 h-5" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-sm font-bold">Target & Goals</div>
                   <div className="text-[11px] text-[var(--muted-foreground)]">Dana Darurat</div>
                 </div>
@@ -923,7 +924,7 @@ export function App() {
                   setTab("assets");
                   setMobileMenuOpen(false);
                 }}
-                className={`flex items-center gap-2.5 p-3 rounded-[12px] border text-left transition-all ${
+                className={`flex h-full min-h-[76px] items-center gap-2.5 p-3 rounded-[12px] border text-left transition-all ${
                   tab === "assets"
                     ? "border-[var(--primary)] bg-[var(--soft)] text-[var(--soft-foreground)] font-bold"
                     : "border-[var(--border)] bg-[var(--card)] hover:bg-[var(--surface)] text-[var(--foreground)]"
@@ -932,7 +933,7 @@ export function App() {
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-[var(--surface)] text-[var(--primary)]">
                   <AssetIcon className="w-5 h-5" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-sm font-bold">Aset & Net Worth</div>
                   <div className="text-[11px] text-[var(--muted-foreground)]">Kekayaan Bersih</div>
                 </div>
@@ -944,7 +945,7 @@ export function App() {
                   setTab("debts");
                   setMobileMenuOpen(false);
                 }}
-                className={`flex items-center gap-2.5 p-3 rounded-[12px] border text-left transition-all ${
+                className={`flex h-full min-h-[76px] items-center gap-2.5 p-3 rounded-[12px] border text-left transition-all ${
                   tab === "debts"
                     ? "border-[var(--primary)] bg-[var(--soft)] text-[var(--soft-foreground)] font-bold"
                     : "border-[var(--border)] bg-[var(--card)] hover:bg-[var(--surface)] text-[var(--foreground)]"
@@ -953,7 +954,7 @@ export function App() {
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-[var(--surface)] text-[var(--primary)]">
                   <CardDebtIcon className="w-5 h-5" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-sm font-bold">Kartu & Utang</div>
                   <div className="text-[11px] text-[var(--muted-foreground)]">
                     Multi-CC & Cicilan
@@ -973,7 +974,7 @@ export function App() {
                 setTab("settings");
                 setMobileMenuOpen(false);
               }}
-              className={`w-full flex items-center gap-3 p-3 rounded-[12px] border text-left transition-all ${
+              className={`w-full h-full min-h-[76px] flex items-center gap-3 p-3 rounded-[12px] border text-left transition-all ${
                 tab === "settings"
                   ? "border-[var(--primary)] bg-[var(--soft)] text-[var(--soft-foreground)] font-bold"
                   : "border-[var(--border)] bg-[var(--card)] hover:bg-[var(--surface)] text-[var(--foreground)]"
@@ -982,8 +983,15 @@ export function App() {
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-[var(--surface)] text-[var(--primary)]">
                 <SettingsIcon className="w-5 h-5" />
               </div>
-              <div className="flex-1">
-                <div className="text-sm font-bold">Pengaturan Aplikasi</div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold">Pengaturan Aplikasi</span>
+                  {!pinConfigured && (
+                    <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 border border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800/70">
+                      PIN nonaktif
+                    </span>
+                  )}
+                </div>
                 <div className="text-[11px] text-[var(--muted-foreground)]">
                   Keamanan PIN, tagihan rutin, siklus gajian, cadangan data
                 </div>

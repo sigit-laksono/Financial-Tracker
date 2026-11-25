@@ -1,15 +1,16 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import {
   formatDigitsInput,
+  formatMonthTitle,
   formatRupiah,
   jakartaToday,
   parsePositiveInt,
   shiftMonth,
 } from "../lib/format";
 import { AlertIcon } from "./Icons";
-import { Button, ModalSheet } from "./UI";
+import { Badge, Button, ModalSheet } from "./UI";
 
 export type SplitPayTarget = {
   id: number;
@@ -17,6 +18,21 @@ export type SplitPayTarget = {
   amount: number;
   transactionDate: string;
 };
+
+const MONTHS_ID = [
+  { value: "01", label: "Januari" },
+  { value: "02", label: "Februari" },
+  { value: "03", label: "Maret" },
+  { value: "04", label: "April" },
+  { value: "05", label: "Mei" },
+  { value: "06", label: "Juni" },
+  { value: "07", label: "Juli" },
+  { value: "08", label: "Agustus" },
+  { value: "09", label: "September" },
+  { value: "10", label: "Oktober" },
+  { value: "11", label: "November" },
+  { value: "12", label: "Desember" },
+];
 
 export function SplitPayModal({
   target,
@@ -28,6 +44,7 @@ export function SplitPayModal({
   onSuccess: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const formId = useId();
   const [name, setName] = useState("");
   const [count, setCount] = useState("6");
   const [amountInput, setAmountInput] = useState("");
@@ -81,6 +98,15 @@ export function SplitPayModal({
   };
 
   const totalConverted = Number(count || 0) * parsePositiveInt(amountInput);
+  const selectedYear = firstPeriod.slice(0, 4) || jakartaToday().slice(0, 4);
+  const selectedMonth = firstPeriod.slice(5, 7) || "01";
+  const currentYearNum = Number(jakartaToday().slice(0, 4));
+  const yearOptions = Array.from(
+    new Set([currentYearNum - 1, currentYearNum, currentYearNum + 1, currentYearNum + 2, Number(selectedYear)]),
+  ).sort((a, b) => a - b);
+  const formattedPeriod = /^\d{4}-\d{2}$/.test(firstPeriod)
+    ? formatMonthTitle(firstPeriod)
+    : "-";
 
   return (
     <ModalSheet
@@ -92,10 +118,23 @@ export function SplitPayModal({
           ? `${target.merchant} (${formatRupiah(target.amount)}) akan dikeluarkan dari tagihan penuh siklus ini dan dipecah bertahap.`
           : undefined
       }
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Batal
+          </Button>
+          <Button type="submit" form={formId} disabled={mutation.isPending}>
+            {mutation.isPending ? "Memproses..." : "Konfirmasi Ubah ke Cicilan"}
+          </Button>
+        </div>
+      }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form id={formId} onSubmit={handleSubmit} className="space-y-4">
         <div className="space-y-1.5">
-          <label htmlFor="sp-name" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+          <label
+            htmlFor="sp-name"
+            className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+          >
             Nama Akun Cicilan
           </label>
           <input
@@ -103,13 +142,17 @@ export function SplitPayModal({
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+            placeholder="Contoh: Cicilan Laptop"
+            className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-3 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
           />
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <label htmlFor="sp-count" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+            <label
+              htmlFor="sp-count"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
               Tenor (Bulan)
             </label>
             <input
@@ -125,16 +168,19 @@ export function SplitPayModal({
                   setAmountInput(Math.ceil(target.amount / Number(next)).toLocaleString("id-ID"));
                 }
               }}
-              className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className="tabular-nums w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-3 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             />
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor="sp-amount" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+            <label
+              htmlFor="sp-amount"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
               Cicilan / Bulan (Rp)
             </label>
             <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                 Rp
               </span>
               <input
@@ -143,30 +189,65 @@ export function SplitPayModal({
                 value={amountInput}
                 onChange={(e) => setAmountInput(formatDigitsInput(e.target.value))}
                 placeholder="0"
-                className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-sm font-bold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono"
+                className="tabular-nums w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-3 text-sm font-bold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
               />
             </div>
           </div>
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="sp-period" className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-            Mulai Tagihan Bulan (YYYY-MM)
-          </label>
-          <input
-            id="sp-period"
-            type="month"
-            value={firstPeriod}
-            onChange={(e) => setFirstPeriod(e.target.value)}
-            className="tabular-nums w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
-          />
+          <div className="flex items-center justify-between gap-2">
+            <label
+              htmlFor="sp-period-month"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+            >
+              Mulai Tagihan Bulan
+            </label>
+            <Badge tone="info">{formattedPeriod}</Badge>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <select
+              id="sp-period-month"
+              aria-label="Mulai tagihan bulan"
+              value={selectedMonth}
+              onChange={(e) => setFirstPeriod(`${selectedYear}-${e.target.value}`)}
+              className="h-11 w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
+            >
+              {MONTHS_ID.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <select
+              id="sp-period-year"
+              aria-label="Mulai tagihan tahun"
+              value={selectedYear}
+              onChange={(e) => setFirstPeriod(`${e.target.value}-${selectedMonth}`)}
+              className="tabular-nums h-11 w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
+            >
+              {yearOptions.map((y) => (
+                <option key={y} value={String(y)}>
+                  {y}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
-        <div className="rounded-[16px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/70 p-3.5 text-sm">
-          <div className="flex justify-between items-center">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">Total Pokok + Bunga Cicilan</span>
-            <strong className="tabular-nums font-black text-neutral-900 dark:text-white">{formatRupiah(totalConverted)}</strong>
+        <div className="rounded-[16px] border border-dashed border-[var(--border)] bg-[var(--surface)] p-3.5 text-sm space-y-1.5">
+          <div className="flex justify-between items-center gap-2">
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
+              Total Pokok + Bunga Cicilan
+            </span>
+            <strong className="tabular-nums font-black text-[var(--foreground)]">
+              {formatRupiah(totalConverted)}
+            </strong>
           </div>
+          <p className="text-xs text-[var(--muted-foreground)]">
+            Angsuran pertama dimulai pada{" "}
+            <strong className="text-[var(--foreground)]">{formattedPeriod}</strong>.
+          </p>
         </div>
 
         {error && (
@@ -178,23 +259,6 @@ export function SplitPayModal({
             <span>{error}</span>
           </div>
         )}
-
-        <div className="flex justify-end gap-2 pt-2 border-t border-neutral-200 dark:border-neutral-700">
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] text-sm font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-          >
-            Batal
-          </button>
-          <button
-            type="submit"
-            disabled={mutation.isPending}
-            className="min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-          >
-            {mutation.isPending ? "Memproses..." : "Konfirmasi Ubah ke Cicilan"}
-          </button>
-        </div>
       </form>
     </ModalSheet>
   );

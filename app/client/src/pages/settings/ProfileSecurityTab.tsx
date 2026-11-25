@@ -55,14 +55,14 @@ export function ProfileSecurityTab({
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* Appearance Card */}
-        <Card className="space-y-4 rounded-[18px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-5 sm:p-6 shadow-xs">
+        <Card className="space-y-4 rounded-[18px] border border-[var(--border)] bg-[var(--card)] p-5 sm:p-6 shadow-xs">
           <div>
             <h2 className="text-base font-bold text-[var(--foreground)]">Tampilan Tema</h2>
             <p className="text-xs text-[var(--muted-foreground)] mt-0.5">
               Sesuaikan preferensi pencahayaan layar untuk kenyamanan visual Anda.
             </p>
           </div>
-          <fieldset className="grid grid-cols-3 gap-1.5 p-1.5 rounded-[16px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 m-0">
+          <fieldset className="grid grid-cols-3 gap-1.5 p-1.5 rounded-[16px] bg-[var(--surface)] border border-[var(--border)] m-0">
             <legend className="sr-only">Pilih tema tampilan</legend>
             {(
               [
@@ -78,10 +78,10 @@ export function ProfileSecurityTab({
                   type="button"
                   aria-pressed={active}
                   onClick={() => onThemeChange(key)}
-                  className={`inline-flex min-h-[42px] items-center justify-center gap-2 rounded-[12px] text-xs font-bold transition-all ${
+                  className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-[12px] text-xs font-bold transition-all ${
                     active
-                      ? "bg-[var(--primary)] text-white shadow-sm"
-                      : "text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white hover:bg-white/60 dark:hover:bg-neutral-700/50"
+                      ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-sm"
+                      : "text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--card)]/70"
                   }`}
                 >
                   {icon}
@@ -93,7 +93,7 @@ export function ProfileSecurityTab({
         </Card>
 
         {/* Security PIN Card */}
-        <Card className="space-y-4 rounded-[18px] border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-5 sm:p-6 shadow-xs">
+        <Card className="space-y-4 rounded-[18px] border border-[var(--border)] bg-[var(--card)] p-5 sm:p-6 shadow-xs">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <LockIcon className="w-4 h-4 text-[var(--primary)]" />
@@ -113,7 +113,7 @@ export function ProfileSecurityTab({
               <div className="space-y-1.5">
                 <label
                   htmlFor="pin-current"
-                  className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400 dark:text-neutral-500"
+                  className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
                 >
                   PIN Saat Ini
                 </label>
@@ -123,14 +123,14 @@ export function ProfileSecurityTab({
                   value={currentPin}
                   onChange={(e) => setCurrentPin(e.target.value)}
                   placeholder="••••"
-                  className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono tracking-widest"
+                  className="min-h-[44px] w-full rounded-[14px] bg-[var(--surface)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono tracking-widest"
                 />
               </div>
             )}
             <div className="space-y-1.5">
               <label
                 htmlFor="pin-next"
-                className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400 dark:text-neutral-500"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
               >
                 {pinConfigured
                   ? "PIN Baru (kosongkan jika ingin mematikan kunci)"
@@ -142,7 +142,7 @@ export function ProfileSecurityTab({
                 value={newPin}
                 onChange={(e) => setNewPin(e.target.value)}
                 placeholder="••••"
-                className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all font-mono tracking-widest"
+                className="min-h-[44px] w-full rounded-[14px] bg-[var(--surface)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono tracking-widest"
               />
             </div>
 
@@ -156,12 +156,9 @@ export function ProfileSecurityTab({
               </div>
             )}
 
-            <div className="flex flex-wrap gap-2.5 pt-1">
-              <Button type="submit" disabled={isPending} className="min-h-[44px] rounded-[14px] px-5 font-bold">
-                {isPending ? "Memproses..." : pinConfigured ? "Simpan PIN" : "Aktifkan PIN"}
-              </Button>
+            <div className="flex flex-col-reverse sm:flex-row sm:flex-wrap sm:items-center gap-2.5 border-t border-[var(--border)] pt-3">
               {pinConfigured && (
-                <>
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     variant="secondary"
                     type="button"
@@ -169,7 +166,7 @@ export function ProfileSecurityTab({
                       await api.logout();
                       onAuthChanged();
                     }}
-                    className="min-h-[44px] rounded-[14px] font-semibold"
+                    className="min-h-[44px] flex-1 sm:flex-initial rounded-[14px] font-semibold"
                   >
                     Kunci Sekarang
                   </Button>
@@ -181,12 +178,19 @@ export function ProfileSecurityTab({
                       onAuthChanged();
                       onToast("Semua sesi perangkat lain dicabut");
                     }}
-                    className="min-h-[44px] rounded-[14px] font-semibold"
+                    className="min-h-[44px] flex-1 sm:flex-initial rounded-[14px] font-semibold"
                   >
                     Kunci Semua Sesi
                   </Button>
-                </>
+                </div>
               )}
+              <Button
+                type="submit"
+                disabled={isPending}
+                className="w-full sm:w-auto sm:ml-auto min-h-[44px] rounded-[14px] px-5 font-bold"
+              >
+                {isPending ? "Memproses..." : pinConfigured ? "Simpan PIN" : "Aktifkan PIN"}
+              </Button>
             </div>
           </form>
         </Card>

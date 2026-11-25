@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from "react";
 import { formatCompactRupiah, formatRupiah, formatShortDate } from "../lib/format";
+import { usePrivacyMode } from "../lib/usePrivacyMode";
 
 export type DailyDataPoint = {
   date: string;
@@ -20,6 +21,7 @@ export function CashflowSparkline({
   className = "",
   variant = "standalone",
 }: CashflowSparklineProps) {
+  const { isMasked } = usePrivacyMode();
   const gradientId = useId();
   const [activePoint, setActivePoint] = useState<DailyDataPoint | null>(null);
 
@@ -92,7 +94,7 @@ export function CashflowSparkline({
   return (
     <div
       role="img"
-      aria-label={`Tren pengeluaran ${days} hari terakhir. Total pengeluaran: ${formatRupiah(totalExpense)}.`}
+      aria-label={`Tren pengeluaran ${days} hari terakhir. Total pengeluaran: ${formatRupiah(totalExpense, isMasked)}.`}
       className={containerClass}
     >
       <div className="flex items-center justify-between pb-2 text-xs text-[var(--muted-foreground)]">
@@ -102,13 +104,13 @@ export function CashflowSparkline({
         <span className="tabular-nums font-bold text-[var(--foreground)]">
           {activePoint ? (
             <span className="text-[var(--primary)] font-mono">
-              {formatShortDate(activePoint.date)}: {formatRupiah(activePoint.expense)}
+              {formatShortDate(activePoint.date)}: {formatRupiah(activePoint.expense, isMasked)}
             </span>
           ) : (
             <span className="text-xs font-semibold text-[var(--muted-foreground)]">
               Total{" "}
               <strong className="font-mono text-[var(--foreground)]">
-                {formatCompactRupiah(totalExpense)}
+                {formatCompactRupiah(totalExpense, isMasked)}
               </strong>
             </span>
           )}

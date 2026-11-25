@@ -244,6 +244,42 @@ export function OnboardingModal({
             ? "Saldo Awal & Kartu Kredit"
             : "Estimasi Penghasilan & Gaji Bulanan"
       }`}
+      footer={
+        <div className="flex items-center justify-between gap-3">
+          {step > 1 ? (
+            <Button
+              variant="secondary"
+              onClick={() => setStep((s) => (s - 1) as 1 | 2)}
+              className="px-4"
+            >
+              ← Kembali
+            </Button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                localStorage.setItem("ft-onboarding-completed", "true");
+                onClose();
+              }}
+              className="min-h-[44px] px-2 text-xs font-semibold text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:underline"
+            >
+              Lewati Setup
+            </button>
+          )}
+
+          <Button
+            disabled={completeMutation.isPending}
+            onClick={handleNext}
+            className="px-5 ml-auto"
+          >
+            {completeMutation.isPending
+              ? "Menyimpan..."
+              : step === 3
+                ? "Selesai & Mulai Mencatat"
+                : "Lanjut →"}
+          </Button>
+        </div>
+      }
     >
       <div className="space-y-4 pt-1">
         {/* Step Indicator Progress Bar */}
@@ -396,8 +432,8 @@ export function OnboardingModal({
                       type="text"
                       value={walletName}
                       onChange={(e) => setWalletName(e.target.value)}
-                      placeholder="Contoh: BCA Payroll, Rekening Mandiri"
-                      className="min-h-[44px] w-full rounded-[10px] border border-[var(--control-border)] bg-[var(--card)] px-3 text-sm font-semibold text-[var(--foreground)]"
+                      placeholder="Contoh: BCA Payroll"
+                      className="min-h-[44px] w-full rounded-[10px] border border-[var(--control-border)] bg-[var(--card)] px-3 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)]"
                     />
                   </div>
                 </div>
@@ -448,9 +484,9 @@ export function OnboardingModal({
               {hasCc && (
                 <div className="space-y-3 pt-2 border-t border-[var(--border)] animate-in fade-in duration-200">
                   <div className="space-y-1.5">
-                    <label className="block text-xs font-semibold text-[var(--muted-foreground)]">
+                    <p className="block text-xs font-semibold text-[var(--muted-foreground)]">
                       Penyedia Kartu Kredit
-                    </label>
+                    </p>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                       {CC_PROVIDERS.map((c) => {
                         const isSelected = ccProvider === c.id;
@@ -550,12 +586,12 @@ export function OnboardingModal({
             <div className="space-y-1.5">
               <label
                 htmlFor="ob-income-estimate"
-                className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400 dark:text-neutral-500"
+                className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
               >
                 Perkiraan Penghasilan / Gaji Bulanan (Rp)
               </label>
               <div className="relative">
-                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-sm font-bold text-neutral-400 dark:text-neutral-500">
+                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-sm font-bold text-[var(--muted-foreground)]">
                   Rp
                 </span>
                 <input
@@ -564,60 +600,24 @@ export function OnboardingModal({
                   value={incomeEstimateInput}
                   onChange={(e) => setIncomeEstimateInput(formatDigitsInput(e.target.value))}
                   placeholder="Contoh: 8.000.000"
-                  className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 text-lg font-bold text-neutral-900 dark:text-white font-mono tabular-nums focus:border-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
+                  className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-3 text-lg font-bold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] font-mono tabular-nums focus:border-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                 />
               </div>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              <p className="text-xs text-[var(--muted-foreground)]">
                 Estimasi gaji bersih ini akan digunakan sebagai dasar perhitungan anggaran per siklus dan acuan arus kas harian Anda.
               </p>
             </div>
 
-            <div className="rounded-[14px] border border-neutral-200 dark:border-neutral-700 bg-[#f8f9fa] dark:bg-neutral-800/40 p-4 text-xs text-neutral-600 dark:text-neutral-300 leading-relaxed space-y-1">
-              <p className="font-bold text-neutral-900 dark:text-white">💡 Anggaran Kategori Kustom</p>
+            <div className="rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface)] p-4 text-xs text-[var(--muted-foreground)] leading-relaxed space-y-1">
+              <p className="font-bold text-[var(--foreground)]">Anggaran Kategori Kustom</p>
               <p>
                 Anda bebas menentukan pagu anggaran sesuai kebutuhan untuk masing-masing kategori belanja (custom budget) kapan saja melalui menu{" "}
-                <strong className="text-neutral-900 dark:text-white">Budgeting</strong> atau{" "}
-                <strong className="text-neutral-900 dark:text-white">Pengaturan</strong>.
+                <strong className="text-[var(--foreground)]">Anggaran</strong> atau{" "}
+                <strong className="text-[var(--foreground)]">Pengaturan</strong>.
               </p>
             </div>
           </div>
         )}
-
-        {/* Action Buttons */}
-        <div className="mt-5 flex items-center justify-between gap-3 border-t border-[var(--border)] pt-4">
-          {step > 1 ? (
-            <Button
-              variant="secondary"
-              onClick={() => setStep((s) => (s - 1) as 1 | 2)}
-              className="min-h-[44px] px-4"
-            >
-              ← Kembali
-            </Button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                localStorage.setItem("ft-onboarding-completed", "true");
-                onClose();
-              }}
-              className="min-h-[44px] px-2 text-xs font-semibold text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:underline"
-            >
-              Lewati Setup
-            </button>
-          )}
-
-          <Button
-            disabled={completeMutation.isPending}
-            onClick={handleNext}
-            className="min-h-[44px] px-5 ml-auto"
-          >
-            {completeMutation.isPending
-              ? "Menyimpan..."
-              : step === 3
-                ? "🎉 Selesai & Mulai Mencatat"
-                : "Lanjut →"}
-          </Button>
-        </div>
       </div>
     </ModalSheet>
   );

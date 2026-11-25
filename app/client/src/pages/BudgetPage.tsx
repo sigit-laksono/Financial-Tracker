@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CategoryBucket } from "../../../shared/src/dtos";
 import {
@@ -11,7 +11,7 @@ import {
   TrashIcon,
 } from "../components/Icons";
 import { Badge, Button, Card, ModalSheet, StateView } from "../components/UI";
-import { api, ApiError, type BudgetCategorySummary } from "../lib/api";
+import { api, ApiError, type BudgetCategorySummary, type CategoryDto } from "../lib/api";
 import {
   formatDigitsInput,
   formatMonthTitle,
@@ -22,6 +22,15 @@ import {
 } from "../lib/format";
 import { budgetKeys, dashboardKeys } from "../lib/queryKeys";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
+
+type BucketFilterTab = "all" | CategoryBucket;
+type IncomeArchiveTab = "income" | "archived";
+
+const BUCKET_SHORT_LABELS: Record<CategoryBucket, string> = {
+  needs: "Needs",
+  wants: "Wants",
+  savings: "Savings",
+};
 
 const COLOR_PRESETS = [
   "#00797a",
@@ -47,6 +56,14 @@ export function BudgetPage({
   const queryClient = useQueryClient();
   const { isMasked } = usePrivacyMode();
 
+  // Bucket filter & accordion for unconfigured Rp 0 categories
+  const [activeBucketTab, setActiveBucketTab] = useState<BucketFilterTab>("all");
+  const [showZeroByBucket, setShowZeroByBucket] = useState<Record<CategoryBucket, boolean>>({
+    needs: false,
+    wants: false,
+    savings: false,
+  });
+
   // Bucket top-level limit edit state
   const [editingBucket, setEditingBucket] = useState<CategoryBucket | null>(null);
   const [bucketLimitInput, setBucketLimitInput] = useState("");
@@ -59,15 +76,58 @@ export function BudgetPage({
   const [modalBucket, setModalBucket] = useState<CategoryBucket>("needs");
   const [modalColor, setModalColor] = useState("#00797a");
   const [modalLimit, setModalLimit] = useState("");
+  const [modalIsMandatory, setModalIsMandatory] = useState(false);
   const [modalError, setModalError] = useState("");
 
   // Delete category confirmation state
   const [deletingCategory, setDeletingCategory] = useState<BudgetCategorySummary | null>(null);
 
+  // Income & Archive Category Management Modal state
+  const [incomeArchiveModalOpen, setIncomeArchiveModalOpen] = useState(false);
+  const [incomeArchiveTab, setIncomeArchiveTab] = useState<IncomeArchiveTab>("income");
+  const [newIncomeName, setNewIncomeName] = useState("");
+  const [newIncomeError, setNewIncomeError] = useState("");
+  const [editingIncomeId, setEditingIncomeId] = useState<number | null>(null);
+  const [editingIncomeName, setEditingIncomeName] = useState("");
+  const [confirmDeleteArchivedId, setConfirmDeleteArchivedId] = useState<number | null>(null);
+  const [manageModalError, setManageModalError] = useState("");
+
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: budgetKeys.summary(period),
     queryFn: () => api.getBudgetSummary(period),
   });
+
+  const { data: categoriesData } = useQuery({
+    queryKey: ["categories"],
+    queryFn: () => api.getCategories(),
+  });
+
+  const allCategories = categoriesData?.categories ?? [];
+
+  const categoryMandatoryMap = useMemo(() => {
+    const map = new Map<number, boolean>();
+    for (const cat of allCategories) {
+      map.set(cat.id, cat.isMandatory);
+    }
+    return map;
+  }, [allCategories]);
+
+  const incomeCategories = useMemo(
+    () => allCategories.filter((cat) => cat.type === "income" && !cat.isArchived),
+    [allCategories],
+  );
+
+  const archivedCategories = useMemo(
+    () => allCategories.filter((cat) => cat.isArchived),
+    [allCategories],
+  );
+
+  const invalidateCategoryQueries = async () => {
+    await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
+    await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
+    await queryClient.invalidateQueries({ queryKey: ["categories"] });
+    await queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+  };
 
   const saveBudgetMutation = useMutation({
     mutationFn: async ({ category, limitAmount }: { category: string; limitAmount: number }) => {
@@ -78,9 +138,7 @@ export function BudgetPage({
       });
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
-      await queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      await invalidateCategoryQueries();
       onToast("Anggaran siklus berhasil diperbarui");
     },
     onError: (err) => {
@@ -95,6 +153,7 @@ export function BudgetPage({
       name: string;
       bucket: CategoryBucket;
       color: string;
+      isMandatory: boolean;
       budgetLimit?: number;
     }) => {
       return api.createCategory({
@@ -102,16 +161,13 @@ export function BudgetPage({
         type: "expense",
         bucket: payload.bucket,
         color: payload.color,
-        isMandatory: false,
+        isMandatory: payload.isMandatory,
         budgetLimit: payload.budgetLimit,
         period,
       });
     },
     onSuccess: async (_, variables) => {
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
-      await queryClient.invalidateQueries({ queryKey: ["categories"] });
-      await queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      await invalidateCategoryQueries();
       setCategoryModalOpen(false);
       onToast(`Kategori "${variables.name}" berhasil ditambahkan`);
     },
@@ -132,6 +188,7 @@ export function BudgetPage({
         name?: string;
         bucket?: CategoryBucket;
         color?: string;
+        isMandatory?: boolean;
         budgetLimit?: number;
         period?: string;
       };
@@ -139,10 +196,7 @@ export function BudgetPage({
       return api.updateCategory(id, payload);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
-      await queryClient.invalidateQueries({ queryKey: ["categories"] });
-      await queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      await invalidateCategoryQueries();
       setCategoryModalOpen(false);
       setEditingCategory(null);
       onToast("Kategori berhasil diperbarui");
@@ -159,10 +213,7 @@ export function BudgetPage({
       return api.deleteCategory(id);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summaryRoot });
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
-      await queryClient.invalidateQueries({ queryKey: ["categories"] });
-      await queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      await invalidateCategoryQueries();
       const deletedName = deletingCategory?.categoryName ?? "Kategori";
       setDeletingCategory(null);
       onToast(`${deletedName} berhasil dihapus`);
@@ -170,6 +221,71 @@ export function BudgetPage({
     onError: (err) => {
       const msg = err instanceof ApiError ? err.message : "Gagal menghapus kategori.";
       setDeletingCategory(null);
+      onToast(msg);
+    },
+  });
+
+  const createIncomeCategoryMutation = useMutation({
+    mutationFn: async (name: string) => {
+      return api.createCategory({
+        name,
+        type: "income",
+        color: "#009267",
+      });
+    },
+    onSuccess: async (_, name) => {
+      await invalidateCategoryQueries();
+      setNewIncomeName("");
+      setNewIncomeError("");
+      setManageModalError("");
+      onToast(`Kategori pemasukan "${name}" berhasil ditambahkan`);
+    },
+    onError: (err) => {
+      const msg = err instanceof ApiError ? err.message : "Gagal menambahkan kategori pemasukan.";
+      setNewIncomeError(msg);
+      onToast(msg);
+    },
+  });
+
+  const manageCategoryMutation = useMutation({
+    mutationFn: async ({
+      id,
+      payload,
+    }: {
+      id: number;
+      payload: Parameters<typeof api.updateCategory>[1];
+      successMessage: string;
+    }) => {
+      return api.updateCategory(id, payload);
+    },
+    onSuccess: async (_, variables) => {
+      await invalidateCategoryQueries();
+      setEditingIncomeId(null);
+      setEditingIncomeName("");
+      setManageModalError("");
+      onToast(variables.successMessage);
+    },
+    onError: (err) => {
+      const msg = err instanceof ApiError ? err.message : "Gagal memperbarui kategori.";
+      setManageModalError(msg);
+      onToast(msg);
+    },
+  });
+
+  const deleteArchivedCategoryMutation = useMutation({
+    mutationFn: async ({ id }: { id: number; name: string }) => {
+      return api.deleteCategory(id);
+    },
+    onSuccess: async (_, variables) => {
+      await invalidateCategoryQueries();
+      setConfirmDeleteArchivedId(null);
+      setManageModalError("");
+      onToast(`Kategori "${variables.name}" berhasil dihapus`);
+    },
+    onError: (err) => {
+      const msg = err instanceof ApiError ? err.message : "Gagal menghapus kategori.";
+      setConfirmDeleteArchivedId(null);
+      setManageModalError(msg);
       onToast(msg);
     },
   });
@@ -205,12 +321,54 @@ export function BudgetPage({
   const overAllocatedPercent =
     baselineFund > 0 ? Math.round((overAllocated / baselineFund) * 100) : 0;
 
+  const openIncomeArchiveModal = () => {
+    setIncomeArchiveTab("income");
+    setNewIncomeName("");
+    setNewIncomeError("");
+    setEditingIncomeId(null);
+    setEditingIncomeName("");
+    setConfirmDeleteArchivedId(null);
+    setManageModalError("");
+    setIncomeArchiveModalOpen(true);
+  };
+
+  const handleAddIncomeCategory = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newIncomeName.trim();
+    if (!trimmed) {
+      setNewIncomeError("Nama kategori pemasukan wajib diisi.");
+      return;
+    }
+    setNewIncomeError("");
+    createIncomeCategoryMutation.mutate(trimmed);
+  };
+
+  const startEditIncomeCategory = (cat: CategoryDto) => {
+    setEditingIncomeId(cat.id);
+    setEditingIncomeName(cat.name);
+    setManageModalError("");
+  };
+
+  const handleSaveIncomeEdit = (cat: CategoryDto) => {
+    const trimmed = editingIncomeName.trim();
+    if (!trimmed) {
+      setManageModalError("Nama kategori tidak boleh kosong.");
+      return;
+    }
+    manageCategoryMutation.mutate({
+      id: cat.id,
+      payload: { name: trimmed },
+      successMessage: `Kategori "${trimmed}" berhasil diperbarui`,
+    });
+  };
+
   const openCreateModal = (bucket: CategoryBucket) => {
     setEditingCategory(null);
     setModalName("");
     setModalBucket(bucket);
     setModalColor(bucket === "needs" ? "#38bdf8" : bucket === "wants" ? "#ff8a00" : "#009267");
     setModalLimit("");
+    setModalIsMandatory(false);
     setModalError("");
     setCategoryModalOpen(true);
   };
@@ -221,6 +379,7 @@ export function BudgetPage({
     setModalBucket(cat.bucket);
     setModalColor(cat.color || "#00797a");
     setModalLimit(cat.budgetLimit > 0 ? cat.budgetLimit.toLocaleString("id-ID") : "");
+    setModalIsMandatory(categoryMandatoryMap.get(cat.categoryId) ?? false);
     setModalError("");
     setCategoryModalOpen(true);
   };
@@ -242,6 +401,7 @@ export function BudgetPage({
           name: trimmedName,
           bucket: modalBucket,
           color: modalColor,
+          isMandatory: modalIsMandatory,
           budgetLimit: limitAmount,
           period,
         },
@@ -251,6 +411,7 @@ export function BudgetPage({
         name: trimmedName,
         bucket: modalBucket,
         color: modalColor,
+        isMandatory: modalIsMandatory,
         budgetLimit: limitAmount,
       });
     }
@@ -312,28 +473,26 @@ export function BudgetPage({
     const isWarning = allocated > 0 && spent >= allocated * 0.8 && !isOver;
     const headlineAmount = isCurrentPeriod ? envelopeRemaining : allocated;
 
+    const configuredCategories = categories.filter(
+      (c) => c.budgetLimit > 0 || c.actualSpent > 0,
+    );
+    const unconfiguredCategories = categories.filter(
+      (c) => c.budgetLimit === 0 && c.actualSpent === 0,
+    );
+    const showZero = showZeroByBucket[bucketKey];
+    const displayedCategories = showZero ? categories : configuredCategories;
+
     return (
       <Card className="space-y-5 p-5 sm:p-6">
         {/* Header Bar */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-4">
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
             <h2 className="text-lg font-black text-[var(--foreground)]">{title}</h2>
             {allocated > 0 && (
               <Badge tone="neutral" className="text-xs font-bold">
                 Porsi: {allocatedPercent}% dari Dana Likuid
               </Badge>
             )}
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              onClick={() => openCreateModal(bucketKey)}
-              className="min-h-[40px] px-3 text-xs font-bold gap-1.5"
-            >
-              <PlusIcon className="w-3.5 h-3.5" />
-              <span>Tambah Kategori</span>
-            </Button>
           </div>
         </div>
 
@@ -365,7 +524,6 @@ export function BudgetPage({
                     onChange={(e) => setBucketLimitInput(formatDigitsInput(e.target.value))}
                     placeholder="Contoh: 2.000.000"
                     className="tabular-nums min-h-[44px] w-full rounded-[10px] border border-[var(--primary)] bg-[var(--card)] pl-9 pr-3 text-sm font-bold text-[var(--foreground)]"
-                    autoFocus
                   />
                 </div>
                 <Button
@@ -436,25 +594,23 @@ export function BudgetPage({
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <span
-                    className={`rounded-full border px-2.5 py-1 text-xs font-bold ${
-                      allocated === 0
-                        ? "border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)]"
-                        : isOver
+                  {allocated > 0 && (
+                    <span
+                      className={`rounded-full border px-2.5 py-1 text-xs font-bold ${
+                        isOver
                           ? "border-[var(--destructive)]/30 bg-[var(--destructive)]/15 text-[var(--destructive)]"
                           : isWarning
                             ? "border-[var(--highlight)]/30 bg-[var(--highlight)]/15 text-[var(--highlight-text)]"
                             : "border-[var(--chart-income)]/30 bg-[var(--chart-income)]/15 text-[var(--chart-income)]"
-                    }`}
-                  >
-                    {allocated === 0
-                      ? "Jatah Belum Diatur"
-                      : isOver
+                      }`}
+                    >
+                      {isOver
                         ? `Defisit ${formatRupiah(spent - allocated, isMasked)}`
                         : isWarning
                           ? `Mendekati Batas (${percentUsed}%)`
                           : `Terkendali (${percentUsed}% Terpakai)`}
-                  </span>
+                    </span>
+                  )}
 
                   <Button
                     variant="secondary"
@@ -495,14 +651,9 @@ export function BudgetPage({
 
         {/* Categories Section: Aliran Pengeluaran Riil */}
         <div className="space-y-3 pt-2">
-          <div>
-            <h3 className="text-xs font-extrabold uppercase tracking-wider text-[var(--foreground)]">
-              Distribusi Pengeluaran Riil
-            </h3>
-            <p className="text-[11px] text-[var(--muted-foreground)]">
-              Cukup-cukupkan di dalam kelompok ini sesuai jatah custom siklus yang Anda tentukan.
-            </p>
-          </div>
+          <h3 className="text-xs font-extrabold uppercase tracking-wider text-[var(--foreground)]">
+            Distribusi Pengeluaran Riil
+          </h3>
 
           {categories.length === 0 ? (
             <div className="rounded-[14px] border border-dashed border-[var(--border)] p-6 text-center space-y-2 bg-[var(--surface)]/50">
@@ -512,86 +663,124 @@ export function BudgetPage({
               <Button
                 variant="secondary"
                 onClick={() => openCreateModal(bucketKey)}
-                className="min-h-[40px] px-3.5 text-xs font-semibold"
+                className="min-h-[44px] px-3.5 text-xs font-semibold"
               >
                 <PlusIcon className="w-3.5 h-3.5 mr-1" />
                 Tambah Kategori
               </Button>
             </div>
           ) : (
-            <div className="divide-y divide-[var(--border)]">
-              {categories.map((c) => {
-                const sharePercent = spent > 0 ? Math.round((c.actualSpent / spent) * 100) : 0;
-                return (
-                  <div
-                    key={c.categoryId}
-                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 py-3"
-                  >
-                    <div className="min-w-0 flex-1 space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="h-3 w-3 rounded-full shrink-0 shadow-xs"
-                          style={{ backgroundColor: c.color }}
-                          aria-hidden="true"
-                        />
-                        <strong className="text-sm font-bold text-[var(--foreground)] truncate">
-                          {c.categoryName}
-                        </strong>
-                        {c.actualSpent > 0 && (
-                          <span className="rounded-md bg-[var(--surface)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--muted-foreground)] border border-[var(--border)]">
-                            {sharePercent}% dari {title.split(" ")[0]}
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Mini Share Distribution Bar */}
-                      {spent > 0 && (
-                        <div className="space-y-0.5 max-w-sm">
-                          <div className="h-1.5 w-full rounded-full bg-[var(--surface)] overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all"
-                              style={{
-                                width: `${sharePercent}%`,
-                                backgroundColor: c.color || accentColor,
-                              }}
+            <div className="space-y-3">
+              {displayedCategories.length === 0 ? (
+                <div className="rounded-[12px] border border-dashed border-[var(--border)] bg-[var(--surface)]/50 px-4 py-3 text-xs text-[var(--muted-foreground)]">
+                  Semua kategori ({unconfiguredCategories.length}) pada kelompok ini belum memiliki
+                  pagu atau pengeluaran (Rp 0).
+                </div>
+              ) : (
+                <div className="divide-y divide-[var(--border)]">
+                  {displayedCategories.map((c) => {
+                    const sharePercent = spent > 0 ? Math.round((c.actualSpent / spent) * 100) : 0;
+                    const isMandatory = categoryMandatoryMap.get(c.categoryId) ?? false;
+                    return (
+                      <div
+                        key={c.categoryId}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 py-3"
+                      >
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className="h-3 w-3 rounded-full shrink-0 shadow-xs"
+                              style={{ backgroundColor: c.color }}
+                              aria-hidden="true"
                             />
+                            <strong className="text-sm font-bold text-[var(--foreground)] truncate">
+                              {c.categoryName}
+                            </strong>
+                            {isMandatory && (
+                              <Badge tone="highlight" className="text-[10px]">
+                                Wajib
+                              </Badge>
+                            )}
+                            {c.actualSpent > 0 && (
+                              <span className="rounded-md bg-[var(--surface)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--muted-foreground)] border border-[var(--border)]">
+                                {sharePercent}% dari {title.split(" ")[0]}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Mini Share Distribution Bar */}
+                          {spent > 0 && (
+                            <div className="space-y-0.5 max-w-sm">
+                              <div className="h-1.5 w-full rounded-full bg-[var(--surface)] overflow-hidden">
+                                <div
+                                  className="h-full rounded-full transition-all"
+                                  style={{
+                                    width: `${sharePercent}%`,
+                                    backgroundColor: c.color || accentColor,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-3 self-end sm:self-center">
+                          <div className="text-right">
+                            <span className="text-[10px] uppercase font-bold text-[var(--muted-foreground)] block">
+                              Terpakai
+                            </span>
+                            <span className="font-mono text-sm font-extrabold text-[var(--foreground)] tabular-nums">
+                              {formatRupiah(c.actualSpent, isMasked)}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(c)}
+                              title="Edit nama / kelompok / warna kategori"
+                              aria-label={`Edit kategori ${c.categoryName}`}
+                              className="inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)] transition-colors"
+                            >
+                              <EditIcon className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeletingCategory(c)}
+                              title="Hapus kategori ini"
+                              aria-label={`Hapus kategori ${c.categoryName}`}
+                              className="inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-[var(--muted-foreground)] hover:bg-rose-50 hover:text-[var(--destructive)] dark:hover:bg-rose-950/30 transition-colors"
+                            >
+                              <TrashIcon className="w-4 h-4" />
+                            </button>
                           </div>
                         </div>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-3 self-end sm:self-center">
-                      <div className="text-right">
-                        <span className="text-[10px] uppercase font-bold text-[var(--muted-foreground)] block">
-                          Terpakai
-                        </span>
-                        <span className="font-mono text-sm font-extrabold text-[var(--foreground)] tabular-nums">
-                          {formatRupiah(c.actualSpent, isMasked)}
-                        </span>
                       </div>
+                    );
+                  })}
+                </div>
+              )}
 
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(c)}
-                          title="Edit nama / kelompok / warna kategori"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)] transition-colors"
-                        >
-                          <EditIcon className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setDeletingCategory(c)}
-                          title="Hapus kategori ini"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] text-[var(--muted-foreground)] hover:bg-rose-50 hover:text-[var(--destructive)] dark:hover:bg-rose-950/30 transition-colors"
-                        >
-                          <TrashIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+              {unconfiguredCategories.length > 0 && (
+                <button
+                  type="button"
+                  aria-expanded={showZero}
+                  onClick={() =>
+                    setShowZeroByBucket((prev) => ({
+                      ...prev,
+                      [bucketKey]: !prev[bucketKey],
+                    }))
+                  }
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[10px] border border-[var(--border)] bg-[var(--surface)] px-3 text-xs font-semibold text-[var(--primary)] hover:bg-[var(--card)] transition-colors"
+                >
+                  <span>
+                    {showZero
+                      ? `Sembunyikan kategori belum diatur (${unconfiguredCategories.length})`
+                      : `Tampilkan kategori belum diatur (Rp 0) (${unconfiguredCategories.length})`}
+                  </span>
+                  <span aria-hidden="true">{showZero ? "▲" : "▼"}</span>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -603,37 +792,100 @@ export function BudgetPage({
   const wantsShareAmt = isCurrentPeriod ? (wants.remaining ?? 0) : wants.allocated;
   const savingsShareAmt = isCurrentPeriod ? (savings.remaining ?? 0) : savings.allocated;
 
+  const bucketFilterTabs: Array<{ id: BucketFilterTab; label: string }> = [
+    { id: "all", label: "Semua" },
+    { id: "needs", label: "Kebutuhan" },
+    { id: "wants", label: "Keinginan" },
+    { id: "savings", label: "Tabungan" },
+  ];
+
+  const summaryPillars: Array<{
+    id: CategoryBucket;
+    label: string;
+    allocated: number;
+    spent: number;
+    allocatedPercent: number;
+    accentBg: string;
+    accentText: string;
+  }> = [
+    {
+      id: "needs",
+      label: "Kebutuhan (Needs)",
+      allocated: needs.allocated,
+      spent: needs.spent,
+      allocatedPercent: needs.allocatedPercent,
+      accentBg: "bg-sky-500",
+      accentText: "text-sky-700 dark:text-sky-300",
+    },
+    {
+      id: "wants",
+      label: "Keinginan (Wants)",
+      allocated: wants.allocated,
+      spent: wants.spent,
+      allocatedPercent: wants.allocatedPercent,
+      accentBg: "bg-amber-500",
+      accentText: "text-amber-700 dark:text-amber-300",
+    },
+    {
+      id: "savings",
+      label: "Tabungan & Utang",
+      allocated: savings.allocated,
+      spent: savings.spent,
+      allocatedPercent: savings.allocatedPercent,
+      accentBg: "bg-emerald-500",
+      accentText: "text-emerald-700 dark:text-emerald-300",
+    },
+  ];
+
   return (
     <div className="space-y-6">
-      {/* Page Heading + Cycle Switcher */}
+      {/* Page Heading + Cycle Switcher + Header CTA */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Alokasi Anggaran</h1>
-          <p className="text-sm text-[var(--muted-foreground)]">
-            Alokasi custom per siklus dari Total Dana Likuid — ubah kapan saja saat dana bertambah atau kondisi berubah.
-          </p>
-        </div>
+        <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Anggaran</h1>
 
-        <div className="flex items-center justify-between gap-1 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1 self-start sm:self-auto">
-          <button
-            type="button"
-            onClick={() => onPeriodChange(shiftMonth(period, -1))}
-            aria-label="Siklus sebelumnya"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full hover:bg-[var(--surface)]"
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          <div className="flex items-center justify-between gap-1 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1">
+            <button
+              type="button"
+              onClick={() => onPeriodChange(shiftMonth(period, -1))}
+              aria-label="Siklus sebelumnya"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full hover:bg-[var(--surface)]"
+            >
+              <ChevronLeftIcon className="w-5 h-5" />
+            </button>
+            <span className="tabular-nums px-2 text-xs font-semibold text-[var(--foreground)] sm:text-sm">
+              {periodRangeLabel}
+            </span>
+            <button
+              type="button"
+              onClick={() => onPeriodChange(shiftMonth(period, 1))}
+              aria-label="Siklus berikutnya"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full hover:bg-[var(--surface)]"
+            >
+              <ChevronRightIcon className="w-5 h-5" />
+            </button>
+          </div>
+
+          <Button
+            variant="secondary"
+            onClick={openIncomeArchiveModal}
+            className="gap-1.5"
           >
-            <ChevronLeftIcon className="w-5 h-5" />
-          </button>
-          <span className="tabular-nums px-2 text-xs font-semibold text-[var(--foreground)] sm:text-sm">
-            {periodRangeLabel}
-          </span>
-          <button
-            type="button"
-            onClick={() => onPeriodChange(shiftMonth(period, 1))}
-            aria-label="Siklus berikutnya"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full hover:bg-[var(--surface)]"
+            <span>Pemasukan &amp; Arsip</span>
+            {archivedCategories.length > 0 && (
+              <Badge tone="neutral" className="text-[10px] px-1.5 py-0">
+                {archivedCategories.length}
+              </Badge>
+            )}
+          </Button>
+
+          <Button
+            onClick={() => openCreateModal(activeBucketTab === "all" ? "needs" : activeBucketTab)}
+            className="gap-1.5"
           >
-            <ChevronRightIcon className="w-5 h-5" />
-          </button>
+            <PlusIcon className="w-4 h-4" />
+            <span>Tambah Kategori</span>
+          </Button>
         </div>
       </div>
 
@@ -655,36 +907,26 @@ export function BudgetPage({
                 {formatRupiah(baselineFund, isMasked)}
               </p>
             </div>
-            <p className="text-xs sm:text-sm text-[var(--hero-card-muted)] max-w-md">
-              {isCurrentPeriod
-                ? "Saldo kas riil dari seluruh dompet likuid saat ini yang siap dibagi ke Kebutuhan, Keinginan, dan Tabungan & Hutang hingga sisa Rp 0."
-                : "Total dana likuid saat ini sebagai acuan alokasi custom pada siklus yang dipilih."}
-            </p>
           </div>
 
           <div className="flex flex-col items-start sm:items-end gap-2">
             <div className="rounded-[14px] border border-[var(--hero-inner-border)] bg-[var(--hero-surface)] p-4 text-left sm:text-right">
               <span className="text-xs font-semibold text-[var(--hero-card-muted)]">
-                {unallocated >= 0 ? "Sisa Dana Belum Dialokasikan:" : "Kelebihan Alokasi Budget:"}
+                {unallocated >= 0 ? "Sisa Dana Belum Dialokasikan:" : "Kelebihan Alokasi Anggaran:"}
               </span>
               <p
                 className={`font-mono text-2xl font-black tabular-nums ${
-                  unallocated === 0
-                    ? "text-[var(--chart-income)]"
-                    : unallocated > 0
-                      ? "text-[var(--primary)]"
-                      : "text-[var(--destructive)]"
+                  isMasked
+                    ? "text-[var(--hero-card-foreground)]"
+                    : unallocated === 0
+                      ? "text-[var(--chart-income)]"
+                      : unallocated > 0
+                        ? "text-sky-700 dark:text-sky-300"
+                        : "text-[var(--destructive)]"
                 }`}
               >
                 {formatRupiah(Math.abs(unallocated), isMasked)}
               </p>
-              <span className="text-[11px] text-[var(--hero-card-muted)]">
-                {unallocated === 0
-                  ? "Sempurna! Seluruh dana likuid sudah dialokasikan."
-                  : unallocated > 0
-                    ? "Alokasikan ke pos belanja atau tabungan hingga genap Rp 0."
-                    : "Total amplop melebihi dana likuid saat ini, sesuaikan jatah pos."}
-              </span>
             </div>
           </div>
         </div>
@@ -710,12 +952,12 @@ export function BudgetPage({
               <div
                 className="bg-[#4ade80] rounded-full transition-all duration-500"
                 style={{ width: `${Math.min(100, savings.allocatedPercent)}%` }}
-                title={`Tabungan & Hutang: ${savings.allocatedPercent}% (${formatRupiah(savingsShareAmt, isMasked)})`}
+                title={`Tabungan & Utang: ${savings.allocatedPercent}% (${formatRupiah(savingsShareAmt, isMasked)})`}
               />
             )}
             {unallocated > 0 && (
               <div
-                className="bg-neutral-200 dark:bg-neutral-700/70 rounded-full transition-all duration-500"
+                className="bg-sky-400/70 dark:bg-sky-500/60 rounded-full transition-all duration-500"
                 style={{ width: `${Math.min(100, unallocatedPercent)}%` }}
                 title={`Belum Dialokasikan: ${unallocatedPercent}% (${formatRupiah(unallocated, isMasked)})`}
               />
@@ -753,7 +995,7 @@ export function BudgetPage({
               <div className="flex items-center gap-1.5 min-w-0">
                 <span className="w-2.5 h-2.5 rounded-full bg-[#4ade80] shrink-0" />
                 <span className="text-[#16a34a] dark:text-[#4ade80] font-bold">
-                  Tabungan & Hutang:
+                  Tabungan & Utang:
                 </span>
                 <span className="font-mono font-bold text-[var(--hero-card-foreground)] tabular-nums">
                   {savings.allocatedPercent}%
@@ -767,8 +1009,8 @@ export function BudgetPage({
             {unallocated > 0 ? (
               <div className="flex items-center justify-between sm:justify-start gap-2 font-medium">
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="w-2.5 h-2.5 rounded-full bg-neutral-300 dark:bg-neutral-600 shrink-0" />
-                  <span className="text-neutral-500 dark:text-neutral-400 font-bold">
+                  <span className="w-2.5 h-2.5 rounded-full bg-sky-500 shrink-0" />
+                  <span className="text-sky-700 dark:text-sky-300 font-bold">
                     Belum Dialokasikan:
                   </span>
                   <span className="font-mono font-bold text-[var(--hero-card-foreground)] tabular-nums">
@@ -804,6 +1046,79 @@ export function BudgetPage({
         </div>
       </div>
 
+      {/* Strip Ringkasan 3 Pos Sejajar (50/30/20 Comparison) */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {summaryPillars.map((pillar) => {
+          const pctUsed =
+            pillar.allocated > 0 ? Math.round((pillar.spent / pillar.allocated) * 100) : 0;
+          const isSelected = activeBucketTab === pillar.id;
+          return (
+            <button
+              key={pillar.id}
+              type="button"
+              onClick={() =>
+                setActiveBucketTab((prev) => (prev === pillar.id ? "all" : pillar.id))
+              }
+              className={`rounded-[16px] border p-4 text-left transition-all ${
+                isSelected
+                  ? "border-[var(--primary)] bg-[var(--card)] ring-2 ring-[var(--primary)]/20"
+                  : "border-[var(--border)] bg-[var(--card)] hover:border-[var(--control-border)]"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className={`text-xs font-extrabold ${pillar.accentText}`}>
+                  {pillar.label}
+                </span>
+                <span className="font-mono text-xs font-bold text-[var(--muted-foreground)] tabular-nums">
+                  {pillar.allocatedPercent}%
+                </span>
+              </div>
+              <p className="mt-1 font-mono text-base font-extrabold text-[var(--foreground)] tabular-nums">
+                {pillar.allocated > 0 ? formatRupiah(pillar.allocated, isMasked) : "Belum Diatur"}
+              </p>
+              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[var(--surface)]">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    pctUsed > 100 ? "bg-[var(--destructive)]" : pillar.accentBg
+                  }`}
+                  style={{ width: `${Math.min(100, pctUsed)}%` }}
+                />
+              </div>
+              <p className="mt-1.5 text-[11px] text-[var(--muted-foreground)] tabular-nums">
+                Terpakai {formatRupiah(pillar.spent, isMasked)} ({pctUsed}%)
+              </p>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Tab Filter Pos (Semua | Kebutuhan | Keinginan | Tabungan) */}
+      <div
+        role="tablist"
+        aria-label="Filter kelompok anggaran"
+        className="grid grid-cols-4 gap-1 border-b border-[var(--border)] pb-3 sm:flex sm:flex-wrap sm:items-center sm:gap-2"
+      >
+        {bucketFilterTabs.map((tabItem) => {
+          const isActive = activeBucketTab === tabItem.id;
+          return (
+            <button
+              key={tabItem.id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => setActiveBucketTab(tabItem.id)}
+              className={`min-h-[42px] whitespace-nowrap rounded-[12px] px-2 text-center text-xs font-bold transition-all sm:px-4 sm:text-sm ${
+                isActive
+                  ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-sm"
+                  : "text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              {tabItem.label}
+            </button>
+          );
+        })}
+      </div>
+
       {formError && (
         <div
           role="alert"
@@ -816,9 +1131,12 @@ export function BudgetPage({
 
       {/* 3 Main Envelopes */}
       <div className="space-y-6">
-        {renderBucketSection("Kebutuhan Hidup (Needs)", "needs", needs, "#38bdf8")}
-        {renderBucketSection("Keinginan & Gaya Hidup (Wants)", "wants", wants, "#fb923c")}
-        {renderBucketSection("Tabungan & Hutang (Savings & Debt)", "savings", savings, "#4ade80")}
+        {(activeBucketTab === "all" || activeBucketTab === "needs") &&
+          renderBucketSection("Kebutuhan Hidup (Needs)", "needs", needs, "#38bdf8")}
+        {(activeBucketTab === "all" || activeBucketTab === "wants") &&
+          renderBucketSection("Keinginan & Gaya Hidup (Wants)", "wants", wants, "#fb923c")}
+        {(activeBucketTab === "all" || activeBucketTab === "savings") &&
+          renderBucketSection("Tabungan & Utang (Savings & Debt)", "savings", savings, "#4ade80")}
       </div>
 
       {/* Modal Tambah / Edit Kategori */}
@@ -827,8 +1145,26 @@ export function BudgetPage({
         onClose={() => setCategoryModalOpen(false)}
         title={editingCategory ? "Edit Kategori" : "Tambah Kategori Baru"}
         subtitle="Kelola pos pengeluaran sesuai kelompok variabel utama"
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => setCategoryModalOpen(false)}
+              disabled={createCategoryMutation.isPending || updateCategoryMutation.isPending}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              form="budget-category-form"
+              disabled={createCategoryMutation.isPending || updateCategoryMutation.isPending}
+            >
+              {editingCategory ? "Simpan Perubahan" : "Tambah Kategori"}
+            </Button>
+          </div>
+        }
       >
-        <form onSubmit={handleSaveCategoryModal} className="space-y-4">
+        <form id="budget-category-form" onSubmit={handleSaveCategoryModal} className="space-y-4">
           {modalError && (
             <div
               role="alert"
@@ -842,7 +1178,7 @@ export function BudgetPage({
           <div className="space-y-1.5">
             <label
               htmlFor="cat-name-input"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
             >
               Nama Kategori <span className="text-[var(--destructive)]">*</span>
             </label>
@@ -852,15 +1188,15 @@ export function BudgetPage({
               required
               value={modalName}
               onChange={(e) => setModalName(e.target.value)}
-              placeholder="Contoh: Kopi & Nongkrong, Gym, Asuransi"
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              placeholder="Contoh: Kopi, Gym, Asuransi"
+              className="h-11 w-full rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-sm font-semibold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             />
           </div>
 
           <div className="space-y-1.5">
             <label
               htmlFor="cat-bucket-select"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
             >
               Kelompok Anggaran (Variabel Utama)
             </label>
@@ -868,23 +1204,23 @@ export function BudgetPage({
               id="cat-bucket-select"
               value={modalBucket}
               onChange={(e) => setModalBucket(e.target.value as CategoryBucket)}
-              className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+              className="h-11 w-full rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] px-3.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
             >
               <option value="needs">Kebutuhan Hidup (Needs)</option>
               <option value="wants">Keinginan & Gaya Hidup (Wants)</option>
-              <option value="savings">Tabungan & Hutang (Savings & Debt)</option>
+              <option value="savings">Tabungan & Utang (Savings & Debt)</option>
             </select>
           </div>
 
           <div className="space-y-1.5">
             <label
               htmlFor="cat-limit-input"
-              className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400"
+              className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
             >
               Pagu Kategori Siklus Ini (Opsional)
             </label>
             <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-neutral-400 select-none">
+              <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                 Rp
               </span>
               <input
@@ -894,16 +1230,33 @@ export function BudgetPage({
                 value={modalLimit}
                 onChange={(e) => setModalLimit(formatDigitsInput(e.target.value))}
                 placeholder="0"
-                className="w-full rounded-[14px] bg-[#f8f9fa] dark:bg-neutral-800/70 border border-neutral-200 dark:border-neutral-700 pl-11 pr-4 py-3 font-mono text-sm font-bold text-neutral-900 dark:text-white focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25 transition-all"
+                className="h-11 w-full rounded-[12px] border border-[var(--control-border)] bg-[var(--surface)] pl-11 pr-3.5 font-mono text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
               />
             </div>
-            <p className="text-[11px] text-neutral-400">
+            <p className="text-[11px] text-[var(--muted-foreground)]">
               Batas belanja custom pada siklus {periodRangeLabel} untuk kategori ini.
             </p>
           </div>
 
+          <label className="flex min-h-[44px] items-center gap-2.5 rounded-[12px] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={modalIsMandatory}
+              onChange={(e) => setModalIsMandatory(e.target.checked)}
+              className="h-4 w-4 accent-[var(--primary)]"
+            />
+            <div>
+              <span className="block text-xs font-bold text-[var(--foreground)]">
+                Tandai sebagai kategori wajib
+              </span>
+              <span className="block text-[11px] text-[var(--muted-foreground)]">
+                Kategori rutin penting yang harus diprioritaskan setiap siklus.
+              </span>
+            </div>
+          </label>
+
           <div className="space-y-1.5">
-            <span className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
+            <span className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
               Warna Penanda
             </span>
             <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -914,7 +1267,7 @@ export function BudgetPage({
                     key={color}
                     type="button"
                     onClick={() => setModalColor(color)}
-                    className={`h-7 w-7 rounded-full transition-transform ${
+                    className={`h-8 w-8 rounded-full transition-transform ${
                       isSelected
                         ? "scale-110 ring-2 ring-[var(--primary)] ring-offset-2 ring-offset-[var(--card)]"
                         : "hover:scale-105"
@@ -925,23 +1278,6 @@ export function BudgetPage({
                 );
               })}
             </div>
-          </div>
-
-          <div className="flex items-center justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-700">
-            <button
-              type="button"
-              onClick={() => setCategoryModalOpen(false)}
-              className="inline-flex min-h-[44px] items-center px-4 py-2.5 rounded-[14px] text-sm font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-            >
-              Batal
-            </button>
-            <button
-              type="submit"
-              disabled={createCategoryMutation.isPending || updateCategoryMutation.isPending}
-              className="min-h-[44px] px-6 py-3 rounded-[16px] bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-bold tracking-wide transition-all hover:opacity-90 active:scale-[0.99] shadow-sm disabled:opacity-50"
-            >
-              {editingCategory ? "Simpan Perubahan" : "Tambah Kategori"}
-            </button>
           </div>
         </form>
       </ModalSheet>
@@ -956,19 +1292,8 @@ export function BudgetPage({
             ? `Konfirmasi penghapusan kategori "${deletingCategory.categoryName}"`
             : undefined
         }
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-[var(--foreground)]">
-            Apakah Anda yakin ingin menghapus kategori{" "}
-            <strong>{deletingCategory?.categoryName}</strong>? Pagu anggaran kategori ini akan
-            otomatis dibersihkan.
-          </p>
-          <p className="text-xs text-[var(--muted-foreground)]">
-            Catatan: Kategori yang sudah memiliki riwayat transaksi tidak dapat dihapus sebelum
-            kategorinya diubah.
-          </p>
-
-          <div className="flex items-center justify-end gap-2 pt-3 border-t border-[var(--border)]">
+        footer={
+          <div className="flex items-center justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => setDeletingCategory(null)}>
               Batal
             </Button>
@@ -985,6 +1310,327 @@ export function BudgetPage({
               Hapus Kategori
             </Button>
           </div>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-[var(--foreground)]">
+            Apakah Anda yakin ingin menghapus kategori{" "}
+            <strong>{deletingCategory?.categoryName}</strong>? Pagu anggaran kategori ini akan
+            otomatis dibersihkan.
+          </p>
+          <p className="text-xs text-[var(--muted-foreground)]">
+            Catatan: Kategori yang sudah memiliki riwayat transaksi tidak dapat dihapus sebelum
+            kategorinya diubah.
+          </p>
+        </div>
+      </ModalSheet>
+
+      {/* Modal Kelola Kategori Pemasukan & Arsip */}
+      <ModalSheet
+        open={incomeArchiveModalOpen}
+        onClose={() => setIncomeArchiveModalOpen(false)}
+        title="Kelola Kategori Pemasukan & Arsip"
+        subtitle="Tambah atau ubah kategori pemasukan, serta pulihkan kategori yang diarsipkan."
+        size="lg"
+        footer={
+          <div className="flex items-center justify-end">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setIncomeArchiveModalOpen(false)}
+            >
+              Tutup
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          {/* Tab Switcher: Pemasukan | Diarsipkan */}
+          <div
+            role="tablist"
+            aria-label="Kelola kategori pemasukan dan arsip"
+            className="grid grid-cols-2 gap-1.5 rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-1"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={incomeArchiveTab === "income"}
+              onClick={() => {
+                setIncomeArchiveTab("income");
+                setManageModalError("");
+                setConfirmDeleteArchivedId(null);
+              }}
+              className={`min-h-[40px] rounded-[10px] px-3 text-xs font-bold transition-all ${
+                incomeArchiveTab === "income"
+                  ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-xs"
+                  : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              Pemasukan ({incomeCategories.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={incomeArchiveTab === "archived"}
+              onClick={() => {
+                setIncomeArchiveTab("archived");
+                setManageModalError("");
+                setEditingIncomeId(null);
+              }}
+              className={`min-h-[40px] rounded-[10px] px-3 text-xs font-bold transition-all ${
+                incomeArchiveTab === "archived"
+                  ? "bg-[var(--primary-solid)] text-[var(--primary-solid-foreground)] shadow-xs"
+                  : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              Diarsipkan ({archivedCategories.length})
+            </button>
+          </div>
+
+          {manageModalError && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-[12px] border border-[var(--destructive)] bg-[var(--destructive)]/10 p-3 text-xs text-[var(--destructive)]"
+            >
+              <AlertIcon className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{manageModalError}</span>
+            </div>
+          )}
+
+          {incomeArchiveTab === "income" ? (
+            <div className="space-y-4">
+              {/* Form Singkat Tambah Kategori Pemasukan */}
+              <form
+                onSubmit={handleAddIncomeCategory}
+                className="space-y-2.5 rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-3.5"
+              >
+                <label
+                  htmlFor="new-income-category-input"
+                  className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
+                >
+                  Tambah Kategori Pemasukan Baru
+                </label>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <input
+                    id="new-income-category-input"
+                    type="text"
+                    value={newIncomeName}
+                    onChange={(e) => {
+                      setNewIncomeName(e.target.value);
+                      if (newIncomeError) setNewIncomeError("");
+                    }}
+                    placeholder="Contoh: Gaji, Bonus, Freelance, Dividen"
+                    className="h-11 flex-1 rounded-[12px] border border-[var(--control-border)] bg-[var(--card)] px-3.5 text-sm font-semibold text-[var(--foreground)] placeholder-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
+                  />
+                  <Button
+                    type="submit"
+                    disabled={createIncomeCategoryMutation.isPending}
+                    className="gap-1.5 shrink-0"
+                  >
+                    <PlusIcon className="w-4 h-4" />
+                    <span>
+                      {createIncomeCategoryMutation.isPending ? "Menambah..." : "Tambah"}
+                    </span>
+                  </Button>
+                </div>
+                {newIncomeError && (
+                  <p role="alert" className="text-xs text-[var(--destructive)] font-semibold">
+                    {newIncomeError}
+                  </p>
+                )}
+              </form>
+
+              {/* Daftar Kategori Pemasukan Aktif */}
+              {incomeCategories.length === 0 ? (
+                <div className="rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface)]/50 p-6 text-center text-xs text-[var(--muted-foreground)]">
+                  Belum ada kategori pemasukan aktif.
+                </div>
+              ) : (
+                <div className="divide-y divide-[var(--border)] rounded-[14px] border border-[var(--border)] bg-[var(--card)] overflow-hidden">
+                  {incomeCategories.map((cat) => {
+                    const isEditing = editingIncomeId === cat.id;
+                    return (
+                      <div key={cat.id} className="space-y-2.5 px-4 py-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="h-3 w-3 rounded-full shrink-0"
+                              style={{ backgroundColor: cat.color || "#009267" }}
+                              aria-hidden="true"
+                            />
+                            <span className="text-sm font-bold text-[var(--foreground)] truncate">
+                              {cat.name}
+                            </span>
+                            <Badge tone="soft" className="text-[10px]">
+                              Masuk
+                            </Badge>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              aria-label={`Edit kategori ${cat.name}`}
+                              onClick={() =>
+                                isEditing ? setEditingIncomeId(null) : startEditIncomeCategory(cat)
+                              }
+                              className="inline-flex h-10 w-10 items-center justify-center rounded-[10px] border border-[var(--control-border)] text-[var(--foreground)] hover:bg-[var(--surface)] transition-colors"
+                            >
+                              <EditIcon className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={manageCategoryMutation.isPending}
+                              onClick={() =>
+                                manageCategoryMutation.mutate({
+                                  id: cat.id,
+                                  payload: { isArchived: true },
+                                  successMessage: `Kategori "${cat.name}" diarsipkan`,
+                                })
+                              }
+                              className="inline-flex min-h-[40px] items-center rounded-[10px] border border-[var(--control-border)] px-3 text-xs font-semibold text-[var(--foreground)] hover:bg-[var(--surface)] transition-colors disabled:opacity-45"
+                            >
+                              Arsipkan
+                            </button>
+                          </div>
+                        </div>
+
+                        {isEditing && (
+                          <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-2.5">
+                            <input
+                              type="text"
+                              aria-label={`Ubah nama kategori ${cat.name}`}
+                              value={editingIncomeName}
+                              onChange={(e) => setEditingIncomeName(e.target.value)}
+                              className="h-10 flex-1 min-w-[160px] rounded-[10px] border border-[var(--control-border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
+                            />
+                            <Button
+                              type="button"
+                              disabled={manageCategoryMutation.isPending}
+                              onClick={() => handleSaveIncomeEdit(cat)}
+                              className="min-h-[40px] px-3.5 text-xs"
+                            >
+                              Simpan
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              onClick={() => setEditingIncomeId(null)}
+                              className="min-h-[40px] px-3 text-xs"
+                            >
+                              Batal
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {archivedCategories.length === 0 ? (
+                <div className="rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface)]/50 p-6 text-center text-xs text-[var(--muted-foreground)]">
+                  Belum ada kategori yang diarsipkan.
+                </div>
+              ) : (
+                <div className="divide-y divide-[var(--border)] rounded-[14px] border border-[var(--border)] bg-[var(--card)] overflow-hidden">
+                  {archivedCategories.map((cat) => {
+                    const isConfirmingDelete = confirmDeleteArchivedId === cat.id;
+                    return (
+                      <div key={cat.id} className="space-y-2.5 px-4 py-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                            <span
+                              className="h-3 w-3 rounded-full shrink-0 opacity-60"
+                              style={{ backgroundColor: cat.color || "#64748b" }}
+                              aria-hidden="true"
+                            />
+                            <span className="text-sm font-semibold text-[var(--muted-foreground)] truncate">
+                              {cat.name}
+                            </span>
+                            <Badge
+                              tone={cat.type === "income" ? "soft" : "neutral"}
+                              className="text-[10px]"
+                            >
+                              {cat.type === "income" ? "Masuk" : "Keluar"}
+                            </Badge>
+                            {cat.type === "expense" && cat.bucket && (
+                              <Badge tone="info" className="text-[10px]">
+                                {BUCKET_SHORT_LABELS[cat.bucket] ?? cat.bucket}
+                              </Badge>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              disabled={manageCategoryMutation.isPending}
+                              onClick={() =>
+                                manageCategoryMutation.mutate({
+                                  id: cat.id,
+                                  payload: { isArchived: false },
+                                  successMessage: `Kategori "${cat.name}" berhasil dipulihkan`,
+                                })
+                              }
+                              className="inline-flex min-h-[40px] items-center rounded-[10px] border border-[var(--control-border)] px-3 text-xs font-semibold text-[var(--primary)] hover:bg-[var(--surface)] transition-colors disabled:opacity-45"
+                            >
+                              Pulihkan
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Hapus kategori ${cat.name}`}
+                              title="Hapus permanen"
+                              onClick={() =>
+                                setConfirmDeleteArchivedId(isConfirmingDelete ? null : cat.id)
+                              }
+                              className="inline-flex h-10 w-10 items-center justify-center rounded-[10px] border border-[var(--control-border)] text-[var(--muted-foreground)] hover:bg-rose-50 hover:text-[var(--destructive)] dark:hover:bg-rose-950/30 transition-colors"
+                            >
+                              <TrashIcon className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {isConfirmingDelete && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-[var(--destructive)]/30 bg-[var(--destructive)]/5 px-3 py-2">
+                            <span className="text-xs font-semibold text-[var(--foreground)]">
+                              Hapus permanen kategori &ldquo;{cat.name}&rdquo;?
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <Button
+                                type="button"
+                                variant="danger"
+                                disabled={deleteArchivedCategoryMutation.isPending}
+                                onClick={() =>
+                                  deleteArchivedCategoryMutation.mutate({
+                                    id: cat.id,
+                                    name: cat.name,
+                                  })
+                                }
+                                className="min-h-[36px] px-3 text-xs"
+                              >
+                                {deleteArchivedCategoryMutation.isPending
+                                  ? "Menghapus..."
+                                  : "Ya, Hapus"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                onClick={() => setConfirmDeleteArchivedId(null)}
+                                className="min-h-[36px] px-3 text-xs"
+                              >
+                                Batal
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </ModalSheet>
     </div>

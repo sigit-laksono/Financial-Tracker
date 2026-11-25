@@ -72,21 +72,23 @@ export function RecentTransactionsWidget({
               return (
                 <div
                   key={tx.id}
-                  className="flex items-center justify-between gap-3 rounded-[12px] border border-[var(--border)] bg-[var(--surface)] p-2.5 sm:p-3 transition-colors hover:border-[var(--control-border)]"
+                  className="flex items-center justify-between gap-2 rounded-[12px] border border-[var(--border)] bg-[var(--surface)] p-2.5 transition-colors hover:border-[var(--control-border)]"
                 >
-                  <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
                     <div
-                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-xs font-bold ${
-                        isIncome
-                          ? "bg-[var(--chart-income)]/15 text-[var(--chart-income)]"
-                          : isTransfer
-                            ? "bg-[var(--surface)] text-[var(--muted-foreground)] border border-[var(--border)]"
-                            : "bg-[var(--destructive)]/15 text-[var(--destructive)]"
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${
+                        isMasked
+                          ? "bg-[var(--card)] text-[var(--muted-foreground)] border border-[var(--border)]"
+                          : isIncome
+                            ? "bg-[var(--chart-income)]/15 text-[var(--chart-income)]"
+                            : isTransfer
+                              ? "bg-[var(--card)] text-[var(--muted-foreground)] border border-[var(--border)]"
+                              : "bg-[var(--destructive)]/15 text-[var(--destructive)]"
                       }`}
                     >
                       {isIncome ? "↓" : isTransfer ? "⇄" : "↑"}
                     </div>
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="truncate text-xs sm:text-sm font-bold text-[var(--foreground)]">
                         {tx.merchant || tx.category}
                       </p>
@@ -98,15 +100,17 @@ export function RecentTransactionsWidget({
 
                   <div className="text-right shrink-0">
                     <p
-                      className={`tabular-nums font-mono text-xs sm:text-sm font-extrabold ${
-                        isIncome
-                          ? "text-[var(--chart-income)]"
-                          : isTransfer
-                            ? "text-[var(--foreground)]"
-                            : "text-[var(--destructive)]"
+                      className={`tabular-nums font-mono text-xs font-bold ${
+                        isMasked
+                          ? "text-[var(--muted-foreground)]"
+                          : isIncome
+                            ? "text-[var(--chart-income)]"
+                            : isTransfer
+                              ? "text-[var(--foreground)]"
+                              : "text-[var(--destructive)]"
                       }`}
                     >
-                      {isIncome ? "+" : isTransfer ? "" : "-"}
+                      {isMasked ? "" : isIncome ? "+" : isTransfer ? "" : "−"}
                       {formatRupiah(tx.amount, isMasked)}
                     </p>
                     <p className="text-[10px] text-[var(--muted-foreground)]">

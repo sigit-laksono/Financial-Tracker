@@ -83,17 +83,17 @@ export function formatCompactRupiah(amount: number, isMasked = false): string {
   const abs = Math.abs(amount);
   const sign = amount < 0 ? "-" : "";
   if (abs >= 1_000_000_000_000) {
-    return `${sign}Rp${formatUnit(abs / 1_000_000_000_000)} T`;
+    return `${sign}Rp\u00A0${formatUnit(abs / 1_000_000_000_000)}\u00A0T`;
   }
   if (abs >= 1_000_000_000) {
-    return `${sign}Rp${formatUnit(abs / 1_000_000_000)} M`;
+    return `${sign}Rp\u00A0${formatUnit(abs / 1_000_000_000)}\u00A0M`;
   }
   if (abs >= 1_000_000) {
-    return `${sign}Rp${formatUnit(abs / 1_000_000)} jt`;
+    return `${sign}Rp\u00A0${formatUnit(abs / 1_000_000)}\u00A0jt`;
   }
   if (abs >= 1_000) {
     const val = Math.round(abs / 1_000);
-    return `${sign}Rp${val} rb`;
+    return `${sign}Rp\u00A0${val}\u00A0rb`;
   }
   return formatRupiah(amount);
 }
