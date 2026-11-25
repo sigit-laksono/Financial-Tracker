@@ -13,7 +13,6 @@ import type { AppDb } from "../db";
 import {
   categories,
   debtAccounts,
-  goals,
   installments,
   recurringRules,
   settlementAllocations,
@@ -27,6 +26,7 @@ import { ccCycleForDate, periodBounds } from "../lib/dates";
 import { reopenDebtAccountsIfNeeded } from "../lib/debtEngine";
 import { ConflictError, NotFoundError, ValidationError } from "../lib/errors";
 import { lockLedger } from "../lib/ledgerLock";
+import { adjustGoalProgress, goalIdFromSourceRef, revertGoalContributions } from "../lib/goalLedger";
 import {
   convertTransactionToInstallment,
   createTransferWithOptionalFee,
@@ -576,7 +576,8 @@ export function createTransactionRoutes(db: AppDb) {
 
       const nextAmount = parsed.data.amount ?? existing.amount;
       const nextDate = parsed.data.transactionDate ?? existing.transactionDate;
-      const nextMerchant = parsed.data.merchant?.trim() || `Transfer ke ${toW.name}`;
+      // Keep the stored label (e.g. "Setor Target: ...") unless the user typed a new one.
+      const nextMerchant = parsed.data.merchant?.trim() || existing.merchant || `Transfer ke ${toW.name}`;
       const nextNote =
         parsed.data.note !== undefined ? parsed.data.note?.trim() || null : existing.note;
 
@@ -601,6 +602,12 @@ export function createTransactionRoutes(db: AppDb) {
             updatedAt: new Date(),
           })
           .where(eq(transactions.id, id));
+
+        // A goal contribution's amount is also the goal's progress; keep them in step.
+        const goalId = goalIdFromSourceRef(existing.sourceRef);
+        if (goalId !== null) {
+          await adjustGoalProgress(tx, goalId, nextAmount - existing.amount);
+        }
 
         if (effectiveGroupId) {
           const [feeRow] = await tx
@@ -1036,18 +1043,8 @@ export function createTransactionRoutes(db: AppDb) {
         }
       }
 
-      if (existing.sourceRef?.startsWith("goal:")) {
-        const goalMatch = /^goal:(\d+):/.exec(existing.sourceRef);
-        if (goalMatch) {
-          const goalId = Number(goalMatch[1]);
-          await tx
-            .update(goals)
-            .set({
-              currentAmount: sql`GREATEST(0, ${goals.currentAmount} - ${existing.amount})`,
-              updatedAt: new Date(),
-            })
-            .where(eq(goals.id, goalId));
-        }
+      if (existing.sourceRef?.startsWith("goal:") && existing.type === "transfer") {
+        await revertGoalContributions(tx, [existing]);
       }
 
       await recordAuditLog(tx, {

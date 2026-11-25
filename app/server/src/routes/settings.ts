@@ -1,4 +1,4 @@
-import { desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, like, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { updateSettingsSchema } from "../../../shared/src/schemas";
 import type { AppDb } from "../db";
@@ -19,6 +19,7 @@ import {
 } from "../db/schema";
 import { recordAuditLog } from "../lib/auditService";
 import { invalidateAuthCache } from "../lib/auth";
+import { revertGoalContributions } from "../lib/goalLedger";
 import { getSettings } from "../lib/ledger";
 
 export function createSettingsRoutes(db: AppDb) {
@@ -210,6 +211,13 @@ export function createSettingsRoutes(db: AppDb) {
     }
 
     await db.transaction(async (tx) => {
+      // Goal progress funded by transfers disappears with those transfers.
+      const goalTransfers = await tx
+        .select({ type: transactions.type, amount: transactions.amount, sourceRef: transactions.sourceRef })
+        .from(transactions)
+        .where(and(eq(transactions.type, "transfer"), like(transactions.sourceRef, "goal:%")));
+      await revertGoalContributions(tx, goalTransfers);
+
       await tx.delete(settlementAllocations);
       await tx.delete(transactionSplits);
       await tx.delete(transactions);

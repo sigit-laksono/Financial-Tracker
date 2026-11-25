@@ -24,6 +24,7 @@ import {
 } from "../db/schema";
 import { ccCycleForDate, jakartaToday } from "../lib/dates";
 import { reopenDebtAccountsIfNeeded } from "../lib/debtEngine";
+import { revertGoalContributions } from "../lib/goalLedger";
 import { computeLedgerSnapshot, getSettings, reconcileWalletBalance } from "../lib/ledger";
 
 function slugifyWallet(name: string): string {
@@ -418,6 +419,16 @@ export function createWalletRoutes(db: AppDb) {
         const allTxIdsToDelete = [...new Set([...txs.map((t) => t.id), ...pairedTransferTxs.map((t) => t.id)])];
 
         if (allTxIdsToDelete.length > 0) {
+          const deletedRows = await tx
+            .select({
+              type: transactions.type,
+              amount: transactions.amount,
+              sourceRef: transactions.sourceRef,
+            })
+            .from(transactions)
+            .where(inArray(transactions.id, allTxIdsToDelete));
+          await revertGoalContributions(tx, deletedRows);
+
           await tx
             .delete(settlementAllocations)
             .where(inArray(settlementAllocations.settlementTransactionId, allTxIdsToDelete));

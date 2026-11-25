@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import { eq } from "drizzle-orm";
-import { debtAccounts, installments, transactions, transactionSplits, wallets } from "../db/schema";
+import { eq, like } from "drizzle-orm";
+import {
+  debtAccounts,
+  goals,
+  installments,
+  transactions,
+  transactionSplits,
+  wallets,
+} from "../db/schema";
 import { LoginRateLimiter } from "../lib/auth";
 import { buildDebtsData } from "../lib/dashboardQuery";
 import { computeLedgerSnapshot } from "../lib/ledger";
@@ -497,6 +504,87 @@ describe("Regression: unticking Pecah Kategori removes the splits", () => {
       expect(await db.select().from(transactionSplits).where(eq(transactionSplits.transactionId, id))).toHaveLength(0);
     } finally {
       await cleanup();
+    }
+  });
+});
+
+describe("Regression: goal progress stays in step with its transfers", () => {
+  async function setupGoal(ctx: Awaited<ReturnType<typeof setupTestContext>>) {
+    const { db, app } = ctx;
+    const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+    const [bca] = await db.select().from(wallets).where(eq(wallets.key, "bca"));
+    const goalRes = await app.request("/api/goals", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ name: "Liburan", targetAmount: 10_000_000, walletId: bca!.id }),
+    });
+    expect(goalRes.status).toBeLessThan(300);
+    const goalJson = (await goalRes.json()) as { id?: number; goal?: { id: number } };
+    const goalId = goalJson.goal?.id ?? goalJson.id!;
+
+    const contribute = await app.request(`/api/goals/${goalId}/contribute`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ amount: 1_000_000, walletId: bni!.id }),
+    });
+    expect(contribute.status).toBeLessThan(300);
+    const [transfer] = await db.select().from(transactions).where(like(transactions.sourceRef, `goal:${goalId}:%`));
+    expect(transfer).toBeDefined();
+    return { goalId, transfer: transfer!, bni: bni!, bca: bca! };
+  }
+
+  const goalAmount = async (db: Awaited<ReturnType<typeof setupTestContext>>["db"], id: number) =>
+    (await db.select().from(goals).where(eq(goals.id, id)))[0]!.currentAmount;
+
+  it("editing the transfer amount updates progress, and deleting it removes exactly that amount", async () => {
+    const ctx = await setupTestContext();
+    try {
+      const { goalId, transfer } = await setupGoal(ctx);
+      expect(await goalAmount(ctx.db, goalId)).toBe(1_000_000);
+
+      const edit = await ctx.app.request(`/api/transactions/${transfer.id}`, {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ amount: 100_000 }),
+      });
+      expect(edit.status).toBe(200);
+      expect(await goalAmount(ctx.db, goalId)).toBe(100_000);
+      const [edited] = await ctx.db.select().from(transactions).where(eq(transactions.id, transfer.id));
+      expect(edited!.merchant).toBe(transfer.merchant);
+
+      const del = await ctx.app.request(`/api/transactions/${transfer.id}`, { method: "DELETE" });
+      expect(del.status).toBe(200);
+      expect(await goalAmount(ctx.db, goalId)).toBe(0);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it("cascade-deleting the source wallet removes the progress it funded", async () => {
+    const ctx = await setupTestContext();
+    try {
+      const { goalId, bni } = await setupGoal(ctx);
+      const del = await ctx.app.request(`/api/wallets/${bni.id}?cascade=true`, { method: "DELETE" });
+      expect(del.status).toBe(200);
+      expect(await goalAmount(ctx.db, goalId)).toBe(0);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it("a transactions-only reset removes transfer-funded progress", async () => {
+    const ctx = await setupTestContext();
+    try {
+      const { goalId } = await setupGoal(ctx);
+      const reset = await ctx.app.request("/api/settings/reset", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ confirmation: "RESET_CONFIRMED" }),
+      });
+      expect(reset.status).toBe(200);
+      expect(await goalAmount(ctx.db, goalId)).toBe(0);
+    } finally {
+      await ctx.cleanup();
     }
   });
 });
