@@ -843,8 +843,8 @@ export function BudgetPage({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Anggaran</h1>
 
-        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
-          <div className="flex items-center justify-between gap-1 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1">
+        <div className="w-full sm:w-auto flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="flex w-full sm:w-auto items-center justify-between gap-1 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1">
             <button
               type="button"
               onClick={() => onPeriodChange(shiftMonth(period, -1))}
@@ -866,26 +866,28 @@ export function BudgetPage({
             </button>
           </div>
 
-          <Button
-            variant="secondary"
-            onClick={openIncomeArchiveModal}
-            className="gap-1.5"
-          >
-            <span>Pemasukan &amp; Arsip</span>
-            {archivedCategories.length > 0 && (
-              <Badge tone="neutral" className="text-[10px] px-1.5 py-0">
-                {archivedCategories.length}
-              </Badge>
-            )}
-          </Button>
+          <div className="grid grid-cols-2 gap-2 w-full sm:flex sm:w-auto sm:items-center">
+            <Button
+              variant="secondary"
+              onClick={openIncomeArchiveModal}
+              className="w-full sm:w-auto justify-center gap-1.5"
+            >
+              <span>Pemasukan &amp; Arsip</span>
+              {archivedCategories.length > 0 && (
+                <Badge tone="neutral" className="text-[10px] px-1.5 py-0">
+                  {archivedCategories.length}
+                </Badge>
+              )}
+            </Button>
 
-          <Button
-            onClick={() => openCreateModal(activeBucketTab === "all" ? "needs" : activeBucketTab)}
-            className="gap-1.5"
-          >
-            <PlusIcon className="w-4 h-4" />
-            <span>Tambah Kategori</span>
-          </Button>
+            <Button
+              onClick={() => openCreateModal(activeBucketTab === "all" ? "needs" : activeBucketTab)}
+              className="w-full sm:w-auto justify-center gap-1.5"
+            >
+              <PlusIcon className="w-4 h-4" />
+              <span>Tambah Kategori</span>
+            </Button>
+          </div>
         </div>
       </div>
 

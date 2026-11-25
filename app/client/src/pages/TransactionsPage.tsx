@@ -385,16 +385,11 @@ export function TransactionsPage({
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Transaksi</h1>
-          <p className="text-sm text-[var(--muted-foreground)]">
-            Filter mingguan, grafik arus kas harian, dan kontrol batas kategori.
-          </p>
-        </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Transaksi</h1>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center justify-between gap-1 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1">
+        <div className="w-full sm:w-auto flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="flex w-full sm:w-auto items-center justify-between gap-1 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1">
             <button
               type="button"
               onClick={() => onPeriodChange(shiftMonth(period, -1))}
@@ -416,7 +411,7 @@ export function TransactionsPage({
             </button>
           </div>
 
-          <Button onClick={onAddTransaction} className="gap-1.5">
+          <Button onClick={onAddTransaction} className="w-full sm:w-auto justify-center gap-1.5">
             <PlusIcon className="w-4 h-4" />
             <span>Catat Transaksi</span>
           </Button>

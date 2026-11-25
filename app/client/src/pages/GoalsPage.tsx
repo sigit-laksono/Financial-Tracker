@@ -95,7 +95,7 @@ export function GoalsPage({ onToast }: { onToast: (msg: string) => void }) {
               setEditingGoal(null);
               setGoalModalOpen(true);
             }}
-            className="gap-2 self-start sm:self-auto"
+            className="w-full sm:w-auto justify-center gap-2"
           >
             <PlusIcon className="w-4 h-4" />
             <span>Buat Target Baru</span>

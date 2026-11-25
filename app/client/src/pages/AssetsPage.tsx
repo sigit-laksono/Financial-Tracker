@@ -408,7 +408,7 @@ export function AssetsPage({ onToast }: { onToast: (msg: string) => void }) {
 
         <Button
           onClick={() => openCreateModal("investment")}
-          className="gap-2 self-start sm:self-auto"
+          className="w-full sm:w-auto justify-center gap-2"
         >
           <PlusIcon className="w-4 h-4" />
           <span>Tambah Aset</span>

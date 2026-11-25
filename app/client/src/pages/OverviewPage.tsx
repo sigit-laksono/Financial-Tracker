@@ -145,8 +145,8 @@ export function OverviewPage({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <div className="flex items-center justify-between gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1 shadow-2xs">
+        <div className="flex w-full sm:w-auto items-center gap-2">
+          <div className="flex w-full sm:w-auto items-center justify-between gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1 shadow-2xs">
             <button
               type="button"
               onClick={() => onPeriodChange(shiftMonth(period, -1))}

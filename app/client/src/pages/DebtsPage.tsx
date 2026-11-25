@@ -500,9 +500,12 @@ export function DebtsPage({
   return (
     <div className="space-y-6">
       {/* Top Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Kartu & Utang</h1>
-        <Button onClick={contextualHeaderCta.onClick} className="gap-2">
+        <Button
+          onClick={contextualHeaderCta.onClick}
+          className="w-full sm:w-auto justify-center gap-2"
+        >
           <PlusIcon className="w-4 h-4" />
           <span>{contextualHeaderCta.label}</span>
         </Button>
