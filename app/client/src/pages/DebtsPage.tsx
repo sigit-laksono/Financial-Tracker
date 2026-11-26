@@ -1217,13 +1217,17 @@ export function DebtsPage({
                   >
                     {(activeCard?.cycleSummaries ?? data.cycleSummaries).map((c) => (
                       <option key={c.cycleKey} value={c.cycleKey}>
-                        {formatMonthTitle(c.cycleKey)} ({formatRupiah(c.totalBill, isMasked)})
+                        {formatMonthTitle(c.cycleKey)} (
+                        {c.settled || c.remainingBill === 0
+                          ? "Lunas"
+                          : formatRupiah(c.remainingBill, isMasked)}
+                        )
                       </option>
                     ))}
                   </select>
                 </div>
 
-                {activeCycle && !activeCycle.settled && activeCycle.totalBill > 0 && (
+                {activeCycle && !activeCycle.settled && activeCycle.remainingBill > 0 && (
                   <Button
                     onClick={() =>
                       onPayCcCycle(
@@ -1235,7 +1239,7 @@ export function DebtsPage({
                     className="gap-2"
                   >
                     <CheckIcon className="w-4 h-4" />
-                    <span>Bayar Tagihan ({formatRupiah(activeCycle.totalBill, isMasked)})</span>
+                    <span>Bayar Tagihan ({formatRupiah(activeCycle.remainingBill, isMasked)})</span>
                   </Button>
                 )}
                 {activeCycle?.settled && (
@@ -1295,10 +1299,35 @@ export function DebtsPage({
                         content="Bayar lunas total tagihan sebelum tanggal jatuh tempo untuk menikmati 100% bebas bunga dari bank penerbit."
                       />
                     </p>
-                    <p className="tabular-nums font-mono mt-0.5 text-base font-extrabold text-[var(--primary)]">
+                    <p
+                      className={`tabular-nums font-mono mt-0.5 text-base font-extrabold ${
+                        activeCycle.remainingBill < activeCycle.totalBill
+                          ? "text-[var(--foreground)]"
+                          : "text-[var(--primary)]"
+                      }`}
+                    >
                       {formatRupiah(activeCycle.totalBill, isMasked)}
                     </p>
                   </div>
+                  {activeCycle.remainingBill < activeCycle.totalBill && (
+                    <>
+                      <div>
+                        <p className="text-xs text-[var(--muted-foreground)]">Sudah Dibayar</p>
+                        <p className="tabular-nums font-mono mt-0.5 text-base font-bold text-[var(--chart-income)]">
+                          {formatRupiah(
+                            activeCycle.totalBill - activeCycle.remainingBill,
+                            isMasked,
+                          )}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[var(--muted-foreground)]">Sisa Tagihan</p>
+                        <p className="tabular-nums font-mono mt-0.5 text-base font-extrabold text-[var(--primary)]">
+                          {formatRupiah(activeCycle.remainingBill, isMasked)}
+                        </p>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 

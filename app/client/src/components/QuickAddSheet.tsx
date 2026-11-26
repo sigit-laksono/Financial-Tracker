@@ -303,7 +303,7 @@ export function QuickAddSheet({
     if (debts?.cards && debts.cards.length > 0) {
       return debts.cards.flatMap((card) =>
         card.cycleSummaries
-          .filter((c) => !c.settled && c.totalBill > 0)
+          .filter((c) => !c.settled && c.remainingBill > 0)
           .map((c) => ({
             ...c,
             walletId: card.walletId,
@@ -313,7 +313,7 @@ export function QuickAddSheet({
       );
     }
     return (debts?.cycleSummaries ?? [])
-      .filter((c) => !c.settled && c.totalBill > 0)
+      .filter((c) => !c.settled && c.remainingBill > 0)
       .map((c) => ({
         ...c,
         walletId: undefined as number | undefined,
@@ -528,7 +528,7 @@ export function QuickAddSheet({
   const selectedSettleBillAmount = useMemo(() => {
     if (settleTarget.startsWith("cc:")) {
       const cycle = unpaidCcCycles.find((c) => c.key === settleTarget);
-      return cycle?.totalBill ?? 0;
+      return cycle?.remainingBill ?? 0;
     }
     return selectedInsts.reduce((sum, i) => sum + i.plannedAmount, 0);
   }, [settleTarget, unpaidCcCycles, selectedInsts]);
@@ -1146,7 +1146,7 @@ export function QuickAddSheet({
                         <optgroup label="Tagihan Kartu Kredit">
                           {unpaidCcCycles.map((c) => (
                             <option key={c.key} value={c.key}>
-                              {c.walletName} · Siklus {c.cycleKey} ({formatRupiah(c.totalBill, isMasked)})
+                              {c.walletName} · Siklus {c.cycleKey} ({formatRupiah(c.remainingBill, isMasked)})
                             </option>
                           ))}
                         </optgroup>

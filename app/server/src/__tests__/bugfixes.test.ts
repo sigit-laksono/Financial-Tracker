@@ -716,3 +716,105 @@ describe("Regression: double-submit does not move money twice", () => {
     }
   });
 });
+
+describe("Regression: CC bill shows what is still owed", () => {
+  it("drops an installment paid on its own from the cycle's remaining bill", async () => {
+    const { db, app, cleanup } = await setupTestContext();
+    try {
+      const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+      await app.request("/api/transactions", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          type: "income",
+          merchant: "Gaji",
+          amount: 5_000_000,
+          transactionDate: "2026-11-25",
+          category: "Gaji",
+          walletId: bni!.id,
+        }),
+      });
+
+      const cardRes = await app.request("/api/wallets", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: "Jenius Cut21",
+          type: "credit_card",
+          creditLimit: 15_000_000,
+          cutoffDay: 21,
+          statementDay: 21,
+          paymentDay: 7,
+        }),
+      });
+      expect(cardRes.status).toBe(201);
+      const { wallet: card } = (await cardRes.json()) as { wallet: { id: number } };
+
+      // Both land in the 2026-12 cycle (after the 21 Nov cut-off).
+      const debtRes = await app.request("/api/debts", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: "CC Nov",
+          lender: "Jenius",
+          kind: "card_installment",
+          direction: "payable",
+          walletId: card.id,
+          initialBalance: 1_000_000,
+          installmentCount: 1,
+          installmentAmount: 1_000_000,
+          firstDueDate: "2026-11-26",
+          paymentMethod: "Tagihan kartu",
+        }),
+      });
+      expect(debtRes.status).toBe(201);
+      const spendRes = await app.request("/api/transactions", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          type: "expense",
+          merchant: "Warung",
+          amount: 50_000,
+          transactionDate: "2026-11-22",
+          category: "Makanan & Belanja Dapur",
+          walletId: card.id,
+        }),
+      });
+      expect(spendRes.status).toBe(201);
+
+      const before = await buildDebtsData(db, "2026-11-26");
+      const inst = before.installments.find((i) => i.accountName === "CC Nov")!;
+      const settleRes = await app.request("/api/installments/settle", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          installmentIds: [inst.id],
+          fromWalletId: bni!.id,
+          paymentDate: "2026-11-26",
+        }),
+      });
+      expect(settleRes.status).toBe(200);
+
+      // Paying the only installment auto-closes the account. Older data can hold a paid-off
+      // account that is still open, which keeps its paid installment in the cycle totals.
+      const reopenRes = await app.request(`/api/debts/${inst.accountId}/close`, {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ closed: false }),
+      });
+      expect(reopenRes.status).toBe(200);
+
+      const after = await buildDebtsData(db, "2026-11-26");
+      const cycle = after.cards
+        .find((c) => c.walletId === card.id)!
+        .cycleSummaries.find((s) => s.cycleKey === "2026-12")!;
+      // The gross bill still lists the installment, but only the daily spend is still owed.
+      expect(cycle.totalBill).toBe(1_050_000);
+      expect(cycle.remainingBill).toBe(50_000);
+      expect(cycle.unpaidInstallmentIds).toEqual([]);
+      expect(cycle.settled).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+});
