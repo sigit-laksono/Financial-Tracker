@@ -524,7 +524,9 @@ export function OverviewPage({
                       <Badge tone={b.status === "over" ? "danger" : "highlight"}>
                         {b.status === "over"
                           ? `Lewat batas (${b.percentUsed}%)`
-                          : `Mendekati batas (${b.percentUsed}%)`}
+                          : b.spentAmount >= b.limitAmount
+                            ? "Batas habis"
+                            : `Mendekati batas (${b.percentUsed}%)`}
                       </Badge>
                     </div>
                     <ProgressBar
