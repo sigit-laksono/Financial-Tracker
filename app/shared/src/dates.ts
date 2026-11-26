@@ -59,6 +59,14 @@ export function ccDueDateForCycle(
   return `${dueCycle}-${String(day).padStart(2, "0")}`;
 }
 
+/** Cut-off date that closes a CC cycle: transactions before it belong to `cycleKey`. */
+export function ccClosingDateForCycle(cycleKey: string, cutoffDay = 20): string {
+  const [yearText = "1970", monthText = "01"] = cycleKey.split("-");
+  const lastDay = new Date(Date.UTC(Number(yearText), Number(monthText), 0)).getUTCDate();
+  const day = Math.min(Math.max(1, cutoffDay), lastDay);
+  return `${cycleKey}-${String(day).padStart(2, "0")}`;
+}
+
 export function ccCycleForDate(dateValue: string, cardCutoffDay = 20): string {
   const [yearText = "1970", monthText = "01", dayText = "01"] = dateValue.split("-");
   const year = Number(yearText);

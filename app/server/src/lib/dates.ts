@@ -1,6 +1,7 @@
 export {
   addDaysToDate,
   addMonthsToDate,
+  ccClosingDateForCycle,
   ccCycleForDate,
   ccDueDateForCycle,
   daysBetween,

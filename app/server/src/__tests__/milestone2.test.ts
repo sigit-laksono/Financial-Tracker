@@ -710,6 +710,9 @@ describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline S
           dailyTotal: number;
           installmentTotal: number;
           totalBill: number;
+          closingDate: string;
+          dueDate: string;
+          remainingBill: number;
         }>;
       }>;
       installments: Array<{ accountName: string; period: string; dueDate: string }>;
@@ -720,6 +723,10 @@ describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline S
     expect(decCycle.dailyTotal).toBe(22_000);
     expect(decCycle.installmentTotal).toBe(3_582_808);
     expect(decCycle.totalBill).toBe(3_604_808);
+    // Cycle 2026-12 closes on the 21st cut-off; payment day 7 <= cut-off, so due next month.
+    expect(decCycle.closingDate).toBe("2026-12-21");
+    expect(decCycle.dueDate).toBe("2027-01-07");
+    expect(decCycle.remainingBill).toBe(3_604_808);
     expect(novCycle.installmentTotal).toBe(0);
     const ccNovInst = debtsCutoffBody.installments.find((i) => i.accountName === "CC Nov")!;
     expect(ccNovInst.period).toBe("2026-12");
@@ -758,6 +765,18 @@ describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline S
       }),
     });
     expect(settleCombined9.status).toBe(200);
+
+    const debtsAfterSettle9 = (await (await app.request("/api/debts")).json()) as {
+      cards: Array<{
+        walletId: number;
+        cycleSummaries: Array<{ cycleKey: string; remainingBill: number }>;
+      }>;
+    };
+    expect(
+      debtsAfterSettle9.cards
+        .find((c) => c.walletId === jenius21.id)!
+        .cycleSummaries.find((s) => s.cycleKey === "2026-12")!.remainingBill,
+    ).toBe(0);
 
     // Cek dashboard gajian 2026-11 (25 Nov - 24 Des 2026):
     // Pembayaran gabungan Rp 3.604.808 pada 26 Nov: porsi cc_cycle Rp 22.000 (belanja 22 Nov) TIDAK dihitung ulang;

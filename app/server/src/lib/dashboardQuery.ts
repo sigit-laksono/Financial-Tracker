@@ -6,6 +6,7 @@ import { recurringRules, transactionSplits, transactions } from "../db/schema";
 import { resolveBudgetsForPeriod } from "./budgetService";
 import {
   addDaysToDate,
+  ccClosingDateForCycle,
   ccCycleForDate,
   ccDueDateForCycle,
   daysBetween,
@@ -1134,10 +1135,12 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
           .reduce((sum, t) => sum + t.amount, 0);
         const installmentItems = cardInstallments.filter((inst) => inst.effectiveCycle === cycleKey);
         const installmentTotal = installmentItems.reduce((sum, i) => sum + i.plannedAmount, 0);
-        const unpaidInstallmentIds = installmentItems
-          .filter((i) => i.status === "upcoming")
-          .map((i) => i.id);
+        const unpaidInstallments = installmentItems.filter((i) => i.status === "upcoming");
+        const unpaidInstallmentIds = unpaidInstallments.map((i) => i.id);
         const dailySettled = snap.isCycleSettledForWallet(card.id, cycleKey);
+        const remainingBill =
+          snap.unpaidCcDailyForWalletAndCycle(card.id, cycleKey) +
+          unpaidInstallments.reduce((sum, i) => sum + i.plannedAmount, 0);
         return {
           cycleKey,
           dailyTotal,
@@ -1147,6 +1150,9 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
           dailySettled,
           unpaidInstallmentIds,
           transactionCount: cycleTxs.length,
+          closingDate: ccClosingDateForCycle(cycleKey, cutoffDay),
+          dueDate: ccDueDateForCycle(cycleKey, cutoffDay, paymentDay),
+          remainingBill,
         };
       });
 

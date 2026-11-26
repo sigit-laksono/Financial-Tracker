@@ -34,6 +34,43 @@ import { usePrivacyMode } from "../lib/usePrivacyMode";
 
 type DebtPageTab = "summary" | "loan" | "cards" | "payroll" | "receivable";
 
+/** Whole days from `today` to `isoDate` (negative when overdue). */
+function daysUntil(isoDate: string, today: string): number {
+  const ms = Date.parse(`${isoDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`);
+  return Math.round(ms / 86_400_000);
+}
+
+function dueCountdownLabel(days: number): string {
+  if (days === 0) return "Hari ini";
+  if (days === 1) return "Besok";
+  if (days > 1) return `${days} hari lagi`;
+  return `Terlambat ${Math.abs(days)} hari`;
+}
+
+/** Overdue or due within 3 days: shown in the destructive color. */
+function isDueUrgent(days: number): boolean {
+  return days <= 3;
+}
+
+type ObligationItem =
+  | {
+      type: "installment";
+      key: string;
+      dueDate: string;
+      amount: number;
+      installment: DebtsDto["installments"][number];
+    }
+  | {
+      type: "cc_bill";
+      key: string;
+      dueDate: string;
+      amount: number;
+      walletId: number;
+      walletName: string;
+      cycleKey: string;
+      unpaidInstallmentIds: number[];
+    };
+
 const KIND_BADGE_LABEL: Record<DebtKind, string> = {
   loan: "Pinjaman Tunai",
   card_installment: "Cicilan CC",
@@ -308,20 +345,78 @@ export function DebtsPage({
     ? Math.min(Math.max(0, 100 - ccInstallmentPct), (activeCardDailyUsed / activeCardLimit) * 100)
     : 0;
 
-  // Monthly Debt Burden (planned upcoming installments this month)
-  const monthlyDebtBurden = useMemo(() => {
-    const today = jakartaToday();
-    const currentYearMonth = today.slice(0, 7);
-    return data.installments
+  const today = jakartaToday();
+
+  // Card installments are billed inside their card's CC cycle bill; listing them
+  // separately would count them twice.
+  const cardInstallmentAccountIds = useMemo(() => {
+    const cardIds = new Set(cards.map((c) => c.walletId));
+    return new Set(
+      data.accounts
+        .filter(
+          (a) =>
+            a.kind === "card_installment" &&
+            ((a.walletId !== null && cardIds.has(a.walletId)) ||
+              (a.walletId === null && cards.length === 1)),
+        )
+        .map((a) => a.id),
+    );
+  }, [data.accounts, cards]);
+
+  // Upcoming obligations: unpaid installments + closed, unpaid CC cycle bills.
+  const obligations = useMemo<ObligationItem[]>(() => {
+    const installmentItems: ObligationItem[] = data.installments
       .filter(
         (i) =>
           !i.accountClosed &&
-          i.direction !== "receivable" &&
           i.status === "upcoming" &&
-          (i.period === currentYearMonth || i.dueDate.slice(0, 7) === currentYearMonth),
+          !cardInstallmentAccountIds.has(i.accountId),
       )
-      .reduce((sum, i) => sum + i.plannedAmount, 0);
-  }, [data.installments]);
+      .map((i) => ({
+        type: "installment",
+        key: `inst-${i.id}`,
+        dueDate: i.dueDate,
+        amount: i.plannedAmount,
+        installment: i,
+      }));
+    const ccItems: ObligationItem[] = cards.flatMap((card) =>
+      card.cycleSummaries
+        .filter((c) => c.remainingBill > 0 && c.closingDate <= today)
+        .map((c) => ({
+          type: "cc_bill" as const,
+          key: `cc-${card.walletId}-${c.cycleKey}`,
+          dueDate: c.dueDate,
+          amount: c.remainingBill,
+          walletId: card.walletId,
+          walletName: card.walletName,
+          cycleKey: c.cycleKey,
+          unpaidInstallmentIds: c.unpaidInstallmentIds,
+        })),
+    );
+    return [...installmentItems, ...ccItems].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  }, [data.installments, cards, cardInstallmentAccountIds, today]);
+
+  const payableObligations = useMemo(
+    () =>
+      obligations.filter(
+        (o) => o.type === "cc_bill" || o.installment.direction !== "receivable",
+      ),
+    [obligations],
+  );
+
+  // Beban Bulan Ini: payable obligations due by the end of this month (overdue included).
+  const monthlyDebtBurden = useMemo(() => {
+    const currentYearMonth = today.slice(0, 7);
+    return payableObligations
+      .filter(
+        (o) =>
+          o.dueDate.slice(0, 7) <= currentYearMonth ||
+          (o.type === "installment" && o.installment.period === currentYearMonth),
+      )
+      .reduce((sum, o) => sum + o.amount, 0);
+  }, [payableObligations, today]);
+
+  const nearestPayable = payableObligations[0] ?? null;
 
   const groupedSchedule = useMemo(() => {
     const map = new Map<string, typeof data.installments>();
@@ -350,12 +445,6 @@ export function DebtsPage({
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [data.installments, activeTab]);
 
-  const upcomingObligations = useMemo(() => {
-    return data.installments
-      .filter((i) => !i.accountClosed && i.status === "upcoming")
-      .slice()
-      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-  }, [data.installments]);
 
   const renderAccountCards = (accounts: DebtAccountDto[]) => (
     <div
@@ -532,12 +621,11 @@ export function DebtsPage({
               <CardDebtIcon className="w-3.5 h-3.5 text-[var(--primary)]" />
               <span>Total Kewajiban Utang</span>
             </div>
-            <Badge
-              tone={isMasked ? "neutral" : hasDebt ? "highlight" : "soft"}
-              className="text-[11px] font-bold px-2 py-0.5"
-            >
-              {isMasked ? "Mode Privasi" : hasDebt ? "Ada Kewajiban" : "Lunas"}
-            </Badge>
+            {!hasDebt && !isMasked && (
+              <Badge tone="soft" className="text-[11px] font-bold px-2 py-0.5">
+                Lunas
+              </Badge>
+            )}
           </div>
           <div className="flex items-baseline gap-2">
             <h2 className="font-mono text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-[var(--hero-card-foreground)] tabular-nums">
@@ -548,17 +636,39 @@ export function DebtsPage({
       </div>
 
       {/* Beban Bulan Ini Summary Strip */}
-      <div className="rounded-[18px] border border-[var(--border)] bg-[var(--card)] px-4 py-3.5 sm:px-5 sm:py-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-        <span className="text-[11px] font-bold text-[var(--muted-foreground)] uppercase tracking-wide">
-          Beban Bulan Ini
-        </span>
-        <p
-          className={`metric-value-compact font-extrabold whitespace-nowrap tabular-nums ${
-            isMasked ? "text-[var(--foreground)]" : "text-[var(--highlight-text)]"
-          }`}
-        >
-          {formatRupiah(monthlyDebtBurden, isMasked)}
-        </p>
+      <div className="rounded-[18px] border border-[var(--border)] bg-[var(--card)] px-4 py-3.5 sm:px-5 sm:py-4 space-y-1">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <span className="text-[11px] font-bold text-[var(--muted-foreground)] uppercase tracking-wide">
+            Beban Bulan Ini
+          </span>
+          <p
+            className={`metric-value-compact font-extrabold whitespace-nowrap tabular-nums ${
+              isMasked ? "text-[var(--foreground)]" : "text-[var(--highlight-text)]"
+            }`}
+          >
+            {formatRupiah(monthlyDebtBurden, isMasked)}
+          </p>
+        </div>
+        {nearestPayable && (
+          <p className="text-xs text-[var(--muted-foreground)]">
+            Terdekat:{" "}
+            <strong className="text-[var(--foreground)]">
+              {nearestPayable.type === "cc_bill"
+                ? `Tagihan ${nearestPayable.walletName}`
+                : nearestPayable.installment.accountName}
+            </strong>{" "}
+            · {formatShortDate(nearestPayable.dueDate)} ·{" "}
+            <span
+              className={
+                isDueUrgent(daysUntil(nearestPayable.dueDate, today))
+                  ? "font-bold text-[var(--destructive)]"
+                  : "font-semibold"
+              }
+            >
+              {dueCountdownLabel(daysUntil(nearestPayable.dueDate, today))}
+            </span>
+          </p>
+        )}
       </div>
 
       {/* 5 Navigation Filter Tabs (1-Row Horizontal Scroll) */}
@@ -735,57 +845,83 @@ export function DebtsPage({
               <h2 className="text-base font-extrabold text-[var(--foreground)]">
                 Tagihan Terdekat
               </h2>
-              {upcomingObligations.length > 5 && (
+              {obligations.length > 5 && (
                 <span className="text-xs font-medium text-[var(--muted-foreground)]">
-                  Menampilkan 5 dari {upcomingObligations.length} jadwal mendatang
+                  Menampilkan 5 dari {obligations.length} jadwal mendatang
                 </span>
               )}
             </div>
 
-            {upcomingObligations.length === 0 ? (
+            {obligations.length === 0 ? (
               <Card className="p-4 text-xs text-[var(--muted-foreground)]">
                 Tidak ada tagihan atau cicilan jatuh tempo terdekat.
               </Card>
             ) : (
               <Card className="p-0 overflow-hidden rounded-[18px]">
                 <div className="divide-y divide-[var(--border)]">
-                  {upcomingObligations.slice(0, 5).map((item) => {
-                    const isReceivable = item.direction === "receivable";
+                  {obligations.slice(0, 5).map((o) => {
+                    const days = daysUntil(o.dueDate, today);
+                    const isReceivable =
+                      o.type === "installment" && o.installment.direction === "receivable";
+                    const urgent = !isReceivable && isDueUrgent(days);
                     return (
                       <div
-                        key={item.id}
+                        key={o.key}
                         className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 hover:bg-[var(--surface)] transition-colors"
                       >
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="text-sm font-bold text-[var(--foreground)]">
-                              {item.accountName}
+                              {o.type === "cc_bill" ? o.walletName : o.installment.accountName}
                             </span>
-                            {item.accountKind === "payroll" ? (
+                            {o.type === "cc_bill" ? (
+                              <Badge tone="neutral">Tagihan CC</Badge>
+                            ) : o.installment.accountKind === "payroll" ? (
                               <Badge tone="neutral">Auto Potong Gaji</Badge>
                             ) : (
                               <Badge tone={isReceivable ? "soft" : "neutral"}>
-                                {KIND_BADGE_LABEL[item.accountKind] ??
+                                {KIND_BADGE_LABEL[o.installment.accountKind] ??
                                   (isReceivable ? "Piutang" : "Utang")}
                               </Badge>
                             )}
                           </div>
                           <p className="text-xs text-[var(--muted-foreground)]">
-                            Jatuh tempo {formatShortDate(item.dueDate)} · {item.lender}
+                            Jatuh tempo {formatShortDate(o.dueDate)} ·{" "}
+                            <span
+                              className={
+                                urgent ? "font-bold text-[var(--destructive)]" : "font-semibold"
+                              }
+                            >
+                              {dueCountdownLabel(days)}
+                            </span>
+                            {o.type === "installment" && o.installment.lender
+                              ? ` · ${o.installment.lender}`
+                              : ""}
                           </p>
                         </div>
 
                         <div className="flex items-center gap-2.5">
                           <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
-                            {formatRupiah(item.plannedAmount, isMasked)}
+                            {formatRupiah(o.amount, isMasked)}
                           </span>
-                          {item.accountKind !== "payroll" && (
+                          {o.type === "cc_bill" ? (
                             <Button
-                              onClick={() => onPayInstallment(item.id)}
+                              onClick={() =>
+                                onPayCcCycle(o.cycleKey, o.unpaidInstallmentIds, o.walletId)
+                              }
                               className="min-h-[36px] px-3 text-xs"
                             >
-                              {isReceivable ? "Terima" : "Bayar"}
+                              Bayar
                             </Button>
+                          ) : (
+                            o.installment.accountKind !== "payroll" && (
+                              <Button
+                                onClick={() => onPayInstallment(o.installment.id)}
+                                className="min-h-[36px] px-3 text-xs"
+                              >
+                                {isReceivable ? "Terima" : "Bayar"}
+                              </Button>
+                            )
                           )}
                         </div>
                       </div>
@@ -1051,7 +1187,6 @@ export function DebtsPage({
                       title="Siklus Tagihan Kartu Kredit"
                       content="Masa pencatatan transaksi dari tanggal tutup buku bulan lalu hingga tutup buku bulan ini. Transaksi baru setelah tutup buku masuk ke tagihan bulan berikutnya (bebas bunga)."
                     />
-                    :
                   </label>
                   <select
                     id="cc-cycle-select"
@@ -1087,6 +1222,30 @@ export function DebtsPage({
                     <CheckIcon className="w-3.5 h-3.5" />
                     <span>Tagihan Siklus Ini Lunas</span>
                   </Badge>
+                )}
+
+                {activeCycle && !activeCycle.settled && activeCycle.remainingBill > 0 && (
+                  <p className="w-full text-xs text-[var(--muted-foreground)]">
+                    {activeCycle.closingDate > today ? (
+                      <>
+                        Tagihan berjalan · tutup buku {formatShortDate(activeCycle.closingDate)} ·
+                        jatuh tempo {formatShortDate(activeCycle.dueDate)}
+                      </>
+                    ) : (
+                      <>
+                        Jatuh tempo {formatShortDate(activeCycle.dueDate)} ·{" "}
+                        <span
+                          className={
+                            isDueUrgent(daysUntil(activeCycle.dueDate, today))
+                              ? "font-bold text-[var(--destructive)]"
+                              : "font-semibold text-[var(--foreground)]"
+                          }
+                        >
+                          {dueCountdownLabel(daysUntil(activeCycle.dueDate, today))}
+                        </span>
+                      </>
+                    )}
+                  </p>
                 )}
               </div>
 

@@ -581,6 +581,12 @@ export type DebtsDto = {
       dailySettled: boolean;
       unpaidInstallmentIds: number[];
       transactionCount: number;
+      /** Cut-off date that closes this cycle (YYYY-MM-DD). */
+      closingDate: string;
+      /** Payment due date for this cycle bill (YYYY-MM-DD). */
+      dueDate: string;
+      /** Unpaid daily spend + unpaid installments still owed on this cycle. */
+      remainingBill: number;
     }>;
   }>;
   ccTransactions: Array<{
@@ -605,6 +611,9 @@ export type DebtsDto = {
     dailySettled: boolean;
     unpaidInstallmentIds: number[];
     transactionCount: number;
+    closingDate: string;
+    dueDate: string;
+    remainingBill: number;
   }>;
   wallets: WalletDto[];
 };
