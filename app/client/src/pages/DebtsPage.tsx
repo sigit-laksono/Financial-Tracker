@@ -53,6 +53,17 @@ function isDueUrgent(days: number): boolean {
   return days <= 3;
 }
 
+/** Open/closed state remembered on this device; closed until the user opens it. */
+function usePersistedOpen(storageKey: string): [boolean, () => void] {
+  const [open, setOpen] = useState(() => localStorage.getItem(storageKey) === "true");
+  const toggle = () =>
+    setOpen((prev) => {
+      localStorage.setItem(storageKey, String(!prev));
+      return !prev;
+    });
+  return [open, toggle];
+}
+
 type ObligationItem =
   | {
       type: "installment";
@@ -99,6 +110,12 @@ export function DebtsPage({
 
   const [selectedTab, setActiveTab] = useState<DebtPageTab>("summary");
   const [showClosed, setShowClosed] = useState(false);
+  const [showCardInstallments, toggleCardInstallments] = usePersistedOpen(
+    "ft-debts-cc-installments-open",
+  );
+  const [showCardTransactions, toggleCardTransactions] = usePersistedOpen(
+    "ft-debts-cc-transactions-open",
+  );
 
   // Multi-CC selection
   const cards = data.cards ?? [];
@@ -289,6 +306,7 @@ export function DebtsPage({
       (t) => t.walletId === activeCard.walletId && t.ccCycleKey === activeCycle?.cycleKey,
     );
   }, [data.ccTransactions, activeCard, activeCycle]);
+  const cycleTransactionsTotal = cycleTransactions.reduce((sum, t) => sum + t.amount, 0);
 
   // Group accounts cleanly by debt type
   const activeLoanAccounts = useMemo(
@@ -316,6 +334,10 @@ export function DebtsPage({
       (a) => a.walletId === activeCard.walletId || (cards.length === 1 && !a.walletId),
     );
   }, [activeCardInstallments, activeCard, cards.length]);
+  const cardInstallmentsRemaining = activeCardSpecificInstallments.reduce(
+    (sum, a) => sum + a.remainingBalance,
+    0,
+  );
   const activeReceivableAccounts = useMemo(
     () => data.accounts.filter((a) => !a.closed && a.direction === "receivable"),
     [data.accounts],
@@ -1244,31 +1266,74 @@ export function DebtsPage({
                   </div>
                 )}
 
-              {/* Sub-section A: Cicilan Kartu Kredit Aktif on this card */}
+              {/* Sub-section A: Cicilan Kartu Kredit Aktif on this card (collapsible) */}
               <div className="space-y-3 border-t border-[var(--border)] pt-4">
-                <h3 className="text-sm font-bold text-[var(--foreground)]">
-                  Cicilan Kartu Kredit Aktif ({activeCardSpecificInstallments.length})
-                </h3>
-
                 {activeCardSpecificInstallments.length === 0 ? (
-                  <p className="text-xs text-[var(--muted-foreground)] py-1">
-                    Belum ada cicilan kartu kredit aktif pada kartu ini.
-                  </p>
+                  <>
+                    <h3 className="text-sm font-bold text-[var(--foreground)]">
+                      Cicilan Aktif (0)
+                    </h3>
+                    <p className="text-xs text-[var(--muted-foreground)] py-1">
+                      Belum ada cicilan kartu kredit aktif pada kartu ini.
+                    </p>
+                  </>
                 ) : (
-                  renderAccountCards(activeCardSpecificInstallments)
+                  <>
+                    <button
+                      type="button"
+                      aria-expanded={showCardInstallments}
+                      onClick={toggleCardInstallments}
+                      className="flex min-h-[44px] w-full items-center justify-between gap-3 text-left"
+                    >
+                      <span className="text-sm font-bold text-[var(--foreground)]">
+                        Cicilan Aktif ({activeCardSpecificInstallments.length})
+                      </span>
+                      <span className="flex items-center gap-2 text-xs font-semibold whitespace-nowrap">
+                        <span className="tabular-nums font-mono text-[var(--muted-foreground)]">
+                          sisa {formatRupiah(cardInstallmentsRemaining, isMasked)}
+                        </span>
+                        <span className="text-[var(--primary)]">
+                          {showCardInstallments ? "▲" : "▼"}
+                        </span>
+                      </span>
+                    </button>
+                    {showCardInstallments && renderAccountCards(activeCardSpecificInstallments)}
+                  </>
                 )}
               </div>
 
-              {/* Sub-section B: CC Daily Transactions in Cycle */}
+              {/* Sub-section B: CC Daily Transactions in Cycle (collapsible) */}
               <div className="space-y-2 border-t border-[var(--border)] pt-4">
-                <h3 className="text-sm font-bold text-[var(--foreground)]">
-                  Transaksi Harian {activeCard?.walletName ?? "CC"} ({cycleTransactions.length})
-                </h3>
                 {cycleTransactions.length === 0 ? (
-                  <p className="text-xs text-[var(--muted-foreground)] py-2">
-                    Belum ada transaksi harian kartu kredit yang dicatat pada siklus ini.
-                  </p>
+                  <>
+                    <h3 className="text-sm font-bold text-[var(--foreground)]">
+                      Transaksi Harian (0)
+                    </h3>
+                    <p className="text-xs text-[var(--muted-foreground)] py-2">
+                      Belum ada transaksi harian kartu kredit yang dicatat pada siklus ini.
+                    </p>
+                  </>
                 ) : (
+                  <button
+                    type="button"
+                    aria-expanded={showCardTransactions}
+                    onClick={toggleCardTransactions}
+                    className="flex min-h-[44px] w-full items-center justify-between gap-3 text-left"
+                  >
+                    <span className="text-sm font-bold text-[var(--foreground)]">
+                      Transaksi Harian ({cycleTransactions.length})
+                    </span>
+                    <span className="flex items-center gap-2 text-xs font-semibold whitespace-nowrap">
+                      <span className="tabular-nums font-mono text-[var(--muted-foreground)]">
+                        {formatRupiah(cycleTransactionsTotal, isMasked)}
+                      </span>
+                      <span className="text-[var(--primary)]">
+                        {showCardTransactions ? "▲" : "▼"}
+                      </span>
+                    </span>
+                  </button>
+                )}
+                {cycleTransactions.length > 0 && showCardTransactions && (
                   <div className="divide-y divide-[var(--border)] rounded-[12px] border border-[var(--border)] overflow-hidden">
                     {cycleTransactions.map((tx) => (
                       <div
