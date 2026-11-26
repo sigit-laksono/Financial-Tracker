@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { periodBounds } from "../../../shared/src/dates";
+import {
+  addMonthsToDate,
+  ccCycleForDate,
+  ccDueDateForCycle,
+  ccPostingDateInCycle,
+  periodBounds,
+} from "../../../shared/src/dates";
 import {
   buildWeekSlices,
   currentPeriodForCycle,
@@ -61,5 +67,27 @@ describe("Client & shared formatting helpers", () => {
     expect(spellOutRupiah(2000000000)).toBe("Dua miliar rupiah");
     expect(spellOutRupiah(1000000000000)).toBe("Satu triliun rupiah");
     expect(spellOutRupiah(-250000)).toBe("Minus Dua ratus lima puluh ribu rupiah");
+  });
+
+  it("places a card installment on the chosen statement via its posting date", () => {
+    // Jenius: cut-off 21, payment day 7. Laptop installment posts on the 29th.
+    const first = ccPostingDateInCycle("2026-12", 21, 29);
+    expect(first).toBe("2026-11-29");
+    expect(ccCycleForDate(first!, 21)).toBe("2026-12");
+    expect(ccDueDateForCycle("2026-12", 21, 7)).toBe("2027-01-07");
+
+    // Monthly progression keeps every installment on the next statement, February included.
+    const feb = addMonthsToDate(first!, 3).dueDate;
+    expect(feb).toBe("2027-02-28");
+    expect(ccCycleForDate(feb, 21)).toBe("2027-03");
+
+    // Without a posting day it uses the last day before cut-off, inside the cycle.
+    expect(ccPostingDateInCycle("2026-12", 21)).toBe("2026-12-20");
+    expect(ccPostingDateInCycle("2026-12", 1)).toBe("2026-11-30");
+
+    // A day before the cut-off falls in the statement month itself.
+    expect(ccPostingDateInCycle("2026-12", 21, 5)).toBe("2026-12-05");
+    // A day that cannot exist inside the cycle is rejected.
+    expect(ccPostingDateInCycle("2027-03", 30, 30)).toBeNull();
   });
 });

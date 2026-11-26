@@ -44,11 +44,7 @@ export function addMonthsToDate(
   return { period, dueDate: `${period}-${String(dueDay).padStart(2, "0")}` };
 }
 
-export function ccDueDateForCycle(
-  cycleKey: string,
-  cutoffDay = 20,
-  paymentDay = 25,
-): string {
+export function ccDueDateForCycle(cycleKey: string, cutoffDay = 20, paymentDay = 25): string {
   const isNextMonth = paymentDay <= cutoffDay;
   const dueCycle = isNextMonth ? shiftMonth(cycleKey, 1) : cycleKey;
   const [yearText = "1970", monthText = "01"] = dueCycle.split("-");
@@ -65,6 +61,26 @@ export function ccClosingDateForCycle(cycleKey: string, cutoffDay = 20): string 
   const lastDay = new Date(Date.UTC(Number(yearText), Number(monthText), 0)).getUTCDate();
   const day = Math.min(Math.max(1, cutoffDay), lastDay);
   return `${cycleKey}-${String(day).padStart(2, "0")}`;
+}
+
+/**
+ * Posting date for a charge that should land on the `cycleKey` statement. With no
+ * `postingDay` it uses the last day before the cut-off, which is always inside the cycle.
+ * Returns null when `postingDay` cannot fall inside that cycle (e.g. a short month).
+ */
+export function ccPostingDateInCycle(
+  cycleKey: string,
+  cutoffDay = 20,
+  postingDay?: number | null,
+): string | null {
+  if (!postingDay) {
+    return addDaysToDate(ccClosingDateForCycle(cycleKey, cutoffDay), -1);
+  }
+  const month = postingDay >= cutoffDay ? shiftMonth(cycleKey, -1) : cycleKey;
+  const [yearText = "1970", monthText = "01"] = month.split("-");
+  const lastDay = new Date(Date.UTC(Number(yearText), Number(monthText), 0)).getUTCDate();
+  const candidate = `${month}-${String(Math.min(postingDay, lastDay)).padStart(2, "0")}`;
+  return ccCycleForDate(candidate, cutoffDay) === cycleKey ? candidate : null;
 }
 
 export function ccCycleForDate(dateValue: string, cardCutoffDay = 20): string {

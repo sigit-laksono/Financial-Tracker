@@ -1,7 +1,12 @@
 import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DebtDirection, DebtKind } from "../../../shared/src/types";
-import { addMonthsToDate, ccCycleForDate, isValidIsoDate } from "../../../shared/src/dates";
+import {
+  addMonthsToDate,
+  ccCycleForDate,
+  ccDueDateForCycle,
+  isValidIsoDate,
+} from "../../../shared/src/dates";
 import { api, ApiError } from "../lib/api";
 import {
   formatDigitsInput,
@@ -13,6 +18,7 @@ import {
   parsePositiveInt,
 } from "../lib/format";
 import { budgetKeys } from "../lib/queryKeys";
+import { CcFirstBillPicker } from "./CcFirstBillPicker";
 import { AlertIcon } from "./Icons";
 import { Button, ModalSheet } from "./UI";
 
@@ -81,6 +87,21 @@ export function AddDebtModal({
   );
   const selectedCcWallet =
     creditCardWallets.find((w) => w.id === ccWalletId) ?? creditCardWallets[0] ?? null;
+
+  // Resolved cut-off / payment day (wallet override or app default) for the selected card.
+  const { data: debtsData } = useQuery({
+    queryKey: ["debts"],
+    queryFn: api.getDebts,
+    enabled: open,
+  });
+  const ccDays = useMemo(() => {
+    if (!selectedCcWallet) return null;
+    const card = debtsData?.cards.find((c) => c.walletId === selectedCcWallet.id);
+    return {
+      cutoffDay: card?.cutoffDay ?? selectedCcWallet.cutoffDay ?? 20,
+      paymentDay: card?.paymentDay ?? selectedCcWallet.paymentDay ?? 10,
+    };
+  }, [debtsData?.cards, selectedCcWallet]);
 
   const installmentCount = Math.max(1, Math.min(120, parseInt(count, 10) || 1));
   const standardAmount = parsePositiveInt(amountInput);
@@ -265,6 +286,13 @@ export function AddDebtModal({
       if (!Number.isInteger(installmentCount) || installmentCount < 1) {
         throw new Error("Jumlah cicilan minimal 1.");
       }
+      if (!isValidIsoDate(firstDueDate)) {
+        throw new Error(
+          isCardInstallment
+            ? "Tanggal posting tidak ada di tagihan yang dipilih."
+            : "Tanggal jatuh tempo pertama tidak valid.",
+        );
+      }
       if (installmentAmount <= 0) throw new Error("Nominal cicilan harus lebih dari Rp0.");
       if (installmentAmount > MAX_IDR_AMOUNT) {
         throw new Error(`Nominal cicilan maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`);
@@ -352,9 +380,9 @@ export function AddDebtModal({
         interestAmount,
         firstDueDate,
         paymentMethod: paymentMethod.trim() || "Transfer",
-        walletId: isCardInstallment ? selectedCcWallet?.id ?? null : null,
+        walletId: isCardInstallment ? (selectedCcWallet?.id ?? null) : null,
         disburseWalletId:
-          !isCardInstallment && recordDisbursement ? selectedDisburseWallet?.id ?? null : null,
+          !isCardInstallment && recordDisbursement ? (selectedDisburseWallet?.id ?? null) : null,
         recordDisbursement: !isCardInstallment && recordDisbursement,
         customSchedule,
       });
@@ -398,9 +426,7 @@ export function AddDebtModal({
       onClose={onClose}
       size="lg"
       title={
-        direction === "receivable"
-          ? "Tambah Piutang (Tagih Balik)"
-          : "Tambah Akun Utang & Cicilan"
+        direction === "receivable" ? "Tambah Piutang (Tagih Balik)" : "Tambah Akun Utang & Cicilan"
       }
       footer={
         <div className="flex justify-end gap-2">
@@ -483,11 +509,7 @@ export function AddDebtModal({
               type="text"
               value={lender}
               onChange={(e) => setLender(e.target.value)}
-              placeholder={
-                direction === "receivable"
-                  ? "Contoh: Budi"
-                  : "Contoh: Bank BCA"
-              }
+              placeholder={direction === "receivable" ? "Contoh: Budi" : "Contoh: Bank BCA"}
               className={inputClass}
             />
           </div>
@@ -562,13 +584,17 @@ export function AddDebtModal({
                 {selectedCcWallet && (
                   <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
                     <div className="rounded-[10px] bg-[var(--card)] px-3 py-2 border border-dashed border-[var(--border)]">
-                      <span className="text-[var(--muted-foreground)] block">Sisa Limit Saat Ini</span>
+                      <span className="text-[var(--muted-foreground)] block">
+                        Sisa Limit Saat Ini
+                      </span>
                       <strong className="font-mono text-xs text-[var(--foreground)]">
                         {formatRupiah(selectedCcWallet.balance)}
                       </strong>
                     </div>
                     <div className="rounded-[10px] bg-[var(--card)] px-3 py-2 border border-dashed border-[var(--border)]">
-                      <span className="text-[var(--muted-foreground)] block">Sisa Limit Setelah Cicilan</span>
+                      <span className="text-[var(--muted-foreground)] block">
+                        Sisa Limit Setelah Cicilan
+                      </span>
                       <strong
                         className={`font-mono text-xs ${
                           isCardLimitExceeded
@@ -651,18 +677,32 @@ export function AddDebtModal({
 
         {/* Due date & payment method */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <label htmlFor="debt-due" className={labelClass}>
-              Jatuh Tempo Pertama
-            </label>
-            <input
+          {isCardInstallment && selectedCcWallet && ccDays ? (
+            <CcFirstBillPicker
+              key={`${selectedCcWallet.id}-${ccDays.cutoffDay}`}
               id="debt-due"
-              type="date"
+              label="Tagihan Pertama"
               value={firstDueDate}
-              onChange={(e) => setFirstDueDate(e.target.value)}
-              className={`tabular-nums ${inputClass}`}
+              onChange={setFirstDueDate}
+              cutoffDay={ccDays.cutoffDay}
+              paymentDay={ccDays.paymentDay}
+              labelClass={labelClass}
+              selectClass={selectClass}
             />
-          </div>
+          ) : (
+            <div className="space-y-1.5">
+              <label htmlFor="debt-due" className={labelClass}>
+                Jatuh Tempo Pertama
+              </label>
+              <input
+                id="debt-due"
+                type="date"
+                value={firstDueDate}
+                onChange={(e) => setFirstDueDate(e.target.value)}
+                className={`tabular-nums ${inputClass}`}
+              />
+            </div>
+          )}
 
           <div className="space-y-1.5">
             <label htmlFor="debt-method" className={labelClass}>
@@ -744,18 +784,23 @@ export function AddDebtModal({
                           Bulan ke-{row.monthIndex}
                         </span>
                         <span className="block text-[10px] text-[var(--muted-foreground)]">
-                          Jatuh tempo: {formatShortDate(row.dueDate)}
-                          {isCardInstallment && selectedCcWallet && (
+                          {isCardInstallment && ccDays ? (
                             <>
-                              {" "}
-                              ·{" "}
                               <strong className="text-[var(--primary)]">
-                                Siklus{" "}
-                                {formatMonthTitle(
-                                  ccCycleForDate(row.dueDate, selectedCcWallet.cutoffDay ?? 20),
-                                )}
-                              </strong>
+                                Tagihan{" "}
+                                {formatMonthTitle(ccCycleForDate(row.dueDate, ccDays.cutoffDay))}
+                              </strong>{" "}
+                              · jatuh tempo{" "}
+                              {formatShortDate(
+                                ccDueDateForCycle(
+                                  ccCycleForDate(row.dueDate, ccDays.cutoffDay),
+                                  ccDays.cutoffDay,
+                                  ccDays.paymentDay,
+                                ),
+                              )}
                             </>
+                          ) : (
+                            <>Jatuh tempo: {formatShortDate(row.dueDate)}</>
                           )}
                         </span>
                       </div>

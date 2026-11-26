@@ -1,11 +1,17 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { addMonthsToDate, ccCycleForDate, isValidIsoDate } from "../../../shared/src/dates";
+import {
+  addMonthsToDate,
+  ccCycleForDate,
+  ccDueDateForCycle,
+  isValidIsoDate,
+} from "../../../shared/src/dates";
 import type { DebtKind } from "../../../shared/src/types";
 import {
   api,
   ApiError,
   type DebtAccountDto,
+  type DebtsDto,
   type InstallmentDto,
   type WalletDto,
 } from "../lib/api";
@@ -14,9 +20,11 @@ import {
   formatDigitsInput,
   formatMonthTitle,
   formatRupiah,
+  formatShortDate,
   parsePositiveInt,
 } from "../lib/format";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
+import { CcFirstBillPicker } from "./CcFirstBillPicker";
 import { AlertIcon, CalendarIcon } from "./Icons";
 import { Badge, Button, ModalSheet } from "./UI";
 
@@ -34,12 +42,15 @@ export function EditDebtModal({
   account,
   installments,
   wallets,
+  cards = [],
   onClose,
   onSuccess,
 }: {
   account: DebtAccountDto | null;
   installments: InstallmentDto[];
   wallets: WalletDto[];
+  /** Card summaries carrying the resolved cut-off / payment day per card. */
+  cards?: DebtsDto["cards"];
   onClose: () => void;
   onSuccess: (msg: string) => void;
 }) {
@@ -66,6 +77,15 @@ export function EditDebtModal({
     [creditCardWallets, ccWalletId],
   );
 
+  const ccDays = useMemo(() => {
+    if (!selectedCcWallet) return null;
+    const card = cards.find((c) => c.walletId === selectedCcWallet.id);
+    return {
+      cutoffDay: card?.cutoffDay ?? selectedCcWallet.cutoffDay ?? 20,
+      paymentDay: card?.paymentDay ?? selectedCcWallet.paymentDay ?? 10,
+    };
+  }, [cards, selectedCcWallet]);
+
   const prevAccountIdRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -82,7 +102,8 @@ export function EditDebtModal({
     setPaymentMethod(account.paymentMethod);
 
     const activeCcList = wallets.filter((w) => w.isActive && w.type === "credit_card");
-    const defaultCc = activeCcList.find((w) => w.id === account.walletId) ?? activeCcList[0] ?? null;
+    const defaultCc =
+      activeCcList.find((w) => w.id === account.walletId) ?? activeCcList[0] ?? null;
     setCcWalletId(account.walletId ?? defaultCc?.id ?? null);
 
     const accountRows = installments
@@ -108,7 +129,11 @@ export function EditDebtModal({
 
   const handleShiftDatesFromAnchor = () => {
     if (!anchorDueDate || !isValidIsoDate(anchorDueDate)) {
-      setError("Format tanggal jatuh tempo patokan tidak valid.");
+      setError(
+        kind === "card_installment"
+          ? "Tanggal posting tidak ada di tagihan yang dipilih."
+          : "Format tanggal jatuh tempo patokan tidak valid.",
+      );
       return;
     }
     setError("");
@@ -213,7 +238,7 @@ export function EditDebtModal({
         lender: lender.trim(),
         kind: account.direction === "receivable" ? "receivable" : kind,
         paymentMethod: paymentMethod.trim() || "Transfer",
-        walletId: isCardInstallment ? selectedCcWallet?.id ?? null : null,
+        walletId: isCardInstallment ? (selectedCcWallet?.id ?? null) : null,
         installments: rows.map((r) => ({
           id: r.id,
           dueDate: r.dueDate,
@@ -243,6 +268,8 @@ export function EditDebtModal({
   if (!account) return null;
 
   const isSplitPayAccount = Boolean(account.sourceTransactionId);
+  // Manual card installments are scheduled by statement (posting date inside a CC cycle).
+  const ccBillDays = isCardInstallment && !isSplitPayAccount ? ccDays : null;
   const isReceivable = account.direction === "receivable";
   const inputClass =
     "w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all";
@@ -255,7 +282,9 @@ export function EditDebtModal({
     <ModalSheet
       open={Boolean(account)}
       onClose={onClose}
-      title={isReceivable ? `Edit Piutang: ${account.name}` : `Edit Utang & Cicilan: ${account.name}`}
+      title={
+        isReceivable ? `Edit Piutang: ${account.name}` : `Edit Utang & Cicilan: ${account.name}`
+      }
       subtitle="Ubah detail akun, tautkan ke kartu kredit, atau perbaiki tanggal & nominal cicilan yang belum lunas."
       footer={
         <div className="flex justify-end gap-2">
@@ -320,7 +349,12 @@ export function EditDebtModal({
                 onChange={(e) => {
                   const nextKind = e.target.value as DebtKind;
                   setKind(nextKind);
-                  if (nextKind === "card_installment" && selectedCcWallet && lender === account.lender && !account.walletId) {
+                  if (
+                    nextKind === "card_installment" &&
+                    selectedCcWallet &&
+                    lender === account.lender &&
+                    !account.walletId
+                  ) {
                     setPaymentMethod("Tagihan kartu");
                   }
                 }}
@@ -374,13 +408,17 @@ export function EditDebtModal({
                 {selectedCcWallet && (
                   <div className="grid grid-cols-2 gap-2 text-[11px]">
                     <div className="rounded-[10px] bg-[var(--card)] px-3 py-2 border border-dashed border-[var(--border)]">
-                      <span className="text-[var(--muted-foreground)] block">Kapasitas Limit Tersedia</span>
+                      <span className="text-[var(--muted-foreground)] block">
+                        Kapasitas Limit Tersedia
+                      </span>
                       <strong className="font-mono text-xs text-[var(--foreground)]">
                         {formatRupiah(effectiveAvailableLimit, isMasked)}
                       </strong>
                     </div>
                     <div className="rounded-[10px] bg-[var(--card)] px-3 py-2 border border-dashed border-[var(--border)]">
-                      <span className="text-[var(--muted-foreground)] block">Sisa Limit Setelah Simpan</span>
+                      <span className="text-[var(--muted-foreground)] block">
+                        Sisa Limit Setelah Simpan
+                      </span>
                       <strong
                         className={`font-mono text-xs ${
                           isCardLimitExceeded
@@ -388,7 +426,10 @@ export function EditDebtModal({
                             : "text-emerald-600 dark:text-emerald-400"
                         }`}
                       >
-                        {formatRupiah(Math.max(0, effectiveAvailableLimit - totalEditedRemaining), isMasked)}
+                        {formatRupiah(
+                          Math.max(0, effectiveAvailableLimit - totalEditedRemaining),
+                          isMasked,
+                        )}
                       </strong>
                     </div>
                   </div>
@@ -397,8 +438,9 @@ export function EditDebtModal({
                   <div className="flex items-start gap-2 rounded-[12px] border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-2.5 text-xs text-rose-800 dark:text-rose-200">
                     <AlertIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
                     <span>
-                      Sisa cicilan ({formatRupiah(totalEditedRemaining, isMasked)}) melebihi kapasitas limit{" "}
-                      {selectedCcWallet.name} ({formatRupiah(effectiveAvailableLimit, isMasked)}).
+                      Sisa cicilan ({formatRupiah(totalEditedRemaining, isMasked)}) melebihi
+                      kapasitas limit {selectedCcWallet.name} (
+                      {formatRupiah(effectiveAvailableLimit, isMasked)}).
                     </span>
                   </div>
                 )}
@@ -429,7 +471,9 @@ export function EditDebtModal({
                   Jadwal Angsuran ({rows.length} Bulan)
                 </span>
                 <span className="text-[11px] text-[var(--muted-foreground)]">
-                  Ubah tanggal jatuh tempo atau nominal per bulan tanpa kehilangan custom cicilan.
+                  {ccBillDays
+                    ? "Ubah tagihan atau nominal per bulan tanpa kehilangan custom cicilan."
+                    : "Ubah tanggal jatuh tempo atau nominal per bulan tanpa kehilangan custom cicilan."}
                 </span>
               </div>
               <strong className="font-mono text-xs text-[var(--primary)]">
@@ -437,7 +481,30 @@ export function EditDebtModal({
               </strong>
             </div>
 
-            {upcomingCount > 0 && (
+            {upcomingCount > 0 && ccBillDays && (
+              <div className="rounded-[12px] border border-[var(--border)] bg-[var(--card)] p-2.5 space-y-2">
+                <CcFirstBillPicker
+                  key={`${account.id}-${selectedCcWallet?.id}-${ccBillDays.cutoffDay}`}
+                  id="edit-debt-anchor-date"
+                  label="Geser jadwal belum lunas mulai tagihan"
+                  value={anchorDueDate}
+                  onChange={setAnchorDueDate}
+                  cutoffDay={ccBillDays.cutoffDay}
+                  paymentDay={ccBillDays.paymentDay}
+                  labelClass="block text-[11px] font-bold text-[var(--muted-foreground)]"
+                  selectClass="h-11 w-full rounded-[10px] bg-[var(--surface)] border border-[var(--control-border)] px-3 text-xs font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)]"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={handleShiftDatesFromAnchor}
+                  className="min-h-[44px] w-full px-3 text-xs font-bold"
+                >
+                  Geser Jadwal (Nominal Tetap)
+                </Button>
+              </div>
+            )}
+            {upcomingCount > 0 && !ccBillDays && (
               <div className="rounded-[12px] border border-[var(--border)] bg-[var(--card)] p-2.5 space-y-2">
                 <label
                   htmlFor="edit-debt-anchor-date"
@@ -490,11 +557,17 @@ export function EditDebtModal({
                           <Badge tone={isPaid ? "soft" : "neutral"}>
                             {isPaid ? "Lunas" : "Belum Lunas"}
                           </Badge>
-                          {isCardInstallment && selectedCcWallet && !isSplitPayAccount && isValidIsoDate(row.dueDate) && (
+                          {ccBillDays && isValidIsoDate(row.dueDate) && (
                             <span className="text-[10px] font-semibold text-[var(--primary)]">
-                              · Siklus{" "}
-                              {formatMonthTitle(
-                                ccCycleForDate(row.dueDate, selectedCcWallet.cutoffDay ?? 20),
+                              · Tagihan{" "}
+                              {formatMonthTitle(ccCycleForDate(row.dueDate, ccBillDays.cutoffDay))}{" "}
+                              · jatuh tempo{" "}
+                              {formatShortDate(
+                                ccDueDateForCycle(
+                                  ccCycleForDate(row.dueDate, ccBillDays.cutoffDay),
+                                  ccBillDays.cutoffDay,
+                                  ccBillDays.paymentDay,
+                                ),
                               )}
                             </span>
                           )}
@@ -505,7 +578,12 @@ export function EditDebtModal({
                     <div className="flex flex-wrap items-center gap-2 ml-auto">
                       <input
                         type="date"
-                        aria-label={`Tanggal jatuh tempo bulan ke-${row.monthIndex}`}
+                        aria-label={
+                          ccBillDays
+                            ? `Tanggal posting cicilan bulan ke-${row.monthIndex}`
+                            : `Tanggal jatuh tempo bulan ke-${row.monthIndex}`
+                        }
+                        title={ccBillDays ? "Tanggal posting di invoice" : undefined}
                         disabled={isPaid}
                         value={row.dueDate}
                         onChange={(e) => handleRowDateChange(row.id, e.target.value)}

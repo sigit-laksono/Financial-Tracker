@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ccCycleForDate } from "../../../shared/src/dates";
+import { ccCycleForDate, ccDueDateForCycle } from "../../../shared/src/dates";
 import type { DebtDirection, DebtKind } from "../../../shared/src/types";
 import { BankBadge } from "../components/BankBadge";
 import { EditDebtModal } from "../components/EditDebtModal";
@@ -429,6 +429,17 @@ export function DebtsPage({
   const obligationName = (o: ObligationItem) =>
     o.type === "cc_bill" ? `Tagihan ${o.walletName}` : o.installment.accountName;
   const MAX_CYCLE_ITEMS = 3;
+
+  // Card installments are billed on a statement; show that instead of the posting date.
+  const cardBillLabel = (item: DebtsDto["installments"][number]): string | null => {
+    if (item.accountKind !== "card_installment") return null;
+    const acc = data.accounts.find((a) => a.id === item.accountId);
+    const card =
+      cards.find((c) => c.walletId === acc?.walletId) ?? (cards.length === 1 ? cards[0] : null);
+    if (!card) return null;
+    const due = ccDueDateForCycle(item.period, card.cutoffDay, card.paymentDay);
+    return `Tagihan ${formatMonthTitle(item.period)} · jatuh tempo ${formatShortDate(due)}`;
+  };
 
   const groupedSchedule = useMemo(() => {
     const map = new Map<string, typeof data.installments>();
@@ -1595,7 +1606,9 @@ export function DebtsPage({
                                   )}
                                 </div>
                                 <p className="text-xs text-[var(--muted-foreground)]">
-                                  Jatuh tempo {formatShortDate(item.dueDate)} · {item.lender}
+                                  {cardBillLabel(item) ??
+                                    `Jatuh tempo ${formatShortDate(item.dueDate)}`}{" "}
+                                  · {item.lender}
                                 </p>
                               </div>
 
@@ -1780,6 +1793,7 @@ export function DebtsPage({
         account={editingAccount}
         installments={data.installments}
         wallets={data.wallets}
+        cards={cards}
         onClose={() => setEditingAccount(null)}
         onSuccess={onToast}
       />
