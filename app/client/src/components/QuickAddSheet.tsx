@@ -1181,7 +1181,7 @@ export function QuickAddSheet({
                     >
                       {cashWallets.map((w) => (
                         <option key={w.id} value={w.id}>
-                          {w.name} ({formatRupiah(w.balance, isMasked)})
+                          {w.name} · {formatRupiah(w.balance, isMasked)}
                         </option>
                       ))}
                     </select>
@@ -1309,7 +1309,7 @@ export function QuickAddSheet({
                             {selectableWallets.map((w) => (
                               <option key={w.id} value={w.id}>
                                 {w.name}
-                                {!w.isActive ? " (Nonaktif)" : ""} ({formatRupiah(w.balance, isMasked)})
+                                {!w.isActive ? " (Nonaktif)" : ""} · {formatRupiah(w.balance, isMasked)}
                               </option>
                             ))}
                           </select>
@@ -1327,7 +1327,7 @@ export function QuickAddSheet({
                             {transferToWallets.map((w) => (
                               <option key={w.id} value={w.id}>
                                 {w.name}
-                                {!w.isActive ? " (Nonaktif)" : ""} ({formatRupiah(w.balance, isMasked)})
+                                {!w.isActive ? " (Nonaktif)" : ""} · {formatRupiah(w.balance, isMasked)}
                               </option>
                             ))}
                           </select>
@@ -1454,13 +1454,11 @@ export function QuickAddSheet({
                           >
                             {selectableWallets.map((w) => (
                               <option key={w.id} value={w.id}>
-                                [{w.provider ? w.provider.toUpperCase() : w.type.toUpperCase()}]{" "}
                                 {w.name}
-                                {!w.isActive ? " (Nonaktif)" : ""} (
+                                {!w.isActive ? " (Nonaktif)" : ""} ·{" "}
                                 {w.type === "credit_card"
-                                  ? `Sisa Limit ${formatRupiah(w.balance, isMasked)}`
+                                  ? `Limit ${formatRupiah(w.balance, isMasked)}`
                                   : formatRupiah(w.balance, isMasked)}
-                                )
                               </option>
                             ))}
                           </select>
