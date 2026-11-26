@@ -332,21 +332,27 @@ describe("Milestone 3: Pencatatan Harian Cepat, Split Category, Recurring Bills 
     const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
     expect(bni).toBeDefined();
 
-    // Record some repeat transactions
-    for (let i = 0; i < 3; i++) {
-      await app.request("/api/transactions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "expense",
-          merchant: "Kopi Kenangan",
-          amount: 25_000,
-          transactionDate: "2026-04-01",
-          category: "Jajan & Nongkrong",
-          walletId: bni!.id,
-        }),
-      });
-    }
+    const recordExpense = (merchant: string, count: number) =>
+      Promise.all(
+        Array.from({ length: count }, () =>
+          app.request("/api/transactions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "expense",
+              merchant,
+              amount: 25_000,
+              transactionDate: "2026-04-01",
+              category: "Jajan & Nongkrong",
+              walletId: bni!.id,
+            }),
+          }),
+        ),
+      );
+
+    // 5x reaches the template threshold, 4x stays below it
+    await recordExpense("Kopi Kenangan", 5);
+    await recordExpense("Warung Jarang", 4);
 
     const res = await app.request("/api/transactions/quick-presets?q=kopi");
     expect(res.status).toBe(200);
@@ -356,6 +362,7 @@ describe("Milestone 3: Pencatatan Harian Cepat, Split Category, Recurring Bills 
       frequentTransferRoutes: Array<{ fromWalletName: string; toWalletName: string }>;
     };
     expect(data.frequentTemplates.some((t) => t.merchant === "Kopi Kenangan")).toBe(true);
+    expect(data.frequentTemplates.some((t) => t.merchant === "Warung Jarang")).toBe(false);
     expect(data.merchantSuggestions.some((m) => m.merchant === "Kopi Kenangan")).toBe(true);
     expect(data.frequentTransferRoutes.length).toBeGreaterThan(0);
   });

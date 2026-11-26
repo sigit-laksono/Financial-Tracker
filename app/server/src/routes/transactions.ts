@@ -286,7 +286,15 @@ export function createTransactionRoutes(db: AppDb) {
 
     const sortedMerchants = Array.from(merchantMap.values()).sort((a, b) => b.count - a.count);
 
-    const frequentTemplates = sortedMerchants.slice(0, 6).map((m) => ({
+    // A merchant becomes a template only after MIN_TEMPLATE_USES transactions;
+    // expense and income each get their own top-6 so one type cannot crowd out the other.
+    const MIN_TEMPLATE_USES = 5;
+    const TEMPLATES_PER_TYPE = 6;
+    const frequent = sortedMerchants.filter((m) => m.count >= MIN_TEMPLATE_USES);
+    const frequentTemplates = [
+      ...frequent.filter((m) => m.type === "expense").slice(0, TEMPLATES_PER_TYPE),
+      ...frequent.filter((m) => m.type === "income").slice(0, TEMPLATES_PER_TYPE),
+    ].map((m) => ({
       merchant: m.merchant,
       type: m.type,
       category: m.category,
