@@ -97,11 +97,7 @@ function CreditCardRecurringFeesModal({
       open={Boolean(wallet)}
       onClose={onClose}
       title="Biaya Rutin Kartu Kredit"
-      subtitle={
-        wallet
-          ? `${wallet.name} · Otomatis dicatat tiap tutup buku`
-          : undefined
-      }
+      subtitle={wallet ? `${wallet.name} · Otomatis dicatat tiap tutup buku` : undefined}
       footer={
         <div className="flex justify-end">
           <Button variant="secondary" onClick={onClose} className="w-full sm:w-auto">
@@ -124,7 +120,10 @@ function CreditCardRecurringFeesModal({
                 <div className="min-w-0 space-y-0.5">
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-[var(--foreground)] truncate">{f.name}</span>
-                    <Badge tone={f.isActive ? "soft" : "neutral"} className="text-[10px] px-1.5 py-0">
+                    <Badge
+                      tone={f.isActive ? "soft" : "neutral"}
+                      className="text-[10px] px-1.5 py-0"
+                    >
                       {f.isActive ? "Aktif" : "Nonaktif"}
                     </Badge>
                   </div>
@@ -245,41 +244,37 @@ export function WalletsPage({
   const wallets = data?.wallets ?? [];
 
   // Categorize wallets
-  const { bankWallets, ewalletWallets, cashWallets, creditWallets, totalLiquid, totalCreditUsed } =
-    useMemo(() => {
-      let liquid = 0;
-      let creditUsed = 0;
+  const { bankWallets, ewalletWallets, cashWallets, creditWallets, totalLiquid } = useMemo(() => {
+    let liquid = 0;
 
-      const bank: WalletDto[] = [];
-      const ewallet: WalletDto[] = [];
-      const cash: WalletDto[] = [];
-      const credit: WalletDto[] = [];
+    const bank: WalletDto[] = [];
+    const ewallet: WalletDto[] = [];
+    const cash: WalletDto[] = [];
+    const credit: WalletDto[] = [];
 
-      for (const w of wallets) {
-        if (w.type === "credit_card" || w.accountGroup === "credit") {
-          credit.push(w);
-          if (w.isActive) creditUsed += w.limitUsed;
+    for (const w of wallets) {
+      if (w.type === "credit_card" || w.accountGroup === "credit") {
+        credit.push(w);
+      } else {
+        if (w.isActive) liquid += w.balance;
+        if (w.accountGroup === "cash" || w.type === "cash") {
+          cash.push(w);
+        } else if (w.accountGroup === "ewallet" || w.type === "ewallet") {
+          ewallet.push(w);
         } else {
-          if (w.isActive) liquid += w.balance;
-          if (w.accountGroup === "cash" || w.type === "cash") {
-            cash.push(w);
-          } else if (w.accountGroup === "ewallet" || w.type === "ewallet") {
-            ewallet.push(w);
-          } else {
-            bank.push(w);
-          }
+          bank.push(w);
         }
       }
+    }
 
-      return {
-        bankWallets: bank,
-        ewalletWallets: ewallet,
-        cashWallets: cash,
-        creditWallets: credit,
-        totalLiquid: liquid,
-        totalCreditUsed: creditUsed,
-      };
-    }, [wallets]);
+    return {
+      bankWallets: bank,
+      ewalletWallets: ewallet,
+      cashWallets: cash,
+      creditWallets: credit,
+      totalLiquid: liquid,
+    };
+  }, [wallets]);
 
   if (isLoading) {
     return (
@@ -304,195 +299,160 @@ export function WalletsPage({
   }
 
   const renderWalletCard = (w: WalletDto, isCredit = false) => {
-    const percentOfLiquid =
-      totalLiquid > 0 && !isCredit && w.balance > 0
-        ? Math.round((w.balance / totalLiquid) * 100)
-        : 0;
     const creditLimit = w.creditLimit ?? 0;
     const remainingLimit = Math.max(0, w.balance);
     const remainingPercent =
       isCredit && creditLimit > 0
         ? Math.min(100, Math.max(0, Math.round((remainingLimit / creditLimit) * 100)))
         : 0;
+    const accountLabel = w.accountNumber
+      ? isMasked
+        ? `••••${w.accountNumber.slice(-4)}`
+        : w.accountNumber
+      : null;
+    const ccSchedule =
+      isCredit && (w.cutoffDay || w.paymentDay)
+        ? `Tutup buku ${w.cutoffDay ?? "-"} · Jatuh tempo ${w.paymentDay ?? "-"}`
+        : null;
 
-    return (
-      <div
-        key={w.id}
-        className="group relative flex flex-col justify-between rounded-[16px] border border-[var(--border)] bg-[var(--card)] p-4 transition-all duration-200 hover:border-[var(--primary)] hover:shadow-md"
-      >
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3 min-w-0">
-            <BankBadge provider={w.provider || "other"} size="md" className="shrink-0" />
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <h3 className="text-sm font-bold text-[var(--foreground)] break-words">
-                  {w.name}
-                </h3>
-                {!w.isActive && (
-                  <Badge tone="neutral" className="text-[10px] px-1.5 py-0">
-                    Nonaktif
-                  </Badge>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--muted-foreground)]">
-                <span>
-                  {isCredit
-                    ? "Kartu Kredit"
-                    : w.role === "savings"
-                      ? "Tabungan / Simpanan"
-                      : "Kas Harian"}
-                </span>
-                {w.accountNumber && (
-                  <>
-                    <span>•</span>
-                    <span className="font-mono font-medium">{w.accountNumber}</span>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              setEditingWallet(w);
-              setWalletModalOpen(true);
-            }}
-            aria-label={`Edit ${w.name}`}
-            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)] transition-colors"
-          >
-            <EditIcon className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Balance Display */}
-        <div className="mt-4 space-y-1">
-          <span className="text-[10px] uppercase font-bold tracking-wider text-[var(--muted-foreground)]">
-            {isCredit ? "Sisa Limit Kartu" : "Saldo Saat Ini"}
-          </span>
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="metric-value-compact text-lg sm:text-xl font-black text-[var(--foreground)]">
-              {formatRupiah(isCredit ? remainingLimit : w.balance, isMasked)}
-            </span>
-            {!isCredit && percentOfLiquid > 0 && (
-              <span className="text-[11px] font-bold text-[var(--muted-foreground)] bg-[var(--surface)] px-2 py-0.5 rounded-full shrink-0">
-                {percentOfLiquid}%
-              </span>
+    const identity = (
+      <div className="flex min-w-0 items-center gap-3">
+        <BankBadge provider={w.provider || "other"} size="md" className="shrink-0" />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <h3 className="text-sm font-bold text-[var(--foreground)] break-words">{w.name}</h3>
+            {!isCredit && w.role === "savings" && (
+              <Badge tone="soft" className="text-[10px] px-1.5 py-0">
+                Tabungan
+              </Badge>
             )}
-            {isCredit && (
-              <span className="tabular-nums text-[11px] font-medium text-[var(--muted-foreground)] shrink-0">
-                Limit : {formatCompactRupiah(creditLimit, isMasked)}
-              </span>
+            {!w.isActive && (
+              <Badge tone="neutral" className="text-[10px] px-1.5 py-0">
+                Nonaktif
+              </Badge>
             )}
           </div>
-
-          {isCredit ? (
-            <div className="pt-2 text-xs space-y-2">
-              <div
-                className="h-2 w-full rounded-full border border-[var(--border)] bg-[var(--surface)] overflow-hidden"
-                role="progressbar"
-                aria-valuenow={remainingPercent}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-label={`Sisa limit ${remainingPercent}%`}
-              >
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    remainingPercent <= 20
-                      ? "bg-[var(--destructive)]"
-                      : remainingPercent <= 70
-                        ? "bg-[var(--highlight)]"
-                        : "bg-[var(--chart-income)]"
-                  }`}
-                  style={{ width: `${remainingPercent}%` }}
-                />
-              </div>
-              {(w.cutoffDay || w.paymentDay) && (
-                <p className="text-[11px] text-[var(--muted-foreground)]">
-                  Tutup Buku {w.cutoffDay ?? "-"} | Jatuh tempo Tgl {w.paymentDay ?? "-"}
-                </p>
-              )}
-              <div className="pt-1 flex items-center justify-between gap-2 border-t border-[var(--border)]">
-                <button
-                  type="button"
-                  onClick={() => setFeeWallet(w)}
-                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[10px] bg-[var(--surface)] px-3 py-2 text-xs font-semibold text-[var(--foreground)] hover:border-[var(--primary)] border border-[var(--control-border)] transition-colors"
-                >
-                  <SettingsIcon className="w-3.5 h-3.5 text-[var(--primary)]" />
-                  <span>Biaya Rutin</span>
-                </button>
-                {onOpenQuickAdd && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenQuickAdd("expense", w.id)}
-                    className="inline-flex min-h-[44px] items-center px-2 text-xs font-semibold text-[var(--primary)] hover:underline"
-                  >
-                    Catat Belanja
-                  </button>
-                )}
-              </div>
-            </div>
+          {ccSchedule ? (
+            <p className="text-[11px] text-[var(--muted-foreground)]">{ccSchedule}</p>
           ) : (
-            <div className="pt-2 flex flex-wrap items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => setReconcileWallet(w)}
-                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[10px] border border-[var(--control-border)] bg-[var(--surface)] px-3 py-2 text-xs font-semibold text-[var(--foreground)] hover:border-[var(--primary)] hover:bg-[var(--card)] transition-colors"
-              >
-                <span>Cocokkan Saldo</span>
-              </button>
-              {onOpenQuickAdd && (
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => onOpenQuickAdd("expense", w.id)}
-                    className="inline-flex min-h-[44px] items-center px-2 text-xs font-semibold text-[var(--primary)] hover:underline"
-                  >
-                    Catat Belanja
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onOpenQuickAdd("transfer", w.id)}
-                    className="inline-flex min-h-[44px] items-center px-2 text-xs font-semibold text-[var(--primary)] hover:underline"
-                  >
-                    Transfer
-                  </button>
-                </div>
-              )}
-            </div>
+            accountLabel && (
+              <p className="truncate text-[11px] text-[var(--muted-foreground)]">
+                <span className="tabular-nums">{accountLabel}</span>
+              </p>
+            )
           )}
         </div>
       </div>
     );
+
+    const editButton = (
+      <button
+        type="button"
+        onClick={() => {
+          setEditingWallet(w);
+          setWalletModalOpen(true);
+        }}
+        aria-label={`Edit ${w.name}`}
+        className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-[var(--surface)] hover:text-[var(--foreground)] transition-colors"
+      >
+        <EditIcon className="w-4 h-4" />
+      </button>
+    );
+
+    if (isCredit) {
+      return (
+        <div
+          key={w.id}
+          className="space-y-3 rounded-[16px] border border-[var(--border)] bg-[var(--card)] p-3.5"
+        >
+          <div className="flex items-center justify-between gap-2">
+            {identity}
+            {editButton}
+          </div>
+          <div
+            className="h-2 w-full rounded-full border border-[var(--border)] bg-[var(--surface)] overflow-hidden"
+            role="progressbar"
+            aria-valuenow={remainingPercent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label={`Sisa limit ${remainingPercent}%`}
+          >
+            <div
+              className={`h-full rounded-full transition-all ${
+                remainingPercent <= 20
+                  ? "bg-[var(--destructive)]"
+                  : remainingPercent <= 70
+                    ? "bg-[var(--highlight)]"
+                    : "bg-[var(--chart-income)]"
+              }`}
+              style={{ width: `${remainingPercent}%` }}
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-[var(--muted-foreground)]">
+              Sisa{" "}
+              <strong className="tabular-nums font-bold text-[var(--foreground)]">
+                {formatRupiah(remainingLimit, isMasked)}
+              </strong>{" "}
+              dari{" "}
+              <span className="tabular-nums">{formatCompactRupiah(creditLimit, isMasked)}</span>
+            </p>
+            <button
+              type="button"
+              onClick={() => setFeeWallet(w)}
+              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[10px] border border-[var(--control-border)] bg-[var(--surface)] px-3 py-2 text-xs font-semibold text-[var(--foreground)] hover:border-[var(--primary)] transition-colors"
+            >
+              <SettingsIcon className="w-3.5 h-3.5 text-[var(--primary)]" />
+              <span>Biaya Rutin</span>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        key={w.id}
+        className="flex items-center gap-1 rounded-[16px] border border-[var(--border)] bg-[var(--card)] pr-1.5 transition-colors hover:border-[var(--primary)]"
+      >
+        <button
+          type="button"
+          title={`Ketuk untuk cocokkan saldo ${w.name}`}
+          onClick={() => setReconcileWallet(w)}
+          className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-[16px] p-3.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]"
+        >
+          {identity}
+          <span className="tabular-nums shrink-0 text-sm font-bold text-[var(--foreground)]">
+            {formatRupiah(w.balance, isMasked)}
+          </span>
+        </button>
+        {editButton}
+      </div>
+    );
   };
 
-  const renderSection = (title: string, subtitle: string, items: WalletDto[], isCredit = false) => {
+  const renderSection = (title: string, items: WalletDto[], isCredit = false) => {
     if (items.length === 0) return null;
 
     const subtotal = items
       .filter((w) => w.isActive)
       .reduce((sum, w) => sum + (isCredit ? w.limitUsed : w.balance), 0);
 
-    const gridColsClass =
-      items.length === 1
-        ? "grid-cols-1"
-        : items.length === 2
-          ? "grid-cols-1 md:grid-cols-2"
-          : "grid-cols-1 md:grid-cols-2 lg:grid-cols-3";
-
     return (
       <div className="space-y-3">
         <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[var(--border)] pb-2">
-          <div>
-            <h2 className="text-base font-extrabold text-[var(--foreground)]">{title}</h2>
-            <p className="text-xs text-[var(--muted-foreground)]">{subtitle}</p>
-          </div>
-          <span className="font-mono text-sm font-bold tabular-nums text-[var(--foreground)]">
-            Subtotal: {formatRupiah(subtotal, isMasked)}
-          </span>
+          <h2 className="text-base font-extrabold text-[var(--foreground)]">{title}</h2>
+          {items.length > 1 && (
+            <span className="text-sm font-semibold text-[var(--muted-foreground)]">
+              {isCredit ? "Terpakai" : "Subtotal"}{" "}
+              <span className="tabular-nums font-bold text-[var(--foreground)]">
+                {formatRupiah(subtotal, isMasked)}
+              </span>
+            </span>
+          )}
         </div>
 
-        <div className={`grid gap-3 ${gridColsClass}`}>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
           {items.map((w) => renderWalletCard(w, isCredit))}
         </div>
       </div>
@@ -544,46 +504,6 @@ export function WalletsPage({
             </div>
           )}
         </div>
-
-        {/* Mini stats row */}
-        <div className="mt-5 grid grid-cols-2 gap-4 border-t border-[var(--hero-border)] pt-4 sm:grid-cols-4">
-          <div>
-            <span className="text-[11px] font-semibold text-[var(--hero-card-muted)]">
-              Rekening Bank
-            </span>
-            <p className="font-mono text-sm font-bold text-[var(--hero-card-foreground)] tabular-nums">
-              {bankWallets.length} Akun
-            </p>
-          </div>
-          <div>
-            <span className="text-[11px] font-semibold text-[var(--hero-card-muted)]">
-              E-Wallet
-            </span>
-            <p className="font-mono text-sm font-bold text-[var(--hero-card-foreground)] tabular-nums">
-              {ewalletWallets.length} Dompet
-            </p>
-          </div>
-          <div>
-            <span className="text-[11px] font-semibold text-[var(--hero-card-muted)]">
-              Kas Tunai
-            </span>
-            <p className="font-mono text-sm font-bold text-[var(--hero-card-foreground)] tabular-nums">
-              {cashWallets.length} Dompet
-            </p>
-          </div>
-          <div>
-            <span className="text-[11px] font-semibold text-[var(--hero-card-muted)]">
-              Tagihan CC Terpakai
-            </span>
-            <p
-              className={`font-mono text-sm font-bold tabular-nums ${
-                isMasked ? "text-[var(--hero-card-foreground)]" : "text-[var(--destructive)]"
-              }`}
-            >
-              {formatRupiah(totalCreditUsed, isMasked)}
-            </p>
-          </div>
-        </div>
       </div>
 
       {/* Grouped Wallets Sections or Empty State */}
@@ -611,27 +531,10 @@ export function WalletsPage({
         </div>
       ) : (
         <div className="space-y-8">
-          {renderSection(
-            "Rekening Bank",
-            "Tabungan utama dan rekening operasional bank konvensional & digital",
-            bankWallets,
-          )}
-          {renderSection(
-            "Dompet Digital (E-Wallet)",
-            "Saldo GoPay, OVO, DANA, ShopeePay untuk transaksi harian",
-            ewalletWallets,
-          )}
-          {renderSection(
-            "Kas Fisik & Tunai",
-            "Uang kertas di dompet fisik atau celengan",
-            cashWallets,
-          )}
-          {renderSection(
-            "Kartu Kredit & Paylater",
-            "Limit kredit aktif beserta siklus tagihan dan pemakaian saat ini",
-            creditWallets,
-            true,
-          )}
+          {renderSection("Rekening Bank", bankWallets)}
+          {renderSection("Dompet Digital (E-Wallet)", ewalletWallets)}
+          {renderSection("Kas Fisik & Tunai", cashWallets)}
+          {renderSection("Kartu Kredit & Paylater", creditWallets, true)}
         </div>
       )}
 
