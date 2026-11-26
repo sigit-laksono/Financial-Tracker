@@ -540,6 +540,8 @@ export type InstallmentDto = {
 
 export type DebtsDto = {
   currentCcCycle: string;
+  /** Current salary (gajian) cycle bounds, inclusive (YYYY-MM-DD). */
+  gajianCycle: { start: string; end: string };
   totals: {
     initialDebt: number;
     paidDebt: number;

@@ -23,6 +23,7 @@ import {
   formatCompactRupiah,
   formatDigitsInput,
   formatMonthTitle,
+  formatPeriodRangeLabel,
   formatRupiah,
   formatShortDate,
   jakartaToday,
@@ -404,19 +405,18 @@ export function DebtsPage({
     [obligations],
   );
 
-  // Beban Bulan Ini: payable obligations due by the end of this month (overdue included).
-  const monthlyDebtBurden = useMemo(() => {
-    const currentYearMonth = today.slice(0, 7);
-    return payableObligations
-      .filter(
-        (o) =>
-          o.dueDate.slice(0, 7) <= currentYearMonth ||
-          (o.type === "installment" && o.installment.period === currentYearMonth),
-      )
-      .reduce((sum, o) => sum + o.amount, 0);
-  }, [payableObligations, today]);
-
-  const nearestPayable = payableObligations[0] ?? null;
+  // Beban Siklus Ini: payable obligations due by the end of the current salary
+  // (gajian) cycle, overdue ones included.
+  const cycleObligations = useMemo(
+    () => payableObligations.filter((o) => o.dueDate <= data.gajianCycle.end),
+    [payableObligations, data.gajianCycle.end],
+  );
+  const cycleDebtBurden = cycleObligations.reduce((sum, o) => sum + o.amount, 0);
+  const nextPayable =
+    payableObligations.find((o) => o.dueDate > data.gajianCycle.end) ?? null;
+  const obligationName = (o: ObligationItem) =>
+    o.type === "cc_bill" ? `Tagihan ${o.walletName}` : o.installment.accountName;
+  const MAX_CYCLE_ITEMS = 3;
 
   const groupedSchedule = useMemo(() => {
     const map = new Map<string, typeof data.installments>();
@@ -444,7 +444,6 @@ export function DebtsPage({
     }
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [data.installments, activeTab]);
-
 
   const renderAccountCards = (accounts: DebtAccountDto[]) => (
     <div
@@ -635,38 +634,97 @@ export function DebtsPage({
         </div>
       </div>
 
-      {/* Beban Bulan Ini Summary Strip */}
-      <div className="rounded-[18px] border border-[var(--border)] bg-[var(--card)] px-4 py-3.5 sm:px-5 sm:py-4 space-y-1">
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-          <span className="text-[11px] font-bold text-[var(--muted-foreground)] uppercase tracking-wide">
-            Beban Bulan Ini
-          </span>
+      {/* Beban Siklus Ini: bills due in the current salary cycle */}
+      <div className="rounded-[18px] border border-[var(--border)] bg-[var(--card)] px-4 py-3.5 sm:px-5 sm:py-4 space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+          <div>
+            <span className="block text-[11px] font-bold text-[var(--muted-foreground)] uppercase tracking-wide">
+              Beban Siklus Ini
+            </span>
+            <span className="text-xs text-[var(--muted-foreground)]">
+              {formatPeriodRangeLabel(data.gajianCycle.start, data.gajianCycle.end)}
+            </span>
+          </div>
           <p
             className={`metric-value-compact font-extrabold whitespace-nowrap tabular-nums ${
               isMasked ? "text-[var(--foreground)]" : "text-[var(--highlight-text)]"
             }`}
           >
-            {formatRupiah(monthlyDebtBurden, isMasked)}
+            {formatRupiah(cycleDebtBurden, isMasked)}
           </p>
         </div>
-        {nearestPayable && (
+
+        {cycleObligations.length > 0 ? (
+          <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
+            {cycleObligations.slice(0, MAX_CYCLE_ITEMS).map((o) => {
+              const days = daysUntil(o.dueDate, today);
+              const isPayroll =
+                o.type === "installment" && o.installment.accountKind === "payroll";
+              return (
+                <div key={o.key} className="flex items-center justify-between gap-3 py-2.5">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-bold text-[var(--foreground)]">
+                      {obligationName(o)}
+                    </p>
+                    <p className="text-xs text-[var(--muted-foreground)]">
+                      {formatShortDate(o.dueDate)} ·{" "}
+                      <span
+                        className={
+                          isDueUrgent(days)
+                            ? "font-bold text-[var(--destructive)]"
+                            : "font-semibold"
+                        }
+                      >
+                        {dueCountdownLabel(days)}
+                      </span>
+                      {isPayroll ? " · Potong gaji otomatis" : ""}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
+                      {formatRupiah(o.amount, isMasked)}
+                    </span>
+                    {o.type === "cc_bill" ? (
+                      <Button
+                        onClick={() =>
+                          onPayCcCycle(o.cycleKey, o.unpaidInstallmentIds, o.walletId)
+                        }
+                        className="min-h-[36px] px-3 text-xs"
+                      >
+                        Bayar
+                      </Button>
+                    ) : (
+                      !isPayroll && (
+                        <Button
+                          onClick={() => onPayInstallment(o.installment.id)}
+                          className="min-h-[36px] px-3 text-xs"
+                        >
+                          Bayar
+                        </Button>
+                      )
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {cycleObligations.length > MAX_CYCLE_ITEMS && (
+              <p className="pt-2.5 text-xs text-[var(--muted-foreground)]">
+                +{cycleObligations.length - MAX_CYCLE_ITEMS} tagihan lainnya di siklus ini
+              </p>
+            )}
+          </div>
+        ) : (
           <p className="text-xs text-[var(--muted-foreground)]">
-            Terdekat:{" "}
-            <strong className="text-[var(--foreground)]">
-              {nearestPayable.type === "cc_bill"
-                ? `Tagihan ${nearestPayable.walletName}`
-                : nearestPayable.installment.accountName}
-            </strong>{" "}
-            · {formatShortDate(nearestPayable.dueDate)} ·{" "}
-            <span
-              className={
-                isDueUrgent(daysUntil(nearestPayable.dueDate, today))
-                  ? "font-bold text-[var(--destructive)]"
-                  : "font-semibold"
-              }
-            >
-              {dueCountdownLabel(daysUntil(nearestPayable.dueDate, today))}
-            </span>
+            Tidak ada tagihan di siklus ini.
+            {nextPayable && (
+              <>
+                {" "}
+                Berikutnya:{" "}
+                <strong className="text-[var(--foreground)]">{obligationName(nextPayable)}</strong>{" "}
+                · {formatShortDate(nextPayable.dueDate)} ·{" "}
+                {dueCountdownLabel(daysUntil(nextPayable.dueDate, today))}
+              </>
+            )}
           </p>
         )}
       </div>
@@ -837,99 +895,6 @@ export function DebtsPage({
                 </div>
               </Card>
             </div>
-          </section>
-
-          {/* Tagihan Terdekat / Kewajiban Bulan Ini */}
-          <section className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-base font-extrabold text-[var(--foreground)]">
-                Tagihan Terdekat
-              </h2>
-              {obligations.length > 5 && (
-                <span className="text-xs font-medium text-[var(--muted-foreground)]">
-                  Menampilkan 5 dari {obligations.length} jadwal mendatang
-                </span>
-              )}
-            </div>
-
-            {obligations.length === 0 ? (
-              <Card className="p-4 text-xs text-[var(--muted-foreground)]">
-                Tidak ada tagihan atau cicilan jatuh tempo terdekat.
-              </Card>
-            ) : (
-              <Card className="p-0 overflow-hidden rounded-[18px]">
-                <div className="divide-y divide-[var(--border)]">
-                  {obligations.slice(0, 5).map((o) => {
-                    const days = daysUntil(o.dueDate, today);
-                    const isReceivable =
-                      o.type === "installment" && o.installment.direction === "receivable";
-                    const urgent = !isReceivable && isDueUrgent(days);
-                    return (
-                      <div
-                        key={o.key}
-                        className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 hover:bg-[var(--surface)] transition-colors"
-                      >
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-bold text-[var(--foreground)]">
-                              {o.type === "cc_bill" ? o.walletName : o.installment.accountName}
-                            </span>
-                            {o.type === "cc_bill" ? (
-                              <Badge tone="neutral">Tagihan CC</Badge>
-                            ) : o.installment.accountKind === "payroll" ? (
-                              <Badge tone="neutral">Auto Potong Gaji</Badge>
-                            ) : (
-                              <Badge tone={isReceivable ? "soft" : "neutral"}>
-                                {KIND_BADGE_LABEL[o.installment.accountKind] ??
-                                  (isReceivable ? "Piutang" : "Utang")}
-                              </Badge>
-                            )}
-                          </div>
-                          <p className="text-xs text-[var(--muted-foreground)]">
-                            Jatuh tempo {formatShortDate(o.dueDate)} ·{" "}
-                            <span
-                              className={
-                                urgent ? "font-bold text-[var(--destructive)]" : "font-semibold"
-                              }
-                            >
-                              {dueCountdownLabel(days)}
-                            </span>
-                            {o.type === "installment" && o.installment.lender
-                              ? ` · ${o.installment.lender}`
-                              : ""}
-                          </p>
-                        </div>
-
-                        <div className="flex items-center gap-2.5">
-                          <span className="tabular-nums font-mono text-sm font-bold text-[var(--foreground)]">
-                            {formatRupiah(o.amount, isMasked)}
-                          </span>
-                          {o.type === "cc_bill" ? (
-                            <Button
-                              onClick={() =>
-                                onPayCcCycle(o.cycleKey, o.unpaidInstallmentIds, o.walletId)
-                              }
-                              className="min-h-[36px] px-3 text-xs"
-                            >
-                              Bayar
-                            </Button>
-                          ) : (
-                            o.installment.accountKind !== "payroll" && (
-                              <Button
-                                onClick={() => onPayInstallment(o.installment.id)}
-                                className="min-h-[36px] px-3 text-xs"
-                              >
-                                {isReceivable ? "Terima" : "Bayar"}
-                              </Button>
-                            )
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </Card>
-            )}
           </section>
         </div>
       )}

@@ -74,6 +74,8 @@ describe("Milestone 2: Hutang & Piutang, Upgrade Pinjaman, Multi-CC & Timeline S
 
     // Cek debts data: remainingReceivable = 500.000, remainingDebt = 0
     let debtsData = await buildDebtsData(db, "2026-10-26");
+    // Default gajian cycle starts on the 25th and runs to the 24th of next month.
+    expect(debtsData.gajianCycle).toEqual({ start: "2026-10-25", end: "2026-11-24" });
     expect(debtsData.totals.remainingReceivable).toBe(500_000);
     expect(debtsData.totals.remainingDebt).toBe(0);
     expect(debtsData.totals.netDebtPosition).toBe(500_000);

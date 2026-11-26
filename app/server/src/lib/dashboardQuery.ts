@@ -1196,6 +1196,7 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
 
   return {
     currentCcCycle: snap.currentCcCycle,
+    gajianCycle: { start: gajianBounds.start, end: gajianBounds.end },
     totals: {
       initialDebt,
       paidDebt,
