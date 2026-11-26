@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ccCycleForDate, ccDueDateForCycle } from "../../../shared/src/dates";
+import { ccCycleForDate, ccDueDateForCycle, shiftMonth } from "../../../shared/src/dates";
 import type { DebtDirection, DebtKind } from "../../../shared/src/types";
 import { BankBadge } from "../components/BankBadge";
 import { EditDebtModal } from "../components/EditDebtModal";
@@ -264,10 +264,23 @@ export function DebtsPage({
     setPayoffError("");
   };
 
+  // Bill picker: last, current and next cycle, plus any older cycle still unpaid.
+  const cardCurrentCycle = activeCard
+    ? ccCycleForDate(jakartaToday(), activeCard.cutoffDay)
+    : data.currentCcCycle;
+  const visibleCycles = (activeCard?.cycleSummaries ?? data.cycleSummaries)
+    .filter(
+      (c) =>
+        (c.cycleKey >= shiftMonth(cardCurrentCycle, -1) &&
+          c.cycleKey <= shiftMonth(cardCurrentCycle, 1)) ||
+        (c.cycleKey < cardCurrentCycle && c.remainingBill > 0),
+    )
+    .sort((a, b) => a.cycleKey.localeCompare(b.cycleKey));
+
   const activeCycle =
-    activeCard?.cycleSummaries.find((c) => c.cycleKey === selectedCycle) ??
-    activeCard?.cycleSummaries[0] ??
-    data.cycleSummaries[0] ??
+    visibleCycles.find((c) => c.cycleKey === selectedCycle) ??
+    visibleCycles.find((c) => c.cycleKey === cardCurrentCycle) ??
+    visibleCycles[0] ??
     null;
 
   const cycleTransactions = useMemo(() => {
@@ -348,18 +361,9 @@ export function DebtsPage({
 
   const activeCardLimit = activeCard?.creditLimit ?? data.totals.ccLimit;
   const activeCardUsed = activeCard?.limitUsed ?? data.totals.ccLimitUsed;
-  const activeCardInstallmentUsed = activeCard?.installmentLimitUsed ?? 0;
-  const activeCardDailyUsed =
-    activeCard?.dailyLimitUsed ?? Math.max(0, activeCardUsed - activeCardInstallmentUsed);
   const activeCardAvailable = activeCard?.balance ?? data.totals.ccLimitAvailable;
 
   const ccPercent = activeCardLimit ? Math.round((activeCardUsed / activeCardLimit) * 100) : 0;
-  const ccInstallmentPct = activeCardLimit
-    ? Math.min(100, (activeCardInstallmentUsed / activeCardLimit) * 100)
-    : 0;
-  const ccDailyPct = activeCardLimit
-    ? Math.min(Math.max(0, 100 - ccInstallmentPct), (activeCardDailyUsed / activeCardLimit) * 100)
-    : 0;
 
   const today = jakartaToday();
 
@@ -862,9 +866,15 @@ export function DebtsPage({
                             {cards.length} kartu aktif
                           </Badge>
                         </div>
-                        <p className="text-xs text-[var(--muted-foreground)] tabular-nums">
-                          Sisa limit {formatCompactRupiah(data.totals.ccLimitAvailable, isMasked)}{" "}
-                          dari {formatCompactRupiah(data.totals.ccLimit, isMasked)}
+                        <p className="text-xs text-[var(--muted-foreground)]">
+                          Sisa limit{" "}
+                          <span className="tabular-nums">
+                            {formatCompactRupiah(data.totals.ccLimitAvailable, isMasked)}
+                          </span>{" "}
+                          dari{" "}
+                          <span className="tabular-nums">
+                            {formatCompactRupiah(data.totals.ccLimit, isMasked)}
+                          </span>
                         </p>
                       </div>
                       <div className="shrink-0 text-right whitespace-nowrap">
@@ -997,14 +1007,7 @@ export function DebtsPage({
       {/* GROUP 2: KARTU KREDIT (Transaksi Harian + Cicilan Kartu Kredit) */}
       {showCardsSection && (
         <section className="space-y-4">
-          <div>
-            <h2 className="text-base font-extrabold text-[var(--foreground)]">
-              Kartu Kredit & Cicilan Limit ({cards.length})
-            </h2>
-            <p className="text-xs text-[var(--muted-foreground)]">
-              Transaksi harian dan cicilan kartu kredit berbagi satu batas limit kartu yang sama.
-            </p>
-          </div>
+          <h2 className="text-base font-extrabold text-[var(--foreground)]">Kartu Kredit</h2>
 
           {cards.length === 0 ? (
             <Card className="p-8 text-center space-y-3">
@@ -1052,161 +1055,58 @@ export function DebtsPage({
                 </div>
               )}
 
-              {/* Virtual Credit Card Container */}
-              <div className="relative overflow-hidden rounded-[18px] border border-[var(--border)] bg-gradient-to-br from-[var(--surface)] to-[var(--card)] p-5 sm:p-6 shadow-xs">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <BankBadge
-                        provider={activeCardWallet?.provider ?? "other"}
-                        name={activeCard?.walletName}
-                      />
-                      <h3 className="text-lg font-extrabold text-[var(--foreground)]">
-                        {activeCard?.walletName ?? "Kartu Kredit"}
-                      </h3>
-                    </div>
-                    <div className="flex items-baseline gap-2 pt-2">
-                      <span className="font-mono text-2xl sm:text-3xl font-black text-[var(--foreground)] tabular-nums">
-                        {formatRupiah(activeCardUsed, isMasked)}
-                      </span>
-                      <span className="text-xs text-[var(--muted-foreground)]">
-                        terpakai dari {formatCompactRupiah(activeCardLimit, isMasked)}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Limit Usage Pill Badge */}
-                  <Badge
-                    tone={ccPercent >= 80 ? "danger" : ccPercent >= 30 ? "highlight" : "soft"}
-                    className="text-xs font-bold"
-                  >
-                    {ccPercent}% Terpakai · Sisa Limit {formatRupiah(activeCardAvailable, isMasked)}
-                  </Badge>
+              {/* Card summary: what is still usable, one bar, one line of context */}
+              <div className="rounded-[18px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-3">
+                <div className="flex items-center gap-2">
+                  <BankBadge
+                    provider={activeCardWallet?.provider ?? "other"}
+                    name={activeCard?.walletName}
+                  />
+                  <h3 className="text-base font-extrabold text-[var(--foreground)]">
+                    {activeCard?.walletName ?? "Kartu Kredit"}
+                  </h3>
                 </div>
 
-                {/* Stacked 2-Segment Limit Progress Bar (Cicilan CC + Harian) */}
-                <div className="mt-4 space-y-2">
+                <div>
+                  <span className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
+                    Sisa limit
+                  </span>
+                  <span className="tabular-nums text-2xl font-black text-[var(--foreground)]">
+                    {formatRupiah(activeCardAvailable, isMasked)}
+                  </span>
+                </div>
+
+                <div
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.min(100, ccPercent)}
+                  aria-label={`Pemakaian limit ${activeCard?.walletName ?? "CC"}`}
+                  className="h-2.5 w-full overflow-hidden rounded-full bg-[var(--border)]/60"
+                >
                   <div
-                    role="progressbar"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={Math.min(100, ccPercent)}
-                    aria-label={`Pemakaian limit ${activeCard?.walletName ?? "CC"}`}
-                    className="flex h-3 w-full overflow-hidden rounded-full bg-[var(--border)]/60"
-                  >
-                    {ccInstallmentPct > 0 && (
-                      <div
-                        style={{ width: `${ccInstallmentPct}%` }}
-                        className={`h-full transition-all duration-300 ${
-                          ccPercent >= 80
-                            ? "bg-[var(--destructive)]"
-                            : ccPercent >= 30
-                              ? "bg-amber-500"
-                              : "bg-emerald-500"
-                        }`}
-                        title={`Terkunci Cicilan: ${formatRupiah(activeCardInstallmentUsed, isMasked)}`}
-                      />
-                    )}
-                    {ccDailyPct > 0 && (
-                      <div
-                        style={{ width: `${ccDailyPct}%` }}
-                        className={`h-full transition-all duration-300 ${
-                          ccPercent >= 80
-                            ? "bg-[var(--destructive)]/80"
-                            : ccPercent >= 30
-                              ? "bg-amber-400"
-                              : "bg-[var(--primary)]"
-                        }`}
-                        title={`Belanja Harian: ${formatRupiah(activeCardDailyUsed, isMasked)}`}
-                      />
-                    )}
-                  </div>
-
-                  {/* Breakdown Legend */}
-                  <div className="grid grid-cols-1 gap-2 pt-1 text-xs sm:grid-cols-3">
-                    <div className="flex items-center justify-between rounded-[10px] border border-[var(--border)] bg-[var(--card)] px-3 py-2">
-                      <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]">
-                        <span
-                          className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                            ccPercent >= 80
-                              ? "bg-[var(--destructive)]"
-                              : ccPercent >= 30
-                                ? "bg-amber-500"
-                                : "bg-emerald-500"
-                          }`}
-                        />
-                        Terkunci Cicilan
-                      </span>
-                      <strong className="font-mono tabular-nums text-[var(--foreground)]">
-                        {formatRupiah(activeCardInstallmentUsed, isMasked)}
-                      </strong>
-                    </div>
-                    <div className="flex items-center justify-between rounded-[10px] border border-[var(--border)] bg-[var(--card)] px-3 py-2">
-                      <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]">
-                        <span
-                          className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                            ccPercent >= 80
-                              ? "bg-[var(--destructive)]/80"
-                              : ccPercent >= 30
-                                ? "bg-amber-400"
-                                : "bg-[var(--primary)]"
-                          }`}
-                        />
-                        Belanja Harian
-                      </span>
-                      <strong className="font-mono tabular-nums text-[var(--foreground)]">
-                        {formatRupiah(activeCardDailyUsed, isMasked)}
-                      </strong>
-                    </div>
-                    <div className="flex items-center justify-between rounded-[10px] border border-[var(--border)] bg-[var(--card)] px-3 py-2">
-                      <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]">
-                        <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 shrink-0" />
-                        Sisa Limit Harian
-                      </span>
-                      <strong
-                        className={`font-mono tabular-nums ${
-                          isMasked
-                            ? "text-[var(--foreground)]"
-                            : "text-emerald-600 dark:text-emerald-400"
-                        }`}
-                      >
-                        {formatRupiah(activeCardAvailable, isMasked)}
-                      </strong>
-                    </div>
-                  </div>
+                    style={{ width: `${Math.min(100, ccPercent)}%` }}
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      ccPercent >= 80
+                        ? "bg-[var(--destructive)]"
+                        : ccPercent >= 50
+                          ? "bg-amber-500"
+                          : "bg-[var(--primary)]"
+                    }`}
+                  />
                 </div>
 
-                {/* Card Dates & Cashflow Protection Status */}
-                <div className="mt-4 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-4 sm:grid-cols-3">
-                  <div className="rounded-[10px] bg-[var(--surface)] p-2.5">
-                    <span className="text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wide">
-                      Tutup Buku (Cut-off)
-                    </span>
-                    <p className="font-mono text-sm font-bold text-[var(--foreground)] mt-0.5">
-                      Tgl {activeCard?.cutoffDay ?? 20} tiap bulan
-                    </p>
-                  </div>
-
-                  <div className="rounded-[10px] bg-[var(--surface)] p-2.5">
-                    <span className="text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wide">
-                      Cetak Tagihan (Statement)
-                    </span>
-                    <p className="font-mono text-sm font-bold text-[var(--foreground)] mt-0.5">
-                      Tgl {activeCard?.statementDay ?? 21} tiap bulan
-                    </p>
-                  </div>
-
-                  <div className="rounded-[10px] bg-[var(--surface)] p-2.5">
-                    <span className="text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wide">
-                      Jatuh Tempo (Due Date)
-                    </span>
-                    <p className="font-mono text-sm font-bold text-amber-500 mt-0.5">
-                      Tgl {activeCard?.paymentDay ?? 10} tiap bulan
-                    </p>
-                  </div>
-                </div>
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  Terpakai{" "}
+                  <span className="tabular-nums">
+                    {formatCompactRupiah(activeCardUsed, isMasked)}
+                  </span>{" "}
+                  dari{" "}
+                  <span className="tabular-nums">
+                    {formatCompactRupiah(activeCardLimit, isMasked)}
+                  </span>
+                </p>
               </div>
-
               {/* Cycle Selector & Payment Action Bar */}
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] pt-4">
                 <div className="flex flex-wrap items-center gap-2">
@@ -1224,9 +1124,9 @@ export function DebtsPage({
                     id="cc-cycle-select"
                     value={activeCycle?.cycleKey ?? ""}
                     onChange={(e) => setSelectedCycle(e.target.value)}
-                    className="tabular-nums min-h-[42px] rounded-[10px] border border-[var(--control-border)] bg-[var(--card)] px-3 text-sm font-semibold text-[var(--foreground)]"
+                    className="min-h-[42px] rounded-[10px] border border-[var(--control-border)] bg-[var(--card)] px-3 text-sm font-semibold text-[var(--foreground)]"
                   >
-                    {(activeCard?.cycleSummaries ?? data.cycleSummaries).map((c) => (
+                    {visibleCycles.map((c) => (
                       <option key={c.cycleKey} value={c.cycleKey}>
                         {formatMonthTitle(c.cycleKey)} (
                         {c.settled || c.remainingBill === 0
@@ -1285,62 +1185,64 @@ export function DebtsPage({
                 )}
               </div>
 
-              {/* Breakdown 3 Komponen Tagihan Siklus */}
-              {activeCycle && (
-                <div className="grid grid-cols-1 gap-3 rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-4 sm:grid-cols-3">
-                  <div>
-                    <p className="text-xs text-[var(--muted-foreground)]">
-                      Belanja Harian + Biaya Bank
-                    </p>
-                    <p className="tabular-nums font-mono mt-0.5 text-base font-bold text-[var(--foreground)]">
-                      {formatRupiah(activeCycle.dailyTotal, isMasked)}
-                    </p>
+              {/* Bill breakdown: only when the bill has two parts or is partly paid */}
+              {activeCycle &&
+                ((activeCycle.dailyTotal > 0 && activeCycle.installmentTotal > 0) ||
+                  activeCycle.remainingBill < activeCycle.totalBill) && (
+                  <div className="grid grid-cols-1 gap-3 rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-4 sm:grid-cols-3">
+                    <div>
+                      <p className="text-xs text-[var(--muted-foreground)]">
+                        Belanja Harian + Biaya Bank
+                      </p>
+                      <p className="tabular-nums font-mono mt-0.5 text-base font-bold text-[var(--foreground)]">
+                        {formatRupiah(activeCycle.dailyTotal, isMasked)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-[var(--muted-foreground)]">Cicilan Bulanan</p>
+                      <p className="tabular-nums font-mono mt-0.5 text-base font-bold text-[var(--foreground)]">
+                        {formatRupiah(activeCycle.installmentTotal, isMasked)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-[var(--muted-foreground)] flex items-center gap-1">
+                        Total Tagihan Siklus
+                        <HelpTooltip
+                          title="Fasilitas Bebas Bunga"
+                          content="Bayar lunas total tagihan sebelum tanggal jatuh tempo untuk menikmati 100% bebas bunga dari bank penerbit."
+                        />
+                      </p>
+                      <p
+                        className={`tabular-nums font-mono mt-0.5 text-base font-extrabold ${
+                          activeCycle.remainingBill < activeCycle.totalBill
+                            ? "text-[var(--foreground)]"
+                            : "text-[var(--primary)]"
+                        }`}
+                      >
+                        {formatRupiah(activeCycle.totalBill, isMasked)}
+                      </p>
+                    </div>
+                    {activeCycle.remainingBill < activeCycle.totalBill && (
+                      <>
+                        <div>
+                          <p className="text-xs text-[var(--muted-foreground)]">Sudah Dibayar</p>
+                          <p className="tabular-nums font-mono mt-0.5 text-base font-bold text-[var(--chart-income)]">
+                            {formatRupiah(
+                              activeCycle.totalBill - activeCycle.remainingBill,
+                              isMasked,
+                            )}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-[var(--muted-foreground)]">Sisa Tagihan</p>
+                          <p className="tabular-nums font-mono mt-0.5 text-base font-extrabold text-[var(--primary)]">
+                            {formatRupiah(activeCycle.remainingBill, isMasked)}
+                          </p>
+                        </div>
+                      </>
+                    )}
                   </div>
-                  <div>
-                    <p className="text-xs text-[var(--muted-foreground)]">Cicilan Bulanan</p>
-                    <p className="tabular-nums font-mono mt-0.5 text-base font-bold text-[var(--foreground)]">
-                      {formatRupiah(activeCycle.installmentTotal, isMasked)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-[var(--muted-foreground)] flex items-center gap-1">
-                      Total Tagihan Siklus
-                      <HelpTooltip
-                        title="Fasilitas Bebas Bunga"
-                        content="Bayar lunas total tagihan sebelum tanggal jatuh tempo untuk menikmati 100% bebas bunga dari bank penerbit."
-                      />
-                    </p>
-                    <p
-                      className={`tabular-nums font-mono mt-0.5 text-base font-extrabold ${
-                        activeCycle.remainingBill < activeCycle.totalBill
-                          ? "text-[var(--foreground)]"
-                          : "text-[var(--primary)]"
-                      }`}
-                    >
-                      {formatRupiah(activeCycle.totalBill, isMasked)}
-                    </p>
-                  </div>
-                  {activeCycle.remainingBill < activeCycle.totalBill && (
-                    <>
-                      <div>
-                        <p className="text-xs text-[var(--muted-foreground)]">Sudah Dibayar</p>
-                        <p className="tabular-nums font-mono mt-0.5 text-base font-bold text-[var(--chart-income)]">
-                          {formatRupiah(
-                            activeCycle.totalBill - activeCycle.remainingBill,
-                            isMasked,
-                          )}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-[var(--muted-foreground)]">Sisa Tagihan</p>
-                        <p className="tabular-nums font-mono mt-0.5 text-base font-extrabold text-[var(--primary)]">
-                          {formatRupiah(activeCycle.remainingBill, isMasked)}
-                        </p>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
+                )}
 
               {/* Sub-section A: Cicilan Kartu Kredit Aktif on this card */}
               <div className="space-y-3 border-t border-[var(--border)] pt-4">
