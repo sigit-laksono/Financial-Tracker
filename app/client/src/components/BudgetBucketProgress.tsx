@@ -179,9 +179,11 @@ export function BudgetBucketProgress({
                     <span className="font-extrabold text-[var(--foreground)] tracking-wide">
                       KEBUTUHAN
                     </span>
-                    <Badge tone={needsStatus.tone} className="text-[10px] px-1.5 py-0.5">
-                      {needsStatus.text}
-                    </Badge>
+                    {isNeedsConfigured && (
+                      <Badge tone={needsStatus.tone} className="text-[10px] px-1.5 py-0.5">
+                        {needsStatus.text}
+                      </Badge>
+                    )}
                   </div>
                   <div className="flex items-center gap-1.5">
                     {isNeedsConfigured ? (
@@ -201,8 +203,8 @@ export function BudgetBucketProgress({
                     )}
                   </div>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--surface)]">
-                  {isNeedsConfigured && (
+                {isNeedsConfigured && (
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--surface)]">
                     <div
                       className={`h-full rounded-full transition-all duration-500 ${
                         needs.status === "exceeded"
@@ -213,8 +215,8 @@ export function BudgetBucketProgress({
                       }`}
                       style={{ width: `${Math.min(100, needs.percent)}%` }}
                     />
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
 
               {/* 2. Keinginan (Wants) */}
@@ -224,9 +226,11 @@ export function BudgetBucketProgress({
                     <span className="font-extrabold text-[var(--foreground)] tracking-wide">
                       KEINGINAN
                     </span>
-                    <Badge tone={wantsStatus.tone} className="text-[10px] px-1.5 py-0.5">
-                      {wantsStatus.text}
-                    </Badge>
+                    {isWantsConfigured && (
+                      <Badge tone={wantsStatus.tone} className="text-[10px] px-1.5 py-0.5">
+                        {wantsStatus.text}
+                      </Badge>
+                    )}
                   </div>
                   <div className="flex items-center gap-1.5">
                     {isWantsConfigured ? (
@@ -246,8 +250,8 @@ export function BudgetBucketProgress({
                     )}
                   </div>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--surface)]">
-                  {isWantsConfigured && (
+                {isWantsConfigured && (
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--surface)]">
                     <div
                       className={`h-full rounded-full transition-all duration-500 ${
                         wants.status === "exceeded"
@@ -258,8 +262,8 @@ export function BudgetBucketProgress({
                       }`}
                       style={{ width: `${Math.min(100, wants.percent)}%` }}
                     />
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
 
               {/* 3. Tabungan (Savings) */}
@@ -269,9 +273,11 @@ export function BudgetBucketProgress({
                     <span className="font-extrabold text-[var(--foreground)] tracking-wide">
                       TABUNGAN &amp; UTANG
                     </span>
-                    <Badge tone={savingsStatus.tone} className="text-[10px] px-1.5 py-0.5">
-                      {savingsStatus.text}
-                    </Badge>
+                    {isSavingsConfigured && (
+                      <Badge tone={savingsStatus.tone} className="text-[10px] px-1.5 py-0.5">
+                        {savingsStatus.text}
+                      </Badge>
+                    )}
                     {onOpenGoals && (
                       <button
                         type="button"
@@ -300,14 +306,18 @@ export function BudgetBucketProgress({
                     )}
                   </div>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--surface)]">
-                  {isSavingsConfigured && (
+                {isSavingsConfigured ? (
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--surface)]">
                     <div
                       className="h-full rounded-full bg-[var(--chart-income)] transition-all duration-500"
                       style={{ width: `${Math.min(100, savings.percent)}%` }}
                     />
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-[var(--muted-foreground)]">
+                    Cicilan, utang &amp; tabungan yang dibayar siklus ini
+                  </p>
+                )}
               </div>
             </div>
           )}
