@@ -86,3 +86,6 @@ export const ASSET_TYPES = [
   "other",
 ] as const;
 export type AssetType = (typeof ASSET_TYPES)[number];
+
+/** Note written on bank fees that CC billing auto-posts from the statement. */
+export const CC_STATEMENT_FEE_NOTE = "Biaya bank dari statement, tercatat otomatis";

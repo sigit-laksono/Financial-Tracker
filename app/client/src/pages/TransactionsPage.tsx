@@ -1,21 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { periodForDate } from "../../../shared/src/dates";
 import { api, ApiError, type DashboardDto, type TransactionDto } from "../lib/api";
+import { CC_STATEMENT_FEE_NOTE } from "../../../shared/src/types";
 import type { TransactionFiltersState } from "../lib/filters";
 import { budgetKeys, goalKeys } from "../lib/queryKeys";
 import {
   buildWeekSlices,
   formatCompactRupiah,
   formatDayHeader,
-  formatDigitsInput,
   formatPeriodRangeLabel,
   formatRupiah,
   formatShortDate,
   jakartaToday,
-  MAX_IDR_AMOUNT,
-  parsePositiveInt,
   shiftMonth,
 } from "../lib/format";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
@@ -23,13 +20,47 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   EditIcon,
-  PlusIcon,
   SettingsIcon,
   SplitPayIcon,
   TransactionsIcon,
   TrashIcon,
 } from "../components/Icons";
 import { Badge, Button, Card, ModalSheet, ProgressBar, StateView } from "../components/UI";
+
+/** Auto-posted statement fees carry a boilerplate note that adds nothing to the row. */
+function isAutoNote(tx: TransactionDto): boolean {
+  return tx.source === "system" && tx.note === CC_STATEMENT_FEE_NOTE;
+}
+
+/**
+ * Drops transfer admin-fee rows whose transfer is in the same list. The list shows
+ * those fees as "+Admin" on the transfer row instead of as rows of their own.
+ */
+function withoutMergedTransferFees(rows: TransactionDto[]): TransactionDto[] {
+  const transferGroupIds = new Set(
+    rows.filter((t) => t.type === "transfer" && t.transferGroupId).map((t) => t.transferGroupId),
+  );
+  return rows.filter(
+    (tx) =>
+      !(
+        tx.type === "expense" &&
+        tx.category === "Biaya Bank" &&
+        tx.transferGroupId &&
+        transferGroupIds.has(tx.transferGroupId)
+      ),
+  );
+}
+
+/** Money out on a day: the red rows (minus converted installments) plus transfer admin fees. */
+function dayOutflow(rows: TransactionDto[]): number {
+  let total = 0;
+  for (const t of rows) {
+    if (t.type === "expense" && !t.isConvertedToInstallment) total += t.amount;
+    else if (t.type === "settlement" || t.type === "debt_disbursement") total += t.amount;
+    else if (t.type === "transfer") total += t.linkedFeeTransaction?.amount ?? 0;
+  }
+  return total;
+}
 
 export function TransactionsPage({
   data,
@@ -40,6 +71,7 @@ export function TransactionsPage({
   onEditTransaction,
   onSplitPay,
   onAddTransaction,
+  onOpenBudget,
   onToast,
 }: {
   data: DashboardDto;
@@ -50,6 +82,7 @@ export function TransactionsPage({
   onEditTransaction: (tx: TransactionDto) => void;
   onSplitPay: (tx: TransactionDto) => void;
   onAddTransaction: () => void;
+  onOpenBudget: () => void;
   onToast: (msg: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -66,12 +99,17 @@ export function TransactionsPage({
 
   const resolvedWeekChoice = filters.weekChoice === "auto" ? "all" : filters.weekChoice;
 
+  const periodTransactions = useMemo(
+    () => withoutMergedTransferFees(data.transactions),
+    [data.transactions],
+  );
+
   const weekCounts = useMemo(() => {
     const counts: Record<number, number> = {};
     for (const w of weeks) {
       counts[w.index] = 0;
     }
-    for (const tx of data.transactions) {
+    for (const tx of periodTransactions) {
       for (const w of weeks) {
         if (tx.transactionDate >= w.start && tx.transactionDate <= w.end) {
           counts[w.index] = (counts[w.index] ?? 0) + 1;
@@ -80,12 +118,9 @@ export function TransactionsPage({
       }
     }
     return counts;
-  }, [data.transactions, weeks]);
+  }, [periodTransactions, weeks]);
 
-  const [editingBudgetCat, setEditingBudgetCat] = useState<string | null>(null);
-  const [budgetInput, setBudgetInput] = useState("");
-  const [budgetScope, setBudgetScope] = useState<"default" | "override">("default");
-  const [budgetError, setBudgetError] = useState("");
+  const [insightsOpen, setInsightsOpen] = useState(false);
   const [confirmDeleteTxId, setConfirmDeleteTxId] = useState<number | null>(null);
 
   // Mobile Filter Sheet state
@@ -107,69 +142,6 @@ export function TransactionsPage({
       setSelectedIds([]);
     }
   }, [selectionResetKey]);
-
-  const gajianPeriod = useMemo(
-    () =>
-      data.cycle === "gajian"
-        ? data.selectedPeriod
-        : periodForDate(
-            data.periodEnd,
-            "gajian",
-            data.settings.gajianStartDay,
-            data.settings.cardCutoffDay,
-          ),
-    [
-      data.cycle,
-      data.selectedPeriod,
-      data.periodEnd,
-      data.settings.gajianStartDay,
-      data.settings.cardCutoffDay,
-    ],
-  );
-
-  const budgetMutation = useMutation({
-    mutationFn: ({
-      category,
-      limitAmount,
-      targetPeriod,
-    }: {
-      category: string;
-      limitAmount: number;
-      targetPeriod: string;
-    }) => api.upsertBudget({ category, period: targetPeriod, limitAmount }),
-    onSuccess: async (_, vars) => {
-      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
-      await queryClient.invalidateQueries({ queryKey: goalKeys.all });
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
-      setEditingBudgetCat(null);
-      setBudgetError("");
-      onToast(
-        vars.targetPeriod === "default"
-          ? "Template batas anggaran diperbarui"
-          : `Override anggaran periode ${vars.targetPeriod} disimpan`,
-      );
-    },
-    onError: (err) => {
-      const msg = err instanceof ApiError ? err.message : "Gagal menyimpan batas anggaran.";
-      setBudgetError(msg);
-      onToast(msg);
-    },
-  });
-
-  const resetOverrideMutation = useMutation({
-    mutationFn: (id: number) => api.deleteBudget(id),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.all });
-      await queryClient.invalidateQueries({ queryKey: goalKeys.all });
-      await queryClient.invalidateQueries({ queryKey: budgetKeys.summary() });
-      onToast("Override periode dihapus, kembali ke template default");
-    },
-    onError: (err) => {
-      onToast(err instanceof ApiError ? err.message : "Gagal menghapus override anggaran.");
-    },
-  });
 
   const deleteTxMutation = useMutation({
     mutationFn: (id: number) => api.deleteTransaction(id),
@@ -272,29 +244,27 @@ export function TransactionsPage({
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
 
-  const filteredTransactions = useMemo(() => {
-    const raw =
+  const loadedTransactions = useMemo(
+    () =>
       txListQuery.data?.pages
         .flatMap((page) => page?.items ?? [])
-        .filter((tx): tx is TransactionDto => Boolean(tx?.transactionDate)) ?? [];
-
-    if (filters.typeFilter === "all") {
-      const transferGroupIds = new Set(
-        raw.filter((t) => t.type === "transfer" && t.transferGroupId).map((t) => t.transferGroupId),
-      );
-      return raw.filter(
-        (tx) =>
-          !(
-            tx.type === "expense" &&
-            tx.category === "Biaya Bank" &&
-            tx.transferGroupId &&
-            transferGroupIds.has(tx.transferGroupId)
-          ),
-      );
-    }
-    return raw;
-  }, [txListQuery.data, filters.typeFilter]);
-  const totalFilteredCount = txListQuery.data?.pages[0]?.totalCount ?? filteredTransactions.length;
+        .filter((tx): tx is TransactionDto => Boolean(tx?.transactionDate)) ?? [],
+    [txListQuery.data],
+  );
+  const filteredTransactions = useMemo(
+    () =>
+      filters.typeFilter === "all"
+        ? withoutMergedTransferFees(loadedTransactions)
+        : loadedTransactions,
+    [loadedTransactions, filters.typeFilter],
+  );
+  // The server count includes the admin-fee rows merged into their transfers above.
+  const mergedFeeCount = loadedTransactions.length - filteredTransactions.length;
+  const totalFilteredCount =
+    (txListQuery.data?.pages[0]?.totalCount ?? loadedTransactions.length) - mergedFeeCount;
+  const countLabel = txListQuery.hasNextPage
+    ? `Menampilkan ${filteredTransactions.length} dari ${totalFilteredCount} transaksi`
+    : `${filteredTransactions.length} transaksi`;
 
   const groupedByDay = useMemo(() => {
     const map = new Map<string, TransactionDto[]>();
@@ -374,10 +344,7 @@ export function TransactionsPage({
     setFilterSheetOpen(true);
   };
 
-  const visibleTxIds = useMemo(
-    () => filteredTransactions.map((t) => t.id),
-    [filteredTransactions],
-  );
+  const visibleTxIds = useMemo(() => filteredTransactions.map((t) => t.id), [filteredTransactions]);
   const selectedVisibleCount = useMemo(
     () => selectedIds.filter((id) => visibleTxIds.includes(id)).length,
     [selectedIds, visibleTxIds],
@@ -404,33 +371,26 @@ export function TransactionsPage({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-extrabold text-[var(--foreground)]">Transaksi</h1>
 
-        <div className="w-full sm:w-auto flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="flex w-full sm:w-auto items-center justify-between gap-1 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1">
-            <button
-              type="button"
-              onClick={() => onPeriodChange(shiftMonth(period, -1))}
-              aria-label="Periode sebelumnya"
-              className="inline-flex h-11 w-11 items-center justify-center rounded-full hover:bg-[var(--surface)]"
-            >
-              <ChevronLeftIcon className="w-5 h-5" />
-            </button>
-            <span className="tabular-nums px-2 text-xs font-semibold text-[var(--foreground)] sm:text-sm">
-              {formatPeriodRangeLabel(data.periodStart, data.periodEnd)}
-            </span>
-            <button
-              type="button"
-              onClick={() => onPeriodChange(shiftMonth(period, 1))}
-              aria-label="Periode berikutnya"
-              className="inline-flex h-11 w-11 items-center justify-center rounded-full hover:bg-[var(--surface)]"
-            >
-              <ChevronRightIcon className="w-5 h-5" />
-            </button>
-          </div>
-
-          <Button onClick={onAddTransaction} className="w-full sm:w-auto justify-center gap-1.5">
-            <PlusIcon className="w-4 h-4" />
-            <span>Catat Transaksi</span>
-          </Button>
+        <div className="flex w-full sm:w-auto items-center justify-between gap-1 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-1">
+          <button
+            type="button"
+            onClick={() => onPeriodChange(shiftMonth(period, -1))}
+            aria-label="Periode sebelumnya"
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full hover:bg-[var(--surface)]"
+          >
+            <ChevronLeftIcon className="w-5 h-5" />
+          </button>
+          <span className="tabular-nums px-2 text-xs font-semibold text-[var(--foreground)] sm:text-sm">
+            {formatPeriodRangeLabel(data.periodStart, data.periodEnd)}
+          </span>
+          <button
+            type="button"
+            onClick={() => onPeriodChange(shiftMonth(period, 1))}
+            aria-label="Periode berikutnya"
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full hover:bg-[var(--surface)]"
+          >
+            <ChevronRightIcon className="w-5 h-5" />
+          </button>
         </div>
       </div>
 
@@ -452,7 +412,7 @@ export function TransactionsPage({
               resolvedWeekChoice === "all" ? "opacity-90" : "text-[var(--muted-foreground)]"
             }`}
           >
-            ({data.transactions.length})
+            ({periodTransactions.length})
           </span>
         </button>
 
@@ -486,7 +446,7 @@ export function TransactionsPage({
       </div>
 
       {/* Filter Controls: Compact 1-Row Sticky on Mobile (< 1024px) & 4-Col Bar on Desktop (>= 1024px) */}
-      <div className="sticky top-0 z-20 -mx-1 px-1 py-1 bg-[var(--background)]/90 backdrop-blur-md transition-all">
+      <div className="sticky top-[65px] lg:top-0 z-20 -mx-1 px-1 py-1 bg-[var(--background)]/90 backdrop-blur-md transition-all">
         {/* Mobile Sticky Bar (< 1024px) */}
         <div className="flex lg:hidden items-center gap-2 rounded-[16px] border border-[var(--border)] bg-[var(--card)] p-2 shadow-xs max-h-[60px]">
           <input
@@ -604,8 +564,23 @@ export function TransactionsPage({
         </div>
       </div>
 
-      {/* Chart + Category Budget Breakdown */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+      {/* Chart + Category Breakdown: collapsible on mobile, always open on desktop */}
+      <button
+        type="button"
+        aria-expanded={insightsOpen}
+        aria-controls="tx-insights"
+        onClick={() => setInsightsOpen((v) => !v)}
+        className="flex lg:hidden min-h-[44px] w-full items-center justify-between gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--card)] px-4 text-left"
+      >
+        <span className="text-sm font-bold text-[var(--foreground)]">Grafik & Kategori</span>
+        <span aria-hidden="true" className="text-xs font-semibold text-[var(--primary)]">
+          {insightsOpen ? "▲" : "▼"}
+        </span>
+      </button>
+      <div
+        id="tx-insights"
+        className={`${insightsOpen ? "grid" : "hidden lg:grid"} grid-cols-1 gap-4 lg:grid-cols-12`}
+      >
         <Card className="space-y-3 lg:col-span-7">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
@@ -681,9 +656,18 @@ export function TransactionsPage({
         </Card>
 
         <Card className="space-y-3 lg:col-span-5">
-          <h2 className="text-base font-bold text-[var(--foreground)]">
-            Pengeluaran per Kategori & Anggaran
-          </h2>
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-bold text-[var(--foreground)]">
+              Pengeluaran per Kategori
+            </h2>
+            <button
+              type="button"
+              onClick={onOpenBudget}
+              className="inline-flex min-h-[44px] items-center px-1 text-xs font-semibold text-[var(--primary)] hover:underline"
+            >
+              Atur di Anggaran
+            </button>
+          </div>
           {data.categoryTotals.length === 0 ? (
             <p className="text-sm text-[var(--muted-foreground)]">
               Belum ada pengeluaran tercatat di periode ini.
@@ -692,25 +676,20 @@ export function TransactionsPage({
             <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
               {data.categoryTotals.map((cat) => {
                 const budget = budgetByCategory.get(cat.category);
-                const isEditing = editingBudgetCat === cat.category;
                 return (
                   <div
                     key={cat.category}
                     className="space-y-1.5 border-b border-[var(--border)] pb-2.5 last:border-b-0 last:pb-0"
                   >
                     <div className="flex items-center justify-between gap-2 text-sm">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-semibold text-[var(--foreground)]">
-                          {cat.category}
-                        </span>
-                        {budget?.isOverride && <Badge tone="soft">Khusus {budget.period}</Badge>}
-                      </div>
+                      <span className="min-w-0 truncate font-semibold text-[var(--foreground)]">
+                        {cat.category}
+                      </span>
                       <span className="tabular-nums font-bold text-[var(--foreground)]">
                         {formatRupiah(cat.total, isMasked)}
                       </span>
                     </div>
-
-                    {budget ? (
+                    {budget && (
                       <div className="space-y-1">
                         <ProgressBar
                           value={budget.percentUsed}
@@ -723,118 +702,9 @@ export function TransactionsPage({
                           }
                           label={`Anggaran ${cat.category}`}
                         />
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted-foreground)]">
-                          <span className="tabular-nums">
-                            Limit {formatRupiah(budget.limitAmount, isMasked)} ({budget.percentUsed}
-                            %)
-                          </span>
-                          <div className="flex items-center gap-2">
-                            {budget.isOverride && (
-                              <button
-                                type="button"
-                                onClick={() => resetOverrideMutation.mutate(budget.id)}
-                                className="inline-flex min-h-[44px] items-center px-1.5 font-semibold text-[var(--destructive)] hover:underline"
-                              >
-                                Hapus Override
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingBudgetCat(cat.category);
-                                setBudgetInput(budget.limitAmount.toLocaleString("id-ID"));
-                                setBudgetScope(budget.isOverride ? "override" : "default");
-                                setBudgetError("");
-                              }}
-                              className="inline-flex min-h-[44px] items-center px-1.5 font-semibold text-[var(--primary)] hover:underline"
-                            >
-                              Ubah Limit
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingBudgetCat(cat.category);
-                          setBudgetInput("");
-                          setBudgetScope("default");
-                          setBudgetError("");
-                        }}
-                        className="inline-flex min-h-[44px] items-center px-1 text-xs font-semibold text-[var(--primary)] hover:underline"
-                      >
-                        Atur Batas Anggaran
-                      </button>
-                    )}
-
-                    {isEditing && (
-                      <div className="mt-1 space-y-2 rounded-[10px] border border-[var(--border)] bg-[var(--surface)] p-2.5">
-                        <div className="flex flex-wrap gap-2">
-                          <label className="inline-flex min-h-[44px] items-center gap-1.5 text-xs font-semibold">
-                            <input
-                              type="radio"
-                              name={`scope-${cat.category}`}
-                              checked={budgetScope === "default"}
-                              onChange={() => setBudgetScope("default")}
-                              className="accent-[var(--primary)]"
-                            />
-                            Template tiap bulan
-                          </label>
-                          <label className="inline-flex min-h-[44px] items-center gap-1.5 text-xs font-semibold">
-                            <input
-                              type="radio"
-                              name={`scope-${cat.category}`}
-                              checked={budgetScope === "override"}
-                              onChange={() => setBudgetScope("override")}
-                              className="accent-[var(--primary)]"
-                            />
-                            Khusus periode {gajianPeriod}
-                          </label>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            aria-label={`Limit budget ${cat.category}`}
-                            value={budgetInput}
-                            onChange={(e) => {
-                              setBudgetInput(formatDigitsInput(e.target.value));
-                              setBudgetError("");
-                            }}
-                            placeholder="Nominal limit"
-                            className="tabular-nums min-h-[44px] flex-1 rounded-[10px] border border-[var(--control-border)] bg-[var(--card)] px-2.5 text-sm"
-                          />
-                          <Button
-                            disabled={budgetMutation.isPending}
-                            onClick={() => {
-                              const limitAmount = parsePositiveInt(budgetInput);
-                              if (limitAmount <= 0) {
-                                setBudgetError("Masukkan nominal limit lebih dari Rp0.");
-                                return;
-                              }
-                              if (limitAmount > MAX_IDR_AMOUNT) {
-                                setBudgetError(
-                                  `Nominal limit maksimal ${formatRupiah(MAX_IDR_AMOUNT)}.`,
-                                );
-                                return;
-                              }
-                              budgetMutation.mutate({
-                                category: cat.category,
-                                limitAmount,
-                                targetPeriod: budgetScope === "override" ? gajianPeriod : "default",
-                              });
-                            }}
-                            className="min-h-[44px] px-3 text-xs"
-                          >
-                            Simpan
-                          </Button>
-                        </div>
-                        {budgetError && (
-                          <p role="alert" className="text-xs text-[var(--destructive)]">
-                            {budgetError}
-                          </p>
-                        )}
+                        <p className="tabular-nums text-xs text-[var(--muted-foreground)]">
+                          Limit {formatRupiah(budget.limitAmount, isMasked)} ({budget.percentUsed}%)
+                        </p>
                       </div>
                     )}
                   </div>
@@ -939,7 +809,7 @@ export function TransactionsPage({
                 </div>
               ) : (
                 <span className="text-xs font-semibold text-[var(--muted-foreground)] tabular-nums">
-                  Menampilkan {filteredTransactions.length} dari {totalFilteredCount} transaksi
+                  {countLabel}
                 </span>
               )}
             </div>
@@ -1054,7 +924,7 @@ export function TransactionsPage({
                               <div className="font-bold text-[var(--foreground)] truncate">
                                 {titleText}
                               </div>
-                              {tx.note && (
+                              {tx.note && !isAutoNote(tx) && (
                                 <p className="text-xs text-[var(--muted-foreground)] truncate">
                                   {tx.note}
                                 </p>
@@ -1173,9 +1043,7 @@ export function TransactionsPage({
           {/* Card View (Always on Mobile, or Desktop when viewMode === "card") */}
           <div className={viewMode === "table" ? "space-y-4 md:hidden" : "space-y-4"}>
             {groupedByDay.map(([day, rows]) => {
-              const dayExpense = rows
-                .filter((t) => t.type === "expense")
-                .reduce((sum, t) => sum + t.amount, 0);
+              const dayExpense = dayOutflow(rows);
 
               return (
                 <Card key={day} className="p-0 overflow-hidden">
@@ -1201,10 +1069,6 @@ export function TransactionsPage({
                       const isEditable = isIncome || isTransfer || tx.type === "expense";
                       const isDeletableDirect = !isEditable;
                       const isConfirmingDelete = confirmDeleteTxId === tx.id;
-                      const canSplitPay =
-                        tx.walletType === "credit_card" &&
-                        tx.type === "expense" &&
-                        !tx.isConvertedToInstallment;
                       const isSplit = Boolean(tx.splits && tx.splits.length > 0);
                       const adminFee = isTransfer ? (tx.linkedFeeTransaction?.amount ?? 0) : 0;
 
@@ -1225,18 +1089,22 @@ export function TransactionsPage({
                               ? "bg-[var(--surface)] text-[var(--muted-foreground)] border border-[var(--border)]"
                               : "bg-[var(--destructive)]/15 text-[var(--destructive)]";
 
+                      const transferRoute = `${tx.walletName} → ${tx.toWalletName}`;
                       const titleText =
                         isTransfer && tx.toWalletName
                           ? tx.merchant &&
                             tx.merchant !== `Transfer ke ${tx.toWalletName}` &&
-                            tx.merchant !== `${tx.walletName} → ${tx.toWalletName}`
+                            tx.merchant !== transferRoute
                             ? tx.merchant
-                            : `${tx.walletName} → ${tx.toWalletName}`
+                            : transferRoute
                           : tx.merchant || tx.category;
 
                       const subText = isTransfer
-                        ? `Transfer · ${tx.walletName}${tx.toWalletName ? ` → ${tx.toWalletName}` : ""}`
+                        ? tx.toWalletName && titleText !== transferRoute
+                          ? `Transfer · ${transferRoute}`
+                          : "Transfer"
                         : `${tx.category} · ${tx.walletName}`;
+                      const visibleNote = isAutoNote(tx) ? null : tx.note;
 
                       const amountText = isMasked
                         ? formatRupiah(tx.amount, true)
@@ -1286,9 +1154,9 @@ export function TransactionsPage({
                                   </span>
                                 )}
                               </div>
-                              {tx.note && (
+                              {visibleNote && (
                                 <p className="text-[11px] text-[var(--muted-foreground)] truncate">
-                                  {tx.note}
+                                  {visibleNote}
                                 </p>
                               )}
                             </div>
@@ -1328,18 +1196,6 @@ export function TransactionsPage({
                               <div className="flex min-w-0 flex-1 items-center justify-between gap-2.5 min-h-[44px]">
                                 {rowCore}
                               </div>
-                            )}
-
-                            {canSplitPay && (
-                              <button
-                                type="button"
-                                onClick={() => onSplitPay(tx)}
-                                aria-label={`Ubah ${tx.merchant} jadi cicilan bulanan`}
-                                title="Ubah Jadi Cicilan"
-                                className="shrink-0 inline-flex min-h-[36px] items-center rounded-[10px] border border-[var(--control-border)] bg-[var(--surface)] px-2.5 text-[11px] font-bold text-[var(--foreground)] hover:bg-[var(--border)]/60 transition-colors"
-                              >
-                                Cicil
-                              </button>
                             )}
 
                             {isDeletableDirect && !isConfirmingDelete && (
@@ -1384,9 +1240,7 @@ export function TransactionsPage({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-[var(--muted-foreground)]">
-            <span className="tabular-nums">
-              Menampilkan {filteredTransactions.length} dari {totalFilteredCount} transaksi
-            </span>
+            <span className="tabular-nums">{countLabel}</span>
             {txListQuery.hasNextPage && (
               <Button
                 variant="secondary"

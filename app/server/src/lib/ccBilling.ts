@@ -1,4 +1,5 @@
 import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { CC_STATEMENT_FEE_NOTE } from "../../../shared/src/types";
 import type { AppDb } from "../db";
 import {
   categories,
@@ -86,10 +87,7 @@ export async function ensureMonthlyBankFees(
           ),
         )
         .limit(1),
-      db
-        .select()
-        .from(walletRecurringFees)
-        .where(eq(walletRecurringFees.walletId, ccWallet.id)),
+      db.select().from(walletRecurringFees).where(eq(walletRecurringFees.walletId, ccWallet.id)),
     ]);
 
     const settledAmount = Number(allocRow[0]?.total ?? 0);
@@ -150,7 +148,7 @@ export async function ensureMonthlyBankFees(
           category: "Biaya Bank",
           categoryId: bankFeeCategory?.id ?? null,
           walletId: ccWallet.id,
-          note: "Biaya bank dari statement, tercatat otomatis",
+          note: CC_STATEMENT_FEE_NOTE,
           ccCycleKey: cycleKey,
           source: "system",
           sourceRef: scopedSourceRef,

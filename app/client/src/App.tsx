@@ -623,6 +623,7 @@ export function App() {
             })
           }
           onAddTransaction={() => openQuickAdd("expense")}
+          onOpenBudget={() => setTab("budget")}
           onToast={showToast}
         />
       </Suspense>
