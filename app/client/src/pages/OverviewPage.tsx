@@ -117,6 +117,39 @@ export function OverviewPage({
   const todaySpent = data.calendarHeatmap?.find((d) => d.isToday)?.expense ?? 0;
   const showBurden = data.isCurrentPeriod && Boolean(debts);
 
+  const netWorthCard = (
+    <NetWorthHeroCard
+      totalNetWorth={totalNetWorth}
+      totalAssets={totalAssets}
+      totalLiabilities={totalLiabilities}
+      actions={
+        onOpenAssets || metrics.totalLiquidCash < 0 ? (
+          <>
+            {onOpenAssets && (
+              <Button
+                variant="secondary"
+                onClick={onOpenAssets}
+                className="min-h-[44px] text-xs px-3.5"
+              >
+                <AssetIcon className="w-4 h-4 mr-1.5" />
+                Buka Portofolio Aset
+              </Button>
+            )}
+            {metrics.totalLiquidCash < 0 && (
+              <Button
+                variant="heroOutline"
+                onClick={onOpenReconcile}
+                className="min-h-[44px] text-xs px-3"
+              >
+                <WalletIcon className="w-3.5 h-3.5" />
+                Sesuaikan Saldo Awal
+              </Button>
+            )}
+          </>
+        ) : undefined
+      }
+    />
+  );
   return (
     <div className="space-y-5">
       {/* Page Heading & Period Switcher */}
@@ -157,7 +190,7 @@ export function OverviewPage({
 
       {/* 1-2. Arus Kas Siklus Ini & Beban Siklus Ini (side by side on desktop) */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-12 items-stretch">
-        <div className={`h-full ${showBurden ? "xl:col-span-7" : "xl:col-span-12"}`}>
+        <div className="h-full xl:col-span-7">
           <DailyHeroCard
             dailyAllowance={metrics.dailyAllowance}
             safeToSpend={metrics.safeToSpend}
@@ -185,16 +218,18 @@ export function OverviewPage({
             }
           />
         </div>
-        {showBurden && debts && (
-          <div className="xl:col-span-5">
+        {/* Right column on desktop: Beban Siklus Ini, then Kekayaan Bersih under it */}
+        <div className="flex flex-col gap-4 xl:col-span-5">
+          {showBurden && debts && (
             <CycleBurdenCard
               data={debts}
               onPayInstallment={onPayInstallment}
               onPayCcCycle={onPayCcCycle}
               onOpenDebts={onOpenDebts}
             />
-          </div>
-        )}
+          )}
+          <div className="hidden xl:block xl:flex-1">{netWorthCard}</div>
+        </div>
       </div>
 
       {/* 3. Progres Pengeluaran */}
@@ -363,7 +398,9 @@ export function OverviewPage({
       </div>
 
       {/* Zona 3: Grid 2 Kolom Seimbang: Kewajiban Pembayaran (Kiri) & Kontrol Kredit / Peringatan (Kanan) */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 items-start">
+      <div
+        className={`grid grid-cols-1 gap-5 items-start ${recurringBills.length > 0 && budgetAlerts.length > 0 ? "lg:grid-cols-2" : ""}`}
+      >
         {/* Kolom Kiri: Komitmen Pembayaran (Tagihan Rutin) */}
         <div className="space-y-4">
           {/* Tagihan Rutin Siklus Ini: one link while empty, full card once bills exist */}
@@ -472,13 +509,15 @@ export function OverviewPage({
                   Lihat Semua
                 </button>
               </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div
+                className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${recurringBills.length > 0 ? "" : "xl:grid-cols-3"}`}
+              >
                 {budgetAlerts.map((b) => (
                   <div
                     key={b.category}
                     className="space-y-2 rounded-[10px] border border-[var(--border)] bg-[var(--surface)] p-3"
                   >
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex flex-col items-start gap-1">
                       <span className="text-sm font-semibold text-[var(--foreground)]">
                         {b.category}
                       </span>
@@ -505,38 +544,8 @@ export function OverviewPage({
         </div>
       </div>
 
-      {/* 7. Total Kekayaan Bersih */}
-      <NetWorthHeroCard
-        totalNetWorth={totalNetWorth}
-        totalAssets={totalAssets}
-        totalLiabilities={totalLiabilities}
-        actions={
-          onOpenAssets || metrics.totalLiquidCash < 0 ? (
-            <>
-              {onOpenAssets && (
-                <Button
-                  variant="secondary"
-                  onClick={onOpenAssets}
-                  className="min-h-[44px] text-xs px-3.5"
-                >
-                  <AssetIcon className="w-4 h-4 mr-1.5" />
-                  Buka Portofolio Aset
-                </Button>
-              )}
-              {metrics.totalLiquidCash < 0 && (
-                <Button
-                  variant="heroOutline"
-                  onClick={onOpenReconcile}
-                  className="min-h-[44px] text-xs px-3"
-                >
-                  <WalletIcon className="w-3.5 h-3.5" />
-                  Sesuaikan Saldo Awal
-                </Button>
-              )}
-            </>
-          ) : undefined
-        }
-      />
+      {/* 7. Total Kekayaan Bersih (phone and tablet; desktop shows it in the top row) */}
+      <div className="xl:hidden">{netWorthCard}</div>
 
       <RecurringBillsModal
         open={isRecurringModalOpen}
