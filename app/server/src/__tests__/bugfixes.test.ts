@@ -10,14 +10,17 @@ import {
 } from "../db/schema";
 import { LoginRateLimiter } from "../lib/auth";
 import { resolveBudgetsForPeriod } from "../lib/budgetService";
-import { buildDebtsData } from "../lib/dashboardQuery";
+import { buildDashboardData, buildDebtsData } from "../lib/dashboardQuery";
 import { computeLedgerSnapshot } from "../lib/ledger";
 import { receiveSalaryForPeriod } from "../lib/salaryService";
 import { setupTestContext } from "./testHelper";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+async function withEnv<T>(
+  vars: Record<string, string | undefined>,
+  fn: () => Promise<T>,
+): Promise<T> {
   const saved: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(vars)) {
     saved[k] = process.env[k];
@@ -55,14 +58,31 @@ describe("Regression: unsettling a payroll installment keeps the salary income i
       const insertedInsts = await db
         .insert(installments)
         .values([
-          { accountId: acc!.id, period: "2026-10", dueDate: "2026-10-25", plannedAmount: 1_000_000, status: "upcoming" },
-          { accountId: acc!.id, period: "2026-10", dueDate: "2026-10-26", plannedAmount: 1_000_000, status: "upcoming" },
+          {
+            accountId: acc!.id,
+            period: "2026-10",
+            dueDate: "2026-10-25",
+            plannedAmount: 1_000_000,
+            status: "upcoming",
+          },
+          {
+            accountId: acc!.id,
+            period: "2026-10",
+            dueDate: "2026-10-26",
+            plannedAmount: 1_000_000,
+            status: "upcoming",
+          },
         ])
         .returning();
 
       const salary = await receiveSalaryForPeriod(
         db,
-        { period: "2026-10", grossSalary: 10_000_000, walletId: bni!.id, transactionDate: "2026-10-25" },
+        {
+          period: "2026-10",
+          grossSalary: 10_000_000,
+          walletId: bni!.id,
+          transactionDate: "2026-10-25",
+        },
         "2026-10-25",
       );
       expect(salary.netSalary).toBe(8_000_000);
@@ -143,7 +163,10 @@ describe("Regression: editing a Split Pay account keeps installments in their ca
       });
       expect(renameRes.status).toBe(200);
 
-      const after = await db.select().from(installments).where(eq(installments.accountId, accountId));
+      const after = await db
+        .select()
+        .from(installments)
+        .where(eq(installments.accountId, accountId));
       expect(after.map((r) => [r.id, r.period]).sort()).toEqual(periodsBefore);
 
       // Moving a due date by one month shifts the cycle by one month as well.
@@ -223,7 +246,9 @@ describe("Regression: CSRF guard and mandatory PIN in production", () => {
         expect(setupRes.status).toBe(200);
         const cookie = setupRes.headers.get("set-cookie")!.split(";")[0]!;
 
-        expect((await app.request("/api/dashboard", { headers: { Cookie: cookie } })).status).toBe(200);
+        expect((await app.request("/api/dashboard", { headers: { Cookie: cookie } })).status).toBe(
+          200,
+        );
 
         const removeRes = await app.request("/api/auth/change-pin", {
           method: "POST",
@@ -231,7 +256,9 @@ describe("Regression: CSRF guard and mandatory PIN in production", () => {
           body: JSON.stringify({ currentPin: "123456", newPin: "" }),
         });
         expect(removeRes.status).toBe(400);
-        expect((await app.request("/api/auth/status", { headers: { Cookie: cookie } })).status).toBe(200);
+        expect(
+          (await app.request("/api/auth/status", { headers: { Cookie: cookie } })).status,
+        ).toBe(200);
       });
     } finally {
       await cleanup();
@@ -335,10 +362,25 @@ describe("Regression: debt totals are summed per account and match auto-close", 
     const { db, cleanup } = await setupTestContext();
     try {
       // 10jt loan scheduled as 12 x 1jt (interest folded in), fully paid.
-      const a = await seedLoan(db, { key: "loan-a", initialBalance: 10_000_000, count: 12, amount: 1_000_000, paidCount: 12 });
+      const a = await seedLoan(db, {
+        key: "loan-a",
+        initialBalance: 10_000_000,
+        count: 12,
+        amount: 1_000_000,
+        paidCount: 12,
+      });
       // 5jt loan, nothing paid yet.
-      await seedLoan(db, { key: "loan-b", initialBalance: 5_000_000, count: 5, amount: 1_000_000, paidCount: 0 });
-      await db.update(debtAccounts).set({ closedAt: new Date("2026-10-01T00:00:00.000Z") }).where(eq(debtAccounts.id, a.id));
+      await seedLoan(db, {
+        key: "loan-b",
+        initialBalance: 5_000_000,
+        count: 5,
+        amount: 1_000_000,
+        paidCount: 0,
+      });
+      await db
+        .update(debtAccounts)
+        .set({ closedAt: new Date("2026-10-01T00:00:00.000Z") })
+        .where(eq(debtAccounts.id, a.id));
 
       const data = await buildDebtsData(db, "2026-10-15");
       expect(data.totals.remainingDebt).toBe(5_000_000);
@@ -351,7 +393,13 @@ describe("Regression: debt totals are summed per account and match auto-close", 
   it("an open account with payments still due never shows 0 remaining", async () => {
     const { db, cleanup } = await setupTestContext();
     try {
-      const a = await seedLoan(db, { key: "loan-a", initialBalance: 10_000_000, count: 12, amount: 1_000_000, paidCount: 10 });
+      const a = await seedLoan(db, {
+        key: "loan-a",
+        initialBalance: 10_000_000,
+        count: 12,
+        amount: 1_000_000,
+        paidCount: 10,
+      });
       const data = await buildDebtsData(db, "2026-10-15");
       const acc = data.accounts.find((x) => x.id === a.id)!;
       expect(acc.closedAt).toBeNull();
@@ -366,11 +414,21 @@ describe("Regression: debt totals are summed per account and match auto-close", 
     const { db, app, cleanup } = await setupTestContext();
     try {
       const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
-      const a = await seedLoan(db, { key: "loan-a", initialBalance: 3_000_000, count: 3, amount: 1_000_000, paidCount: 0 });
+      const a = await seedLoan(db, {
+        key: "loan-a",
+        initialBalance: 3_000_000,
+        count: 3,
+        amount: 1_000_000,
+        paidCount: 0,
+      });
       const payoff = await app.request(`/api/debts/${a.id}/payoff`, {
         method: "POST",
         headers: JSON_HEADERS,
-        body: JSON.stringify({ fromWalletId: bni!.id, paymentDate: "2026-10-15", customAmount: 2_500_000 }),
+        body: JSON.stringify({
+          fromWalletId: bni!.id,
+          paymentDate: "2026-10-15",
+          customAmount: 2_500_000,
+        }),
       });
       expect(payoff.status).toBe(200);
       const data = await buildDebtsData(db, "2026-10-15");
@@ -402,7 +460,10 @@ describe("Regression: installments cannot be marked paid in a way that breaks th
         }),
       });
       const { accountId } = (await createRes.json()) as { accountId: number };
-      const [inst] = await db.select().from(installments).where(eq(installments.accountId, accountId));
+      const [inst] = await db
+        .select()
+        .from(installments)
+        .where(eq(installments.accountId, accountId));
 
       const res = await app.request("/api/installments/settle", {
         method: "POST",
@@ -441,7 +502,13 @@ describe("Regression: installments cannot be marked paid in a way that breaks th
         .returning();
       const [inst] = await db
         .insert(installments)
-        .values({ accountId: acc!.id, period: "2026-11", dueDate: "2026-11-25", plannedAmount: 1_000_000, status: "upcoming" })
+        .values({
+          accountId: acc!.id,
+          period: "2026-11",
+          dueDate: "2026-11-25",
+          plannedAmount: 1_000_000,
+          status: "upcoming",
+        })
         .returning();
 
       const res = await app.request("/api/installments/settle", {
@@ -486,7 +553,9 @@ describe("Regression: unticking Pecah Kategori removes the splits", () => {
       });
       expect(createRes.status).toBe(201);
       const { id } = (await createRes.json()) as { id: number };
-      expect(await db.select().from(transactionSplits).where(eq(transactionSplits.transactionId, id))).toHaveLength(2);
+      expect(
+        await db.select().from(transactionSplits).where(eq(transactionSplits.transactionId, id)),
+      ).toHaveLength(2);
 
       const updateRes = await app.request(`/api/transactions/${id}`, {
         method: "PATCH",
@@ -502,7 +571,9 @@ describe("Regression: unticking Pecah Kategori removes the splits", () => {
         }),
       });
       expect(updateRes.status).toBe(200);
-      expect(await db.select().from(transactionSplits).where(eq(transactionSplits.transactionId, id))).toHaveLength(0);
+      expect(
+        await db.select().from(transactionSplits).where(eq(transactionSplits.transactionId, id)),
+      ).toHaveLength(0);
     } finally {
       await cleanup();
     }
@@ -529,7 +600,10 @@ describe("Regression: goal progress stays in step with its transfers", () => {
       body: JSON.stringify({ amount: 1_000_000, walletId: bni!.id }),
     });
     expect(contribute.status).toBeLessThan(300);
-    const [transfer] = await db.select().from(transactions).where(like(transactions.sourceRef, `goal:${goalId}:%`));
+    const [transfer] = await db
+      .select()
+      .from(transactions)
+      .where(like(transactions.sourceRef, `goal:${goalId}:%`));
     expect(transfer).toBeDefined();
     return { goalId, transfer: transfer!, bni: bni!, bca: bca! };
   }
@@ -550,7 +624,10 @@ describe("Regression: goal progress stays in step with its transfers", () => {
       });
       expect(edit.status).toBe(200);
       expect(await goalAmount(ctx.db, goalId)).toBe(100_000);
-      const [edited] = await ctx.db.select().from(transactions).where(eq(transactions.id, transfer.id));
+      const [edited] = await ctx.db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.id, transfer.id));
       expect(edited!.merchant).toBe(transfer.merchant);
 
       const del = await ctx.app.request(`/api/transactions/${transfer.id}`, { method: "DELETE" });
@@ -565,7 +642,9 @@ describe("Regression: goal progress stays in step with its transfers", () => {
     const ctx = await setupTestContext();
     try {
       const { goalId, bni } = await setupGoal(ctx);
-      const del = await ctx.app.request(`/api/wallets/${bni.id}?cascade=true`, { method: "DELETE" });
+      const del = await ctx.app.request(`/api/wallets/${bni.id}?cascade=true`, {
+        method: "DELETE",
+      });
       expect(del.status).toBe(200);
       expect(await goalAmount(ctx.db, goalId)).toBe(0);
     } finally {
@@ -602,8 +681,13 @@ describe("Regression: low-priority server fixes", () => {
       updatedAt: new Date(),
     };
     const statusFor = (spent: number) =>
-      resolveBudgetsForPeriod([row], "2026-11", new Map([["Makan", spent]]), "2026-12-24", "2026-11-30")[0]!
-        .status;
+      resolveBudgetsForPeriod(
+        [row],
+        "2026-11",
+        new Map([["Makan", spent]]),
+        "2026-12-24",
+        "2026-11-30",
+      )[0]!.status;
     expect(statusFor(995_000)).toBe("warning");
     expect(statusFor(1_000_000)).toBe("warning");
     expect(statusFor(1_000_001)).toBe("over");
@@ -617,7 +701,11 @@ describe("Regression: low-priority server fixes", () => {
         app.request("/api/budgets", {
           method: "PUT",
           headers: JSON_HEADERS,
-          body: JSON.stringify({ category: "Makanan & Belanja Dapur", period: "2026-11", limitAmount }),
+          body: JSON.stringify({
+            category: "Makanan & Belanja Dapur",
+            period: "2026-11",
+            limitAmount,
+          }),
         });
       const results = await Promise.all([save(500_000), save(600_000), save(700_000)]);
       for (const r of results) expect(r.status).toBeLessThan(300);
@@ -659,7 +747,10 @@ describe("Regression: double-submit does not move money twice", () => {
       });
       expect(createRes.status).toBeLessThan(300);
       const { accountId } = (await createRes.json()) as { accountId: number };
-      const [inst] = await db.select().from(installments).where(eq(installments.accountId, accountId));
+      const [inst] = await db
+        .select()
+        .from(installments)
+        .where(eq(installments.accountId, accountId));
 
       const balanceBefore = (await computeLedgerSnapshot(db, "2026-10-20")).wallets.find(
         (w) => w.id === bni!.id,
@@ -692,7 +783,9 @@ describe("Regression: double-submit does not move money twice", () => {
     const { db, app, cleanup } = await setupTestContext();
     try {
       const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
-      const current = (await computeLedgerSnapshot(db)).wallets.find((w) => w.id === bni!.id)!.balance;
+      const current = (await computeLedgerSnapshot(db)).wallets.find(
+        (w) => w.id === bni!.id,
+      )!.balance;
       const target = current + 500_000;
 
       const reconcile = () =>
@@ -704,7 +797,9 @@ describe("Regression: double-submit does not move money twice", () => {
       const results = await Promise.all([reconcile(), reconcile()]);
       expect(results.map((r) => r.status)).toEqual([200, 200]);
 
-      const after = (await computeLedgerSnapshot(db)).wallets.find((w) => w.id === bni!.id)!.balance;
+      const after = (await computeLedgerSnapshot(db)).wallets.find(
+        (w) => w.id === bni!.id,
+      )!.balance;
       expect(after).toBe(target);
       const adjustments = await db
         .select()
@@ -813,6 +908,49 @@ describe("Regression: CC bill shows what is still owed", () => {
       expect(cycle.remainingBill).toBe(50_000);
       expect(cycle.unpaidInstallmentIds).toEqual([]);
       expect(cycle.settled).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("Regression: activity calendar follows the salary cycle", () => {
+  it("shows 25 Nov - 24 Des with spending from both months, not the calendar month", async () => {
+    const { db, app, cleanup } = await setupTestContext();
+    try {
+      const [bni] = await db.select().from(wallets).where(eq(wallets.key, "bni"));
+      for (const [merchant, date] of [
+        ["Sebelum siklus", "2026-11-22"],
+        ["Awal siklus", "2026-11-26"],
+        ["Bulan berikutnya", "2026-12-20"],
+      ] as const) {
+        const res = await app.request("/api/transactions", {
+          method: "POST",
+          headers: JSON_HEADERS,
+          body: JSON.stringify({
+            type: "expense",
+            merchant,
+            amount: 10_000,
+            transactionDate: date,
+            category: "Makanan & Belanja Dapur",
+            walletId: bni!.id,
+          }),
+        });
+        expect(res.status).toBe(201);
+      }
+
+      const dash = await buildDashboardData(db, { cycle: "gajian", today: "2026-11-26" });
+      const heatmap = dash.calendarHeatmap ?? [];
+      expect(heatmap[0]?.date).toBe(dash.periodStart);
+      expect(heatmap.at(-1)?.date).toBe(dash.periodEnd);
+      expect(dash.periodStart).toBe("2026-11-25");
+      expect(dash.periodEnd).toBe("2026-12-24");
+      expect(heatmap).toHaveLength(30);
+      const byDate = new Map(heatmap.map((d) => [d.date, d]));
+      expect(byDate.get("2026-11-22")).toBeUndefined();
+      expect(byDate.get("2026-11-26")?.expense).toBe(10_000);
+      expect(byDate.get("2026-11-26")?.isToday).toBe(true);
+      expect(byDate.get("2026-12-20")?.expense).toBe(10_000);
     } finally {
       await cleanup();
     }

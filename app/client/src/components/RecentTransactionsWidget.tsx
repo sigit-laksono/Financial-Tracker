@@ -2,23 +2,20 @@ import type { TransactionDto } from "../lib/api";
 import { formatRupiah, formatShortDate } from "../lib/format";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
 import { ReceiptIcon } from "./Icons";
-import { ErrorBoundary } from "./UI";
-import { CashflowSparkline, type DailyDataPoint } from "./CashflowSparkline";
+
+const MAX_ITEMS = 3;
 
 export function RecentTransactionsWidget({
   transactions = [],
-  dailyTotals,
   onOpenTransactions,
   onAddTransaction,
 }: {
   transactions?: TransactionDto[];
-  dailyTotals?: DailyDataPoint[];
   onOpenTransactions: () => void;
   onAddTransaction?: () => void;
 }) {
   const { isMasked } = usePrivacyMode();
-  const maxItems = dailyTotals && dailyTotals.length > 0 ? 3 : 5;
-  const recentItems = transactions.slice(0, maxItems);
+  const recentItems = transactions.slice(0, MAX_ITEMS);
 
   return (
     <div className="flex h-full flex-col justify-between rounded-[18px] border border-[var(--border)] bg-[var(--card)] p-4 sm:p-5 shadow-xs transition-all">
@@ -126,21 +123,6 @@ export function RecentTransactionsWidget({
           </div>
         )}
       </div>
-
-      {/* Integrated Tren Belanja 7 Hari */}
-      {dailyTotals && dailyTotals.length > 0 && (
-        <div className="border-t border-[var(--border)] pt-3 mt-auto">
-          <ErrorBoundary
-            fallback={
-              <p className="text-xs text-[var(--muted-foreground)]">
-                Tren belanja tidak dapat dimuat.
-              </p>
-            }
-          >
-            <CashflowSparkline data={dailyTotals} days={7} variant="embedded" />
-          </ErrorBoundary>
-        </div>
-      )}
     </div>
   );
 }

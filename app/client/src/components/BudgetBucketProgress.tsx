@@ -24,8 +24,18 @@ export function BudgetBucketProgress({
     return Math.min(100, Math.round((daysElapsed / daysTotal) * 100));
   }, [daysElapsed, daysTotal]);
 
-  const needs = budgetBuckets?.needs ?? { spent: 0, limit: 0, percent: 0, status: "unconfigured" as const };
-  const wants = budgetBuckets?.wants ?? { spent: 0, limit: 0, percent: 0, status: "unconfigured" as const };
+  const needs = budgetBuckets?.needs ?? {
+    spent: 0,
+    limit: 0,
+    percent: 0,
+    status: "unconfigured" as const,
+  };
+  const wants = budgetBuckets?.wants ?? {
+    spent: 0,
+    limit: 0,
+    percent: 0,
+    status: "unconfigured" as const,
+  };
   const savings = budgetBuckets?.savings ?? {
     spent: 0,
     target: 0,
@@ -64,7 +74,12 @@ export function BudgetBucketProgress({
 
   const needsStatus = getStatusBadge("needs", needs.status, needs.spent, isNeedsConfigured);
   const wantsStatus = getStatusBadge("wants", wants.status, wants.spent, isWantsConfigured);
-  const savingsStatus = getStatusBadge("savings", savings.status, savings.spent, isSavingsConfigured);
+  const savingsStatus = getStatusBadge(
+    "savings",
+    savings.status,
+    savings.spent,
+    isSavingsConfigured,
+  );
 
   return (
     <div className="rounded-[18px] border border-[var(--border)] bg-[var(--card)] p-4 sm:p-5 shadow-xs transition-all">
@@ -110,7 +125,7 @@ export function BudgetBucketProgress({
             <div>
               <h2 className="text-sm font-bold text-[var(--foreground)]">Progres Pengeluaran</h2>
               <p className="text-xs text-[var(--muted-foreground)]">
-                Hari {daysElapsed} dari {daysTotal} ({progressPercent}%)
+                Sisa {Math.max(0, daysTotal - daysElapsed)} hari
               </p>
             </div>
             {onOpenBudget && !isAllUnconfigured && (
@@ -172,7 +187,8 @@ export function BudgetBucketProgress({
                     {isNeedsConfigured ? (
                       <>
                         <span className="tabular-nums font-mono text-[11px] text-[var(--muted-foreground)]">
-                          {formatRupiah(needs.spent, isMasked)} / {formatRupiah(needs.limit, isMasked)}
+                          {formatRupiah(needs.spent, isMasked)} /{" "}
+                          {formatRupiah(needs.limit, isMasked)}
                         </span>
                         <span className="tabular-nums font-mono font-bold text-[var(--foreground)]">
                           {needs.percent}%
@@ -216,7 +232,8 @@ export function BudgetBucketProgress({
                     {isWantsConfigured ? (
                       <>
                         <span className="tabular-nums font-mono text-[11px] text-[var(--muted-foreground)]">
-                          {formatRupiah(wants.spent, isMasked)} / {formatRupiah(wants.limit, isMasked)}
+                          {formatRupiah(wants.spent, isMasked)} /{" "}
+                          {formatRupiah(wants.limit, isMasked)}
                         </span>
                         <span className="tabular-nums font-mono font-bold text-[var(--foreground)]">
                           {wants.percent}%
@@ -269,7 +286,8 @@ export function BudgetBucketProgress({
                     {isSavingsConfigured ? (
                       <>
                         <span className="tabular-nums font-mono text-[11px] text-[var(--muted-foreground)]">
-                          {formatRupiah(savings.spent, isMasked)} / {formatRupiah(savings.target, isMasked)}
+                          {formatRupiah(savings.spent, isMasked)} /{" "}
+                          {formatRupiah(savings.target, isMasked)}
                         </span>
                         <span className="tabular-nums font-mono font-bold text-[var(--foreground)]">
                           {savings.percent}%

@@ -233,14 +233,7 @@ export async function buildDashboardData(
     snap.settings.cardCutoffDay,
   );
 
-  const currentMonthPrefix = today.slice(0, 7);
-  const calYear = parseInt(today.slice(0, 4), 10);
-  const calMonth = parseInt(today.slice(5, 7), 10);
-  const daysInMonth = new Date(calYear, calMonth, 0).getDate();
-  const monthStart = `${currentMonthPrefix}-01`;
-  const monthEnd = `${currentMonthPrefix}-${daysInMonth < 10 ? `0${daysInMonth}` : daysInMonth}`;
-
-  const [periodRows, distinctDateRows, recurringRuleRows, monthRows] = await Promise.all([
+  const [periodRows, distinctDateRows, recurringRuleRows, calendarRows] = await Promise.all([
     db
       .select()
       .from(transactions)
@@ -265,8 +258,8 @@ export async function buildDashboardData(
       .from(transactions)
       .where(
         and(
-          gte(transactions.transactionDate, monthStart),
-          lte(transactions.transactionDate, monthEnd),
+          gte(transactions.transactionDate, bounds.start),
+          lte(transactions.transactionDate, bounds.end),
           eq(transactions.isConvertedToInstallment, false),
         ),
       ),
@@ -276,7 +269,7 @@ export async function buildDashboardData(
   const settlementTxIds = Array.from(
     new Set([
       ...periodRows.filter((tx) => tx.type === "settlement").map((tx) => tx.id),
-      ...monthRows.filter((tx) => tx.type === "settlement").map((tx) => tx.id),
+      ...calendarRows.filter((tx) => tx.type === "settlement").map((tx) => tx.id),
     ]),
   );
   const transferGroupIds = periodRows
@@ -586,8 +579,7 @@ export async function buildDashboardData(
 
   const remainingObligations = unpaidInstallmentsSum + unpaidCcCyclesSum + unpaidRecurringSum;
   const ccReservedCash = unpaidCcCyclesSum;
-  const safeToSpend =
-    snap.totalSpendableCash - remainingObligations;
+  const safeToSpend = snap.totalSpendableCash - remainingObligations;
 
   // Cycle pacing & days calculation
   const daysTotal = Math.max(1, daysBetween(bounds.start, bounds.end) + 1);
@@ -924,23 +916,22 @@ export async function buildDashboardData(
     },
   };
 
-  const monthTxMap = new Map<string, { expense: number; income: number; count: number }>();
-  for (const tx of monthRows) {
-    const entry = monthTxMap.get(tx.transactionDate) ?? { expense: 0, income: 0, count: 0 };
+  const calendarTxMap = new Map<string, { expense: number; income: number; count: number }>();
+  for (const tx of calendarRows) {
+    const entry = calendarTxMap.get(tx.transactionDate) ?? { expense: 0, income: 0, count: 0 };
     if (tx.type === "expense") entry.expense += tx.amount;
     else if (tx.type === "income") entry.income += tx.amount;
     else if (tx.type === "settlement") {
       entry.expense += computeSettlementExpenseAmount(tx, ccCycleAllocatedByTxId);
     }
     entry.count += 1;
-    monthTxMap.set(tx.transactionDate, entry);
+    calendarTxMap.set(tx.transactionDate, entry);
   }
 
+  // One cell per day of the selected cycle (e.g. 25 Nov - 24 Des), matching the page period.
   const calendarHeatmap = [];
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dayStr = d < 10 ? `0${d}` : `${d}`;
-    const dateStr = `${currentMonthPrefix}-${dayStr}`;
-    const stats = monthTxMap.get(dateStr);
+  for (let dateStr = bounds.start; dateStr <= bounds.end; dateStr = addDaysToDate(dateStr, 1)) {
+    const stats = calendarTxMap.get(dateStr);
     calendarHeatmap.push({
       date: dateStr,
       expense: stats?.expense ?? 0,
@@ -1133,7 +1124,9 @@ export async function buildDebtsData(db: AppDb, today = jakartaToday()): Promise
         const dailyTotal = cycleTxs
           .filter((t) => !t.isConvertedToInstallment)
           .reduce((sum, t) => sum + t.amount, 0);
-        const installmentItems = cardInstallments.filter((inst) => inst.effectiveCycle === cycleKey);
+        const installmentItems = cardInstallments.filter(
+          (inst) => inst.effectiveCycle === cycleKey,
+        );
         const installmentTotal = installmentItems.reduce((sum, i) => sum + i.plannedAmount, 0);
         const unpaidInstallments = installmentItems.filter((i) => i.status === "upcoming");
         const unpaidInstallmentIds = unpaidInstallments.map((i) => i.id);

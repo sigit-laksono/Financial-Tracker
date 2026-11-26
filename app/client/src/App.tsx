@@ -485,11 +485,7 @@ export function App() {
     if (tab === "budget") {
       return (
         <Suspense fallback={tabSuspenseFallback}>
-          <BudgetPage
-            period={period}
-            onPeriodChange={handlePeriodChange}
-            onToast={showToast}
-          />
+          <BudgetPage period={period} onPeriodChange={handlePeriodChange} onToast={showToast} />
         </Suspense>
       );
     }
@@ -584,11 +580,13 @@ export function App() {
       return (
         <OverviewPage
           data={dashboardQuery.data}
+          debts={debtsQuery.data}
           cycle={cycle}
           period={period}
           onCycleChange={handleCycleChange}
           onPeriodChange={handlePeriodChange}
           onPayInstallment={openPayInstallment}
+          onPayCcCycle={openPayCcCycle}
           onOpenTransactions={() => setTab("transactions")}
           onOpenDebts={() => setTab("debts")}
           onOpenReconcile={() => setTab("wallets")}
@@ -887,7 +885,11 @@ export function App() {
           <button
             type="button"
             onClick={() => setMobileMenuOpen(true)}
-            aria-label={!pinConfigured ? "Buka menu fitur lainnya (PIN belum aktif)" : "Buka menu fitur lainnya"}
+            aria-label={
+              !pinConfigured
+                ? "Buka menu fitur lainnya (PIN belum aktif)"
+                : "Buka menu fitur lainnya"
+            }
             aria-expanded={mobileMenuOpen}
             className={`flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-[10px] text-[11px] font-semibold transition-colors relative ${
               ["budget", "goals", "assets", "debts", "settings"].includes(tab)
@@ -937,7 +939,9 @@ export function App() {
                 </div>
                 <div className="min-w-0">
                   <div className="text-sm font-bold">Anggaran</div>
-                  <div className="text-[11px] text-[var(--muted-foreground)]">Pagu Anggaran Bulanan</div>
+                  <div className="text-[11px] text-[var(--muted-foreground)]">
+                    Pagu Anggaran Bulanan
+                  </div>
                 </div>
               </button>
 

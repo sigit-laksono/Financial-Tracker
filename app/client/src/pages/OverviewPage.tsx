@@ -1,23 +1,14 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { daysBetween } from "../../../shared/src/dates";
 import type { CycleMode } from "../../../shared/src/types";
-import { api, ApiError, type DashboardDto, type WalletDto } from "../lib/api";
-import {
-  formatCompactRupiah,
-  formatPeriodRangeLabel,
-  formatRupiah,
-  formatShortDate,
-  jakartaToday,
-  shiftMonth,
-} from "../lib/format";
+import { api, ApiError, type DashboardDto, type DebtsDto, type WalletDto } from "../lib/api";
+import { formatPeriodRangeLabel, formatRupiah, formatShortDate, shiftMonth } from "../lib/format";
 import {
   AlertIcon,
   AssetIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   LockIcon,
-  ShieldIcon,
   WalletIcon,
 } from "../components/Icons";
 import { Badge, Button, Card, ErrorBoundary, ProgressBar } from "../components/UI";
@@ -28,16 +19,19 @@ import { CalendarActivityGrid } from "../components/CalendarActivityGrid";
 import { RecentTransactionsWidget } from "../components/RecentTransactionsWidget";
 import { RecurringBillsModal } from "../components/RecurringBillsModal";
 import { BankBadge } from "../components/BankBadge";
+import { CycleBurdenCard } from "../components/CycleBurdenCard";
 import { budgetKeys } from "../lib/queryKeys";
 import { usePrivacyMode } from "../lib/usePrivacyMode";
 
 export function OverviewPage({
   data,
+  debts,
   cycle: _cycle,
   period,
   onCycleChange: _onCycleChange,
   onPeriodChange,
   onPayInstallment,
+  onPayCcCycle,
   onOpenTransactions,
   onOpenDebts,
   onOpenReconcile,
@@ -49,11 +43,14 @@ export function OverviewPage({
   onToast,
 }: {
   data: DashboardDto;
+  /** Kartu & Utang data for the Beban Siklus Ini card; the card hides until it loads. */
+  debts?: DebtsDto;
   cycle: CycleMode;
   period: string;
   onCycleChange: (cycle: CycleMode) => void;
   onPeriodChange: (period: string) => void;
   onPayInstallment: (installmentId: number) => void;
+  onPayCcCycle: (cycleKey: string, installmentIds: number[], ccWalletId?: number) => void;
   onOpenTransactions: () => void;
   onOpenDebts: () => void;
   onOpenReconcile: () => void;
@@ -67,7 +64,7 @@ export function OverviewPage({
   const queryClient = useQueryClient();
   const { isMasked } = usePrivacyMode();
   const [isRecurringModalOpen, setIsRecurringModalOpen] = useState(false);
-  const { metrics, wallets, nextDueInstallment, budgetAlerts } = data;
+  const { metrics, wallets, budgetAlerts } = data;
   const recurringBills = data.recurringBills ?? [];
 
   const { data: netWorthData } = useQuery({
@@ -101,19 +98,9 @@ export function OverviewPage({
   const liquidWallets = wallets.filter((w) => w.isActive && w.type !== "credit_card");
   const spendingWallets = liquidWallets.filter((w) => w.role !== "savings");
   const savingsWallets = liquidWallets.filter((w) => w.role === "savings");
-  const activeCcWallets = wallets.filter((w) => w.isActive && w.type === "credit_card");
-  const ccCardTitle =
-    activeCcWallets.length > 1
-      ? `Kartu Kredit (${activeCcWallets.length} Kartu)`
-      : activeCcWallets[0]
-        ? `Kartu Kredit ${activeCcWallets[0].name}`
-        : "Kartu Kredit";
-  const ccPercent =
-    metrics.ccLimit > 0 ? Math.round((metrics.ccLimitUsed / metrics.ccLimit) * 100) : 0;
 
   const totalSpendable = metrics.totalSpendableCash ?? metrics.totalLiquidCash ?? 0;
   const totalSavings = metrics.totalSavingsCash ?? 0;
-  const ccReserved = metrics.ccReservedCash ?? 0;
   const daysElapsed = metrics.daysElapsed ?? 1;
   const daysTotal = metrics.daysTotal ?? 30;
 
@@ -128,20 +115,7 @@ export function OverviewPage({
   };
   const pacingConfig = metrics.pacingStatus ? pacingConfigMap[metrics.pacingStatus] : undefined;
   const todaySpent = data.calendarHeatmap?.find((d) => d.isToday)?.expense ?? 0;
-
-  const nextDueDays = nextDueInstallment
-    ? daysBetween(jakartaToday(), nextDueInstallment.dueDate)
-    : null;
-  const nextDueBadge =
-    nextDueDays === null
-      ? null
-      : nextDueDays < 0
-        ? { tone: "danger" as const, label: `Terlambat ${Math.abs(nextDueDays)} hr` }
-        : nextDueDays === 0
-          ? { tone: "highlight" as const, label: "Hari Ini" }
-          : nextDueDays <= 7
-            ? { tone: "highlight" as const, label: `${nextDueDays} hr lagi` }
-            : { tone: "info" as const, label: `${nextDueDays} hari lagi` };
+  const showBurden = data.isCurrentPeriod && Boolean(debts);
 
   return (
     <div className="space-y-5">
@@ -181,43 +155,9 @@ export function OverviewPage({
         </div>
       </div>
 
-      {/* Hero Grid 2 Kolom Desktop: Total Kekayaan Bersih & Arus Kas Siklus Ini */}
+      {/* 1-2. Arus Kas Siklus Ini & Beban Siklus Ini (side by side on desktop) */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-12 items-stretch">
-        <div className="xl:col-span-5 h-full">
-          <NetWorthHeroCard
-            totalNetWorth={totalNetWorth}
-            totalAssets={totalAssets}
-            totalLiabilities={totalLiabilities}
-            actions={
-              onOpenAssets || metrics.totalLiquidCash < 0 ? (
-                <>
-                  {onOpenAssets && (
-                    <Button
-                      variant="secondary"
-                      onClick={onOpenAssets}
-                      className="min-h-[44px] text-xs px-3.5"
-                    >
-                      <AssetIcon className="w-4 h-4 mr-1.5" />
-                      Buka Portofolio Aset
-                    </Button>
-                  )}
-                  {metrics.totalLiquidCash < 0 && (
-                    <Button
-                      variant="heroOutline"
-                      onClick={onOpenReconcile}
-                      className="min-h-[44px] text-xs px-3"
-                    >
-                      <WalletIcon className="w-3.5 h-3.5" />
-                      Sesuaikan Saldo Awal
-                    </Button>
-                  )}
-                </>
-              ) : undefined
-            }
-          />
-        </div>
-
-        <div className="xl:col-span-7 h-full">
+        <div className={`h-full ${showBurden ? "xl:col-span-7" : "xl:col-span-12"}`}>
           <DailyHeroCard
             dailyAllowance={metrics.dailyAllowance}
             safeToSpend={metrics.safeToSpend}
@@ -245,9 +185,36 @@ export function OverviewPage({
             }
           />
         </div>
+        {showBurden && debts && (
+          <div className="xl:col-span-5">
+            <CycleBurdenCard
+              data={debts}
+              onPayInstallment={onPayInstallment}
+              onPayCcCycle={onPayCcCycle}
+              onOpenDebts={onOpenDebts}
+            />
+          </div>
+        )}
       </div>
 
-      {/* Zona 1: Likuiditas & Saldo Dompet Riil (Kas Belanja & Tabungan) */}
+      {/* 3. Progres Pengeluaran */}
+      <ErrorBoundary
+        fallback={
+          <Card className="p-4 text-center text-xs text-[var(--muted-foreground)]">
+            Widget progres pengeluaran tidak dapat ditampilkan.
+          </Card>
+        }
+      >
+        <BudgetBucketProgress
+          budgetBuckets={data.budgetBuckets}
+          daysElapsed={daysElapsed}
+          daysTotal={daysTotal}
+          onOpenBudget={onOpenBudget}
+          onOpenGoals={onOpenGoals}
+        />
+      </ErrorBoundary>
+
+      {/* 4. Kas Harian & Tabungan */}
       <section aria-labelledby="wallets-heading" className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -369,26 +336,15 @@ export function OverviewPage({
         )}
       </section>
 
-      {/* Zona 2: Progres Pengeluaran Variabel Utama */}
-      <ErrorBoundary
-        fallback={
-          <Card className="p-4 text-center text-xs text-[var(--muted-foreground)]">
-            Widget progres pengeluaran tidak dapat ditampilkan.
-          </Card>
-        }
-      >
-        <BudgetBucketProgress
-          budgetBuckets={data.budgetBuckets}
-          daysElapsed={daysElapsed}
-          daysTotal={daysTotal}
-          onOpenBudget={onOpenBudget}
-          onOpenGoals={onOpenGoals}
-        />
-      </ErrorBoundary>
-
-      {/* Zona 2: Calendar Activity & Recent Transactions (Grid 7:5) */}
+      {/* 5-6. Transaksi Terbaru then Kalender on phone; Kalender on the left on desktop */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 items-stretch">
-        <div className="lg:col-span-7">
+        <div className="lg:col-span-5 lg:order-2">
+          <RecentTransactionsWidget
+            transactions={data.transactions}
+            onOpenTransactions={onOpenTransactions}
+          />
+        </div>
+        <div className="lg:col-span-7 lg:order-1">
           <ErrorBoundary
             fallback={
               <Card className="p-4 text-center text-xs text-[var(--muted-foreground)]">
@@ -404,131 +360,50 @@ export function OverviewPage({
             />
           </ErrorBoundary>
         </div>
-        <div className="lg:col-span-5">
-          <RecentTransactionsWidget
-            transactions={data.transactions}
-            dailyTotals={data.dailyTotals}
-            onOpenTransactions={onOpenTransactions}
-          />
-        </div>
       </div>
-
-      {/* Micro-Nudge & Positive Financial Reinforcement */}
-      {metrics.totalCcExpense > 0 && (
-        <div className="flex items-center justify-between gap-3 rounded-[14px] border border-[var(--border)] bg-[var(--card)] p-3.5 text-xs shadow-xs">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--soft)] text-[var(--soft-foreground)] shrink-0">
-              <ShieldIcon className="w-4 h-4" />
-            </span>
-            <div>
-              <p className="font-bold text-[var(--foreground)]">Bebas Bunga Kartu Kredit</p>
-              <p className="text-[var(--muted-foreground)]">
-                Hemat estimasi bunga ~
-                {formatCompactRupiah(Math.round(metrics.totalCcExpense * 0.0175), isMasked)} jika dibayar
-                lunas sebelum jatuh tempo.
-              </p>
-            </div>
-          </div>
-          <Badge tone="soft" className="shrink-0 font-semibold">
-            Bebas Bunga
-          </Badge>
-        </div>
-      )}
 
       {/* Zona 3: Grid 2 Kolom Seimbang: Kewajiban Pembayaran (Kiri) & Kontrol Kredit / Peringatan (Kanan) */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 items-start">
-        {/* Kolom Kiri: Komitmen Pembayaran (Tagihan Terdekat & Tagihan Rutin) */}
+        {/* Kolom Kiri: Komitmen Pembayaran (Tagihan Rutin) */}
         <div className="space-y-4">
-          {/* Tagihan Terdekat */}
-          <Card className="flex flex-col justify-between gap-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
-                  Tagihan Terdekat
-                </p>
-                {nextDueInstallment ? (
-                  <>
-                    <h2 className="mt-1 text-lg font-bold text-[var(--foreground)]">
-                      {nextDueInstallment.accountName}
+          {/* Tagihan Rutin Siklus Ini: one link while empty, full card once bills exist */}
+          {recurringBills.length === 0 ? (
+            <button
+              type="button"
+              onClick={() => setIsRecurringModalOpen(true)}
+              className="min-h-[44px] text-xs font-semibold text-[var(--primary)] hover:underline"
+            >
+              + Tambah tagihan rutin (WiFi, listrik, langganan)
+            </button>
+          ) : (
+            <Card className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-base font-bold text-[var(--foreground)]">
+                      Tagihan Rutin Siklus Ini
                     </h2>
-                    <p className="text-sm text-[var(--muted-foreground)]">
-                      Jatuh tempo {formatShortDate(nextDueInstallment.dueDate)} (
-                      {nextDueInstallment.lender})
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <h2 className="mt-1 text-lg font-bold text-[var(--foreground)]">
-                      Tidak ada tagihan mendesak
-                    </h2>
-                    <p className="text-sm text-[var(--muted-foreground)]">
-                      Semua cicilan manual terdekat sudah lunas.
-                    </p>
-                  </>
-                )}
-              </div>
-              {nextDueBadge && <Badge tone={nextDueBadge.tone}>{nextDueBadge.label}</Badge>}
-            </div>
-
-            {nextDueInstallment ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] pt-3">
-                <strong className="tabular-nums text-xl font-extrabold text-[var(--foreground)]">
-                  {formatRupiah(nextDueInstallment.plannedAmount, isMasked)}
-                </strong>
-                <Button onClick={() => onPayInstallment(nextDueInstallment.id)}>
-                  Bayar Tagihan
-                </Button>
-              </div>
-            ) : (
-              <div className="border-t border-[var(--border)] pt-3">
-                <Button variant="secondary" onClick={onOpenDebts}>
-                  Lihat Jadwal Cicilan
-                </Button>
-              </div>
-            )}
-          </Card>
-
-          {/* Tagihan Rutin Siklus Ini */}
-          <Card className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-base font-bold text-[var(--foreground)]">
-                    Tagihan Rutin Siklus Ini
-                  </h2>
-                  {recurringBills.length > 0 &&
-                    metrics.unpaidRecurringSum !== undefined &&
-                    metrics.unpaidRecurringSum > 0 && (
+                    {metrics.unpaidRecurringSum !== undefined && metrics.unpaidRecurringSum > 0 && (
                       <Badge tone="highlight">
                         Sisa: {formatRupiah(metrics.unpaidRecurringSum, isMasked)}
                       </Badge>
                     )}
+                  </div>
                 </div>
-                {recurringBills.length > 0 && (
-                  <p className="text-xs text-[var(--muted-foreground)]">
-                    Proyeksi kewajiban bulanan & catat pembayaran 1-klik.
-                  </p>
-                )}
+                <div className="flex items-center gap-2 shrink-0">
+                  {metrics.unpaidRecurringSum === 0 && (
+                    <Badge tone="soft">Semua Tagihan Lunas</Badge>
+                  )}
+                  <Button
+                    variant="secondary"
+                    onClick={() => setIsRecurringModalOpen(true)}
+                    className="min-h-[44px] px-3 text-xs"
+                  >
+                    Kelola
+                  </Button>
+                </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {recurringBills.length > 0 && metrics.unpaidRecurringSum === 0 && (
-                  <Badge tone="soft">Semua Tagihan Lunas</Badge>
-                )}
-                <Button
-                  variant="secondary"
-                  onClick={() => setIsRecurringModalOpen(true)}
-                  className="min-h-[44px] px-3 text-xs"
-                >
-                  {recurringBills.length === 0 ? "+ Tambah" : "Kelola"}
-                </Button>
-              </div>
-            </div>
 
-            {recurringBills.length === 0 ? (
-              <p className="rounded-[12px] border border-dashed border-[var(--border)] bg-[var(--surface)] px-3.5 py-3 text-xs text-[var(--muted-foreground)]">
-                Belum ada tagihan rutin (WiFi, listrik, langganan).
-              </p>
-            ) : (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {recurringBills.map((bill) => (
                   <div
@@ -573,79 +448,12 @@ export function OverviewPage({
                   </div>
                 ))}
               </div>
-            )}
-          </Card>
+            </Card>
+          )}
         </div>
 
         {/* Kolom Kanan: Pengawasan Risiko & Limit (Kartu Kredit & Peringatan Anggaran) */}
         <div className="space-y-4">
-          {/* Kartu Kredit Bridge */}
-          <Card className="flex flex-col justify-between gap-4">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
-                  {ccCardTitle}
-                </p>
-                <span className="tabular-nums text-xs font-semibold text-[var(--muted-foreground)]">
-                  Terpakai {ccPercent}%
-                </span>
-              </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <strong className="tabular-nums text-xl font-extrabold text-[var(--foreground)]">
-                  {formatRupiah(metrics.ccLimitUsed, isMasked)}
-                </strong>
-                <span className="tabular-nums text-xs text-[var(--muted-foreground)]">
-                  dari {formatCompactRupiah(metrics.ccLimit, isMasked)}
-                </span>
-              </div>
-              <ProgressBar
-                value={ccPercent}
-                tone={ccPercent >= 80 ? "danger" : ccPercent >= 30 ? "highlight" : "soft"}
-                label="Persentase pemakaian limit kartu kredit"
-              />
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3 text-xs text-[var(--muted-foreground)]">
-              <span>
-                {ccReserved > 0 ? (
-                  <>
-                    Jatuh Tempo Siklus Ini:{" "}
-                    <strong className="tabular-nums text-[var(--foreground)]">
-                      {formatRupiah(ccReserved, isMasked)}
-                    </strong>
-                  </>
-                ) : (
-                  <span>Tidak ada tagihan jatuh tempo siklus ini</span>
-                )}
-                {metrics.upcomingCcCyclesSum !== undefined && metrics.upcomingCcCyclesSum > 0 && (
-                  <>
-                    {" "}
-                    · Menanti Gajian:{" "}
-                    <strong className="tabular-nums text-[var(--foreground)]">
-                      {formatRupiah(metrics.upcomingCcCyclesSum, isMasked)}
-                    </strong>
-                  </>
-                )}
-                {metrics.ccUnbilled > 0 && (
-                  <>
-                    {" "}
-                    · Tagihan Berjalan:{" "}
-                    <strong className="tabular-nums text-[var(--foreground)]">
-                      {formatRupiah(metrics.ccUnbilled, isMasked)}
-                    </strong>
-                  </>
-                )}
-              </span>
-              <button
-                type="button"
-                onClick={onOpenDebts}
-                className="inline-flex min-h-[44px] items-center px-2 font-semibold text-[var(--primary)] underline-offset-4 hover:underline"
-              >
-                Kelola CC
-              </button>
-            </div>
-          </Card>
-
           {/* Budget Alerts: Peringatan Anggaran Kategori */}
           {budgetAlerts.length > 0 && (
             <Card className="space-y-3">
@@ -696,6 +504,39 @@ export function OverviewPage({
           )}
         </div>
       </div>
+
+      {/* 7. Total Kekayaan Bersih */}
+      <NetWorthHeroCard
+        totalNetWorth={totalNetWorth}
+        totalAssets={totalAssets}
+        totalLiabilities={totalLiabilities}
+        actions={
+          onOpenAssets || metrics.totalLiquidCash < 0 ? (
+            <>
+              {onOpenAssets && (
+                <Button
+                  variant="secondary"
+                  onClick={onOpenAssets}
+                  className="min-h-[44px] text-xs px-3.5"
+                >
+                  <AssetIcon className="w-4 h-4 mr-1.5" />
+                  Buka Portofolio Aset
+                </Button>
+              )}
+              {metrics.totalLiquidCash < 0 && (
+                <Button
+                  variant="heroOutline"
+                  onClick={onOpenReconcile}
+                  className="min-h-[44px] text-xs px-3"
+                >
+                  <WalletIcon className="w-3.5 h-3.5" />
+                  Sesuaikan Saldo Awal
+                </Button>
+              )}
+            </>
+          ) : undefined
+        }
+      />
 
       <RecurringBillsModal
         open={isRecurringModalOpen}
