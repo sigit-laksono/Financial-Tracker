@@ -83,7 +83,6 @@ export function ReconcileModal({
       open={Boolean(wallet)}
       onClose={onClose}
       title={wallet ? `Cocokkan Saldo ${wallet.name}` : "Cocokkan Saldo"}
-      subtitle="Bandingkan saldo di m-banking dengan aplikasi agar angka pencatatan tetap sinkron tanpa repot."
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
@@ -103,7 +102,7 @@ export function ReconcileModal({
         <div className="rounded-[16px] border border-dashed border-[var(--border)] bg-[var(--surface)] p-3.5 text-sm space-y-2">
           <div className="flex justify-between items-center gap-2">
             <span className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
-              Saldo Tercatat di Aplikasi
+              Saldo di Aplikasi
             </span>
             <strong className="tabular-nums text-base font-black text-[var(--foreground)]">
               {formatRupiah(wallet?.balance ?? 0, isMasked)}
@@ -116,7 +115,7 @@ export function ReconcileModal({
             htmlFor="rec-actual"
             className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
           >
-            Saldo Riil di M-Banking / Dompet Saat Ini (Rp)
+            Saldo di M-Banking Sekarang
           </label>
           <div className="relative">
             <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
@@ -137,7 +136,7 @@ export function ReconcileModal({
             htmlFor="rec-note"
             className="block text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]"
           >
-            Keterangan Penyesuaian (Opsional)
+            Catatan (Opsional)
           </label>
           <input
             id="rec-note"
@@ -152,7 +151,7 @@ export function ReconcileModal({
         <div className="rounded-[16px] border border-dashed border-[var(--border)] bg-[var(--surface)] p-3.5 text-sm space-y-1">
           <div className="flex justify-between items-center gap-2">
             <span className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--muted-foreground)]">
-              Selisih Penyesuaian
+              Selisih
             </span>
             <strong className="tabular-nums text-base font-black text-[var(--foreground)]">
               {delta > 0 ? `+${formatRupiah(delta, isMasked)}` : formatRupiah(delta, isMasked)}
@@ -160,10 +159,10 @@ export function ReconcileModal({
           </div>
           <p className="text-xs text-[var(--muted-foreground)]">
             {delta === 0
-              ? "Saldo sudah cocok sempurna dengan m-banking."
-              : `Terdapat selisih ${formatRupiah(Math.abs(delta), isMasked)} (${
-                  delta > 0 ? "saldo m-banking lebih tinggi" : "saldo m-banking lebih rendah"
-                }).`}
+              ? "Sudah cocok."
+              : delta > 0
+                ? "Saldo m-banking lebih tinggi."
+                : "Saldo m-banking lebih rendah."}
           </p>
         </div>
 

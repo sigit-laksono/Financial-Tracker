@@ -243,6 +243,7 @@ export function WalletFormModal({
   const [daysAfterCutoff, setDaysAfterCutoff] = useState("16");
   const [color, setColor] = useState("#00529C");
   const [isActive, setIsActive] = useState(true);
+  const [openingEditOpen, setOpeningEditOpen] = useState(false);
 
   // Dropdown UI State
   const [typeDropdownOpen, setTypeDropdownOpen] = useState(false);
@@ -298,6 +299,7 @@ export function WalletFormModal({
 
     setError("");
     setConfirmDelete(false);
+    setOpeningEditOpen(false);
     setCascadeRequired(false);
     setCascadeConfirmed(false);
     setTypeDropdownOpen(false);
@@ -813,8 +815,8 @@ export function WalletFormModal({
                 onChange={(e) => setRole(e.target.value as "spending" | "savings")}
                 className="min-h-[44px] w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all"
               >
-                <option value="spending">Kas Harian (Safe to Spend)</option>
-                <option value="savings">Tabungan / Simpanan (Dana Darurat)</option>
+                <option value="spending">Kas Harian</option>
+                <option value="savings">Tabungan (tidak dihitung siap pakai)</option>
               </select>
             </div>
 
@@ -827,11 +829,11 @@ export function WalletFormModal({
                   </strong>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-[11px] text-[var(--muted-foreground)]">
-                    {onOpenReconcile
-                      ? "Ingin menyamakan saldo dengan m-banking tanpa mengubah saldo awal?"
-                      : "Gunakan Cocokkan Saldo di halaman Dompet untuk menyesuaikan saldo saat ini."}
-                  </p>
+                  {!onOpenReconcile && (
+                    <p className="text-[11px] text-[var(--muted-foreground)]">
+                      Gunakan Cocokkan Saldo di halaman Dompet untuk menyesuaikan saldo saat ini.
+                    </p>
+                  )}
                   {onOpenReconcile && (
                     <button
                       type="button"
@@ -848,31 +850,67 @@ export function WalletFormModal({
               </div>
             )}
 
-            <div className="space-y-1.5">
-              <label htmlFor="wallet-balance-input" className={labelClass}>
-                {isEditing ? "SALDO AWAL" : "SALDO SAAT INI"}
-              </label>
-              <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
-                  Rp
-                </span>
-                <input
-                  id="wallet-balance-input"
-                  type="text"
-                  inputMode={isEditing ? "text" : "numeric"}
-                  value={balance}
-                  onChange={(e) =>
-                    setBalance(
-                      isEditing
-                        ? formatSignedDigitsInput(e.target.value)
-                        : formatDigitsInput(e.target.value),
-                    )
-                  }
-                  placeholder="0"
-                  className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
-                />
+            {isEditing && wallet && !openingEditOpen ? (
+              <button
+                type="button"
+                onClick={() => setOpeningEditOpen(true)}
+                className="inline-flex min-h-[44px] items-center text-xs font-semibold text-[var(--muted-foreground)] underline-offset-4 hover:text-[var(--foreground)] hover:underline"
+              >
+                Ubah saldo awal
+              </button>
+            ) : (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="wallet-balance-input" className={labelClass}>
+                    {isEditing ? "SALDO AWAL" : "SALDO SAAT INI"}
+                  </label>
+                  {isEditing && wallet && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBalance(formatSignedDigitsInput(String(wallet.openingBalance)));
+                        setOpeningEditOpen(false);
+                      }}
+                      className="inline-flex min-h-[44px] items-center px-1 text-xs font-semibold text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                    >
+                      Batal ubah
+                    </button>
+                  )}
+                </div>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
+                    Rp
+                  </span>
+                  <input
+                    id="wallet-balance-input"
+                    type="text"
+                    inputMode={isEditing ? "text" : "numeric"}
+                    value={balance}
+                    onChange={(e) =>
+                      setBalance(
+                        isEditing
+                          ? formatSignedDigitsInput(e.target.value)
+                          : formatDigitsInput(e.target.value),
+                      )
+                    }
+                    placeholder="0"
+                    className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
+                  />
+                </div>
+                {isEditing && wallet && (
+                  <p className="text-[11px] text-[var(--destructive)]">
+                    Saldo sekarang ikut berubah jadi{" "}
+                    <strong className="tabular-nums font-bold">
+                      {formatRupiah(
+                        wallet.balance + parseSignedInt(balance) - wallet.openingBalance,
+                        isMasked,
+                      )}
+                    </strong>
+                    . Untuk menyamakan dengan m-banking, pakai Cocokkan Saldo.
+                  </p>
+                )}
               </div>
-            </div>
+            )}
           </>
         )}
 
@@ -899,38 +937,28 @@ export function WalletFormModal({
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-1">
-                <label htmlFor="wallet-pemakaian" className={labelClass}>
-                  PEMAKAIAN
-                </label>
-                <span
-                  title="Tagihan atau pemakaian kartu kredit/paylater saat ini"
-                  className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-[var(--control-border)] text-[10px] text-[var(--muted-foreground)] cursor-help"
-                >
-                  ?
+            {isEditing ? (
+              <div className="flex items-baseline justify-between gap-2 rounded-[14px] border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+                <span className="text-xs text-[var(--muted-foreground)]">
+                  Pemakaian saat ini (otomatis)
                 </span>
+                <strong className="tabular-nums text-sm font-bold text-[var(--foreground)]">
+                  {formatRupiah(parsePositiveInt(pemakaian), isMasked)}
+                </strong>
               </div>
-              {isEditing ? (
-                <>
-                  <div className="relative">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
-                      Rp
-                    </span>
-                    <input
-                      id="wallet-pemakaian"
-                      type="text"
-                      readOnly
-                      aria-readonly="true"
-                      value={pemakaian}
-                      className="w-full rounded-[14px] bg-[var(--surface)] border border-[var(--border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--muted-foreground)] font-mono cursor-default"
-                    />
-                  </div>
-                  <p className="text-[11px] text-[var(--muted-foreground)]">
-                    Pemakaian dihitung otomatis dari transaksi dan cicilan aktif kartu ini.
-                  </p>
-                </>
-              ) : (
+            ) : (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1">
+                  <label htmlFor="wallet-pemakaian" className={labelClass}>
+                    PEMAKAIAN
+                  </label>
+                  <span
+                    title="Tagihan atau pemakaian kartu kredit/paylater saat ini"
+                    className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-[var(--control-border)] text-[10px] text-[var(--muted-foreground)] cursor-help"
+                  >
+                    ?
+                  </span>
+                </div>
                 <div className="relative">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)] select-none">
                     Rp
@@ -945,8 +973,8 @@ export function WalletFormModal({
                     className="w-full rounded-[14px] bg-[var(--card)] border border-[var(--control-border)] pl-11 pr-4 py-2.5 text-sm font-semibold text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono"
                   />
                 </div>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* SIKLUS TAGIHAN & JATUH TEMPO */}
             <div className="rounded-[16px] border border-[var(--border)] bg-[var(--surface)] p-3.5 space-y-3">
@@ -965,7 +993,7 @@ export function WalletFormModal({
                         : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                     }`}
                   >
-                    Hitung Hari (+Hari)
+                    Hitung Hari
                   </button>
                   <button
                     type="button"
@@ -991,7 +1019,7 @@ export function WalletFormModal({
                     htmlFor="wallet-cutoff-day"
                     className="block text-[11px] font-bold text-[var(--foreground)]"
                   >
-                    Tgl Cetak Tagihan
+                    Tgl Tutup Buku
                   </label>
                   <input
                     id="wallet-cutoff-day"
@@ -1002,9 +1030,6 @@ export function WalletFormModal({
                     onChange={(e) => setCutoffDay(e.target.value)}
                     className="w-full rounded-[12px] bg-[var(--card)] border border-[var(--control-border)] px-3 py-2.5 text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono text-center"
                   />
-                  <span className="text-[10px] text-[var(--muted-foreground)] block text-center">
-                    Tiap tgl {cutoffDay || 1}
-                  </span>
                 </div>
 
                 {/* Jatuh Tempo */}
@@ -1016,58 +1041,47 @@ export function WalletFormModal({
                     {dueMode === "days" ? "Jatuh Tempo (+Hari)" : "Tgl Jatuh Tempo"}
                   </label>
                   {dueMode === "days" ? (
-                    <>
-                      <input
-                        id="wallet-due-input"
-                        type="number"
-                        min={1}
-                        max={60}
-                        value={daysAfterCutoff}
-                        onChange={(e) => setDaysAfterCutoff(e.target.value)}
-                        className="w-full rounded-[12px] bg-[var(--card)] border border-[var(--control-border)] px-3 py-2.5 text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono text-center"
-                      />
-                      <span className="text-[10px] text-[var(--primary)] font-bold block text-center">
-                        = Tgl {dueInfo.paymentDay} (
-                        {dueInfo.isNextMonth ? "bln depan" : "bln yg sama"})
-                      </span>
-                    </>
+                    <input
+                      id="wallet-due-input"
+                      type="number"
+                      min={1}
+                      max={60}
+                      value={daysAfterCutoff}
+                      onChange={(e) => setDaysAfterCutoff(e.target.value)}
+                      className="w-full rounded-[12px] bg-[var(--card)] border border-[var(--control-border)] px-3 py-2.5 text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono text-center"
+                    />
                   ) : (
-                    <>
-                      <input
-                        id="wallet-due-input"
-                        type="number"
-                        min={1}
-                        max={28}
-                        value={paymentDay}
-                        onChange={(e) => setPaymentDay(e.target.value)}
-                        className="w-full rounded-[12px] bg-[var(--card)] border border-[var(--control-border)] px-3 py-2.5 text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono text-center"
-                      />
-                      <span className="text-[10px] text-[var(--primary)] font-bold block text-center">
-                        ~{dueInfo.daysDiff} hari (
-                        {dueInfo.isNextMonth ? "bln depan" : "bln yg sama"})
-                      </span>
-                    </>
+                    <input
+                      id="wallet-due-input"
+                      type="number"
+                      min={1}
+                      max={28}
+                      value={paymentDay}
+                      onChange={(e) => setPaymentDay(e.target.value)}
+                      className="w-full rounded-[12px] bg-[var(--card)] border border-[var(--control-border)] px-3 py-2.5 text-sm font-bold text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 transition-all font-mono text-center"
+                    />
                   )}
                 </div>
               </div>
 
-              {/* Live Simulation Card */}
-              <div className="rounded-[10px] border border-dashed border-[var(--border)] bg-[var(--card)] p-2.5 text-[11px] text-[var(--muted-foreground)] space-y-1">
-                <div className="flex items-center justify-between font-bold text-[var(--foreground)]">
-                  <span>Simulasi Tagihan:</span>
-                  <span className="text-[var(--primary)] font-mono font-bold">
-                    Selang {dueInfo.daysDiff} Hari
-                  </span>
-                </div>
-                <p>
-                  Tagihan dicetak tiap{" "}
-                  <strong className="text-[var(--foreground)]">Tgl {cutoffDay || 1}</strong>, dan
-                  jatuh tempo pembayaran pada{" "}
-                  <strong className="text-[var(--foreground)]">Tgl {dueInfo.paymentDay}</strong>{" "}
-                  {dueInfo.isNextMonth ? "bulan berikutnya" : "di bulan yang sama"} (
-                  {dueInfo.daysDiff} hari setelah tagihan dicetak).
-                </p>
-              </div>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                {dueMode === "days" ? (
+                  <>
+                    Jatuh tempo{" "}
+                    <strong className="text-[var(--foreground)]">
+                      tgl {dueInfo.paymentDay}{" "}
+                      {dueInfo.isNextMonth ? "bulan depan" : "bulan yang sama"}
+                    </strong>
+                  </>
+                ) : (
+                  <>
+                    Jatuh tempo{" "}
+                    <strong className="text-[var(--foreground)]">
+                      {dueInfo.daysDiff} hari setelah tutup buku
+                    </strong>
+                  </>
+                )}
+              </p>
             </div>
           </>
         )}
